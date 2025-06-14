@@ -1,0 +1,14 @@
+language = "C"
+
+[export]
+include = []
+exclude = []
+
+[fn]
+prefix = "AL"
+
+[struct]
+rename_fields = "CamelCase"
+
+[enum]
+rename_variants = "QualifiedScreamingSnakeCase"
