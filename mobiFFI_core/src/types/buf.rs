@@ -60,3 +60,24 @@ impl<T> From<Vec<T>> for FfiBuf<T> {
         Self::from_vec(vec)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn buf_roundtrip() {
+        let data = vec![1u32, 2, 3, 4, 5];
+        let ffi_buf = FfiBuf::from_vec(data.clone());
+        assert_eq!(ffi_buf.len(), 5);
+        let recovered = ffi_buf.into_vec();
+        assert_eq!(recovered, data);
+    }
+
+    #[test]
+    fn buf_drop() {
+        let data = vec![1u8, 2, 3];
+        let ffi_buf = FfiBuf::from_vec(data);
+        drop(ffi_buf);
+    }
+}
