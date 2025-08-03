@@ -103,3 +103,84 @@ pub unsafe extern "C" fn mffi_counter_free(handle: *mut Counter) {
         drop(counter);
     }
 }
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct DataPoint {
+    pub x: f64,
+    pub y: f64,
+    pub timestamp: i64,
+}
+
+struct DataStore {
+    items: Vec<DataPoint>,
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn mffi_datastore_new() -> *mut DataStore {
+    HandleBox::new(DataStore { items: Vec::new() }).into_raw()
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mffi_datastore_add(handle: *mut DataStore, point: DataPoint) -> FfiStatus {
+    match HandleBox::from_raw(handle) {
+        Some(mut store) => {
+            store.as_mut().items.push(point);
+            core::mem::forget(store);
+            FfiStatus::OK
+        }
+        None => FfiStatus::NULL_POINTER,
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mffi_datastore_len(handle: *mut DataStore) -> usize {
+    match HandleBox::from_raw(handle) {
+        Some(store) => {
+            let len = store.as_ref().items.len();
+            core::mem::forget(store);
+            len
+        }
+        None => 0,
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mffi_datastore_copy_into(
+    handle: *mut DataStore,
+    dst: *mut DataPoint,
+    dst_cap: usize,
+    written: *mut usize,
+) -> FfiStatus {
+    if dst.is_null() || written.is_null() {
+        return FfiStatus::NULL_POINTER;
+    }
+
+    match HandleBox::from_raw(handle) {
+        Some(store) => {
+            let items = &store.as_ref().items;
+            let items_len = items.len();
+            let copy_count = items_len.min(dst_cap);
+
+            core::ptr::copy_nonoverlapping(items.as_ptr(), dst, copy_count);
+            *written = copy_count;
+
+            let status = if items_len > dst_cap {
+                FfiStatus::BUFFER_TOO_SMALL
+            } else {
+                FfiStatus::OK
+            };
+
+            core::mem::forget(store);
+            status
+        }
+        None => FfiStatus::NULL_POINTER,
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mffi_datastore_free(handle: *mut DataStore) {
+    if let Some(store) = HandleBox::from_raw(handle) {
+        drop(store);
+    }
+}

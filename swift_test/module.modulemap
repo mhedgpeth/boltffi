@@ -1,0 +1,4 @@
+module MobiFFI {
+    header "mobiFFI_core.h"
+    export *
+}
