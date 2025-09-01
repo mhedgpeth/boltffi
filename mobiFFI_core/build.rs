@@ -38,6 +38,7 @@ enum FfiReturnKind {
     String,
     ResultPrimitive(String),
     ResultString,
+    Vec(String),
 }
 
 struct FfiExport {
@@ -97,6 +98,15 @@ fn classify_return_type(ty: &Type) -> FfiReturnKind {
 
     if let Type::Path(path) = ty {
         if let Some(segment) = path.path.segments.last() {
+            if segment.ident == "Vec" {
+                if let syn::PathArguments::AngleBracketed(args) = &segment.arguments {
+                    if let Some(syn::GenericArgument::Type(inner_ty)) = args.args.first() {
+                        if let Some(c_type) = rust_type_to_c(inner_ty) {
+                            return FfiReturnKind::Vec(c_type);
+                        }
+                    }
+                }
+            }
             if segment.ident == "Result" {
                 if let syn::PathArguments::AngleBracketed(args) = &segment.arguments {
                     if let Some(syn::GenericArgument::Type(inner_ty)) = args.args.first() {
@@ -198,42 +208,68 @@ fn rust_type_to_c_ptr(inner: &str, qualifier: &str) -> Option<String> {
     }
 }
 
+fn generate_export_declaration(export: &FfiExport) -> String {
+    let base_params: Vec<String> = export
+        .params
+        .iter()
+        .map(|(name, ty)| format!("{} {}", ty, name))
+        .collect();
+
+    match &export.return_kind {
+        FfiReturnKind::Vec(inner_ty) => {
+            let len_params = if base_params.is_empty() {
+                "void".to_string()
+            } else {
+                base_params.join(", ")
+            };
+
+            let mut copy_params = base_params.clone();
+            copy_params.push(format!("{} *dst", inner_ty));
+            copy_params.push("uintptr_t dst_cap".to_string());
+            copy_params.push("uintptr_t *written".to_string());
+
+            format!(
+                "uintptr_t mffi_{}_len({});\nstruct FfiStatus mffi_{}_copy_into({});\n",
+                export.name,
+                len_params,
+                export.name,
+                copy_params.join(", ")
+            )
+        }
+        _ => {
+            let mut params = base_params;
+            let ret_type = match &export.return_kind {
+                FfiReturnKind::Unit => "struct FfiStatus".to_string(),
+                FfiReturnKind::Primitive(ty) => ty.clone(),
+                FfiReturnKind::String | FfiReturnKind::ResultString => {
+                    params.push("struct FfiString *out".to_string());
+                    "struct FfiStatus".to_string()
+                }
+                FfiReturnKind::ResultPrimitive(ty) => {
+                    params.push(format!("{} *out", ty));
+                    "struct FfiStatus".to_string()
+                }
+                FfiReturnKind::Vec(_) => unreachable!(),
+            };
+
+            let params_str = if params.is_empty() {
+                "void".to_string()
+            } else {
+                params.join(", ")
+            };
+
+            format!("{} mffi_{}({});\n", ret_type, export.name, params_str)
+        }
+    }
+}
+
 fn append_macro_exports(header_path: &PathBuf, exports: &[FfiExport]) {
     let mut header = fs::read_to_string(header_path).unwrap_or_default();
 
     if let Some(pos) = header.rfind("#endif") {
         let declarations: String = exports
             .iter()
-            .map(|e| {
-                let mut params: Vec<String> = e
-                    .params
-                    .iter()
-                    .map(|(name, ty)| format!("{} {}", ty, name))
-                    .collect();
-
-                let ret_type = match &e.return_kind {
-                    FfiReturnKind::Unit => {
-                        "struct FfiStatus".to_string()
-                    }
-                    FfiReturnKind::Primitive(ty) => ty.clone(),
-                    FfiReturnKind::String | FfiReturnKind::ResultString => {
-                        params.push("struct FfiString *out".to_string());
-                        "struct FfiStatus".to_string()
-                    }
-                    FfiReturnKind::ResultPrimitive(ty) => {
-                        params.push(format!("{} *out", ty));
-                        "struct FfiStatus".to_string()
-                    }
-                };
-
-                let params_str = if params.is_empty() {
-                    "void".to_string()
-                } else {
-                    params.join(", ")
-                };
-
-                format!("{} mffi_{}({});\n", ret_type, e.name, params_str)
-            })
+            .map(generate_export_declaration)
             .collect();
 
         let marker = "\n/* Macro-generated exports */\n";

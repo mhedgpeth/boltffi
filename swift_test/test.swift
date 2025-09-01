@@ -376,4 +376,29 @@ if divByZeroStatus.code != 0 {
     exit(1)
 }
 
+print("\n--- Testing macro Vec return ---")
+
+let seqLen = mffi_generate_sequence_len(5)
+print("mffi_generate_sequence_len(5) = \(seqLen)")
+
+if seqLen == 5 {
+    var seqBuffer = [Int32](repeating: 0, count: Int(seqLen))
+    var written: UInt = 0
+    let seqStatus = seqBuffer.withUnsafeMutableBufferPointer { ptr in
+        mffi_generate_sequence_copy_into(5, ptr.baseAddress!, seqLen, &written)
+    }
+    
+    print("Sequence: \(seqBuffer), written: \(written)")
+    
+    if seqStatus.code == 0 && written == 5 && seqBuffer == [0, 1, 2, 3, 4] {
+        print("SUCCESS: Vec<i32> return works!")
+    } else {
+        print("FAILED: Vec test failed")
+        exit(1)
+    }
+} else {
+    print("FAILED: Expected len 5, got \(seqLen)")
+    exit(1)
+}
+
 print("\n=== ALL TESTS PASSED ===")

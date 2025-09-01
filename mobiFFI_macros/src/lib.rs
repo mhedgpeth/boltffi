@@ -45,6 +45,22 @@ enum ReturnKind {
     String,
     ResultPrimitive(syn::Type),
     ResultString,
+    Vec(syn::Type),
+}
+
+fn extract_vec_inner(ty: &Type) -> Option<syn::Type> {
+    if let Type::Path(path) = ty {
+        if let Some(segment) = path.path.segments.last() {
+            if segment.ident == "Vec" {
+                if let syn::PathArguments::AngleBracketed(args) = &segment.arguments {
+                    if let Some(syn::GenericArgument::Type(inner_ty)) = args.args.first() {
+                        return Some(inner_ty.clone());
+                    }
+                }
+            }
+        }
+    }
+    None
 }
 
 fn classify_return(output: &ReturnType) -> ReturnKind {
@@ -55,6 +71,10 @@ fn classify_return(output: &ReturnType) -> ReturnKind {
 
             if type_str == "String" || type_str == "std::string::String" {
                 return ReturnKind::String;
+            }
+
+            if let Some(inner) = extract_vec_inner(ty) {
+                return ReturnKind::Vec(inner);
             }
 
             if let Type::Path(path) = ty.as_ref() {
@@ -175,6 +195,40 @@ pub fn ffi_export(_attr: TokenStream, item: TokenStream) -> TokenStream {
                 #[unsafe(no_mangle)]
                 #fn_vis extern "C" fn #export_ident(#fn_inputs) #fn_output {
                     #fn_name(#(#arg_idents),*)
+                }
+            }
+        }
+        ReturnKind::Vec(inner_ty) => {
+            let len_ident = syn::Ident::new(&format!("mffi_{}_len", fn_name), fn_name.span());
+            let copy_into_ident = syn::Ident::new(&format!("mffi_{}_copy_into", fn_name), fn_name.span());
+
+            quote! {
+                #input
+
+                #[unsafe(no_mangle)]
+                #fn_vis extern "C" fn #len_ident(#fn_inputs) -> usize {
+                    #fn_name(#(#arg_idents),*).len()
+                }
+
+                #[unsafe(no_mangle)]
+                #fn_vis unsafe extern "C" fn #copy_into_ident(
+                    #fn_inputs,
+                    dst: *mut #inner_ty,
+                    dst_cap: usize,
+                    written: *mut usize
+                ) -> crate::FfiStatus {
+                    if dst.is_null() || written.is_null() {
+                        return crate::FfiStatus::NULL_POINTER;
+                    }
+                    let items = #fn_name(#(#arg_idents),*);
+                    let to_copy = items.len().min(dst_cap);
+                    core::ptr::copy_nonoverlapping(items.as_ptr(), dst, to_copy);
+                    *written = to_copy;
+                    if to_copy < items.len() {
+                        crate::FfiStatus::BUFFER_TOO_SMALL
+                    } else {
+                        crate::FfiStatus::OK
+                    }
                 }
             }
         }

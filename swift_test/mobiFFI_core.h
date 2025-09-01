@@ -113,5 +113,7 @@ int32_t mffi_add_numbers(int32_t first, int32_t second);
 double mffi_multiply_floats(double first, double second);
 struct FfiStatus mffi_make_greeting(const uint8_t* name_ptr, uintptr_t name_len, struct FfiString *out);
 struct FfiStatus mffi_safe_divide(int32_t numerator, int32_t denominator, int32_t *out);
+uintptr_t mffi_generate_sequence_len(int32_t count);
+struct FfiStatus mffi_generate_sequence_copy_into(int32_t count, int32_t *dst, uintptr_t dst_cap, uintptr_t *written);
 
 #endif  /* MOBIFFI_CORE_H */

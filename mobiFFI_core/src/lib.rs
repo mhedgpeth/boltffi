@@ -341,3 +341,8 @@ pub fn safe_divide(numerator: i32, denominator: i32) -> Result<i32, &'static str
         Ok(numerator / denominator)
     }
 }
+
+#[ffi_export]
+pub fn generate_sequence(count: i32) -> Vec<i32> {
+    (0..count).collect()
+}
