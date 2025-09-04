@@ -236,3 +236,148 @@ pub fn ffi_export(_attr: TokenStream, item: TokenStream) -> TokenStream {
 
     TokenStream::from(expanded)
 }
+
+fn to_snake_case(name: &str) -> String {
+    let mut result = String::new();
+    for (i, c) in name.chars().enumerate() {
+        if c.is_uppercase() {
+            if i > 0 {
+                result.push('_');
+            }
+            result.push(c.to_ascii_lowercase());
+        } else {
+            result.push(c);
+        }
+    }
+    result
+}
+
+#[proc_macro_attribute]
+pub fn ffi_class(_attr: TokenStream, item: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(item as syn::ItemImpl);
+
+    let self_ty = match input.self_ty.as_ref() {
+        Type::Path(path) => path.path.segments.last().map(|s| s.ident.clone()),
+        _ => None,
+    };
+
+    let type_name = match self_ty {
+        Some(name) => name,
+        None => {
+            return syn::Error::new_spanned(&input, "ffi_class requires a named type")
+                .to_compile_error()
+                .into();
+        }
+    };
+
+    let snake_name = to_snake_case(&type_name.to_string());
+    let new_ident = syn::Ident::new(&format!("mffi_{}_new", snake_name), type_name.span());
+    let free_ident = syn::Ident::new(&format!("mffi_{}_free", snake_name), type_name.span());
+
+    let method_exports: Vec<_> = input
+        .items
+        .iter()
+        .filter_map(|item| {
+            if let syn::ImplItem::Fn(method) = item {
+                if method.vis == syn::Visibility::Public(syn::token::Pub::default()) {
+                    return generate_method_export(&type_name, &snake_name, method);
+                }
+            }
+            None
+        })
+        .collect();
+
+    let expanded = quote! {
+        #input
+
+        #[unsafe(no_mangle)]
+        pub extern "C" fn #new_ident() -> *mut #type_name {
+            Box::into_raw(Box::new(#type_name::new()))
+        }
+
+        #[unsafe(no_mangle)]
+        pub unsafe extern "C" fn #free_ident(handle: *mut #type_name) {
+            if !handle.is_null() {
+                drop(Box::from_raw(handle));
+            }
+        }
+
+        #(#method_exports)*
+    };
+
+    TokenStream::from(expanded)
+}
+
+fn generate_method_export(
+    type_name: &syn::Ident,
+    snake_name: &str,
+    method: &syn::ImplItemFn,
+) -> Option<proc_macro2::TokenStream> {
+    let method_name = &method.sig.ident;
+    let export_name = syn::Ident::new(
+        &format!("mffi_{}_{}", snake_name, method_name),
+        method_name.span(),
+    );
+
+    let has_self = method
+        .sig
+        .inputs
+        .first()
+        .map(|arg| matches!(arg, FnArg::Receiver(_)))
+        .unwrap_or(false);
+
+    if !has_self {
+        return None;
+    }
+
+    let is_mut_self = method.sig.inputs.first().map(|arg| {
+        if let FnArg::Receiver(rec) = arg {
+            rec.mutability.is_some()
+        } else {
+            false
+        }
+    }).unwrap_or(false);
+
+    let other_args: Vec<_> = method
+        .sig
+        .inputs
+        .iter()
+        .skip(1)
+        .filter_map(|arg| {
+            if let FnArg::Typed(pat_type) = arg {
+                Some(pat_type)
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    let arg_idents: Vec<_> = other_args
+        .iter()
+        .filter_map(|pt| {
+            if let Pat::Ident(ident) = pt.pat.as_ref() {
+                Some(&ident.ident)
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    let fn_output = &method.sig.output;
+
+    let call_expr = if is_mut_self {
+        quote! { (*handle).#method_name(#(#arg_idents),*) }
+    } else {
+        quote! { (*handle).#method_name(#(#arg_idents),*) }
+    };
+
+    Some(quote! {
+        #[unsafe(no_mangle)]
+        pub unsafe extern "C" fn #export_name(
+            handle: *mut #type_name,
+            #(#other_args),*
+        ) #fn_output {
+            #call_expr
+        }
+    })
+}

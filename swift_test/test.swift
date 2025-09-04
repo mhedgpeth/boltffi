@@ -401,4 +401,39 @@ if seqLen == 5 {
     exit(1)
 }
 
+print("\n--- Testing ffi_class macro ---")
+
+let acc = mffi_accumulator_new()!
+print("Created Accumulator")
+
+mffi_accumulator_add(acc, 10)
+mffi_accumulator_add(acc, 5)
+mffi_accumulator_add(acc, 7)
+
+let accValue = mffi_accumulator_get(acc)
+print("Accumulator value after adds: \(accValue)")
+
+if accValue == 22 {
+    print("SUCCESS: ffi_class methods work!")
+} else {
+    print("FAILED: Expected 22, got \(accValue)")
+    mffi_accumulator_free(acc)
+    exit(1)
+}
+
+mffi_accumulator_reset(acc)
+let resetValue = mffi_accumulator_get(acc)
+print("Accumulator value after reset: \(resetValue)")
+
+if resetValue == 0 {
+    print("SUCCESS: ffi_class reset works!")
+} else {
+    print("FAILED: Expected 0 after reset, got \(resetValue)")
+    mffi_accumulator_free(acc)
+    exit(1)
+}
+
+mffi_accumulator_free(acc)
+print("Freed Accumulator")
+
 print("\n=== ALL TESTS PASSED ===")

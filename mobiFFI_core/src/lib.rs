@@ -6,7 +6,7 @@ pub mod status;
 pub mod types;
 
 pub use handle::HandleBox;
-pub use mobiFFI_macros::{ffi_export, FfiType};
+pub use mobiFFI_macros::{ffi_class, ffi_export, FfiType};
 pub use safety::catch_ffi_panic;
 pub use status::{clear_last_error, set_last_error, take_last_error, FfiStatus};
 pub use types::{FfiBuf, FfiOption, FfiSlice, FfiString};
@@ -345,4 +345,27 @@ pub fn safe_divide(numerator: i32, denominator: i32) -> Result<i32, &'static str
 #[ffi_export]
 pub fn generate_sequence(count: i32) -> Vec<i32> {
     (0..count).collect()
+}
+
+pub struct Accumulator {
+    value: i64,
+}
+
+#[ffi_class]
+impl Accumulator {
+    pub fn new() -> Self {
+        Self { value: 0 }
+    }
+
+    pub fn add(&mut self, amount: i64) {
+        self.value += amount;
+    }
+
+    pub fn get(&self) -> i64 {
+        self.value
+    }
+
+    pub fn reset(&mut self) {
+        self.value = 0;
+    }
 }

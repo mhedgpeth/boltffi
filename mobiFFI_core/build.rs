@@ -65,14 +65,116 @@ fn collect_ffi_exports(src_dir: &PathBuf) -> Vec<FfiExport> {
             Err(_) => continue,
         };
 
-        for item in syntax.items {
+        for item in &syntax.items {
             if let syn::Item::Fn(func) = item {
-                if has_ffi_export_attr(&func) {
-                    if let Some(export) = parse_ffi_function(&func) {
+                if has_ffi_export_attr(func) {
+                    if let Some(export) = parse_ffi_function(func) {
                         exports.push(export);
                     }
                 }
             }
+            if let syn::Item::Impl(impl_block) = item {
+                if has_ffi_class_attr(impl_block) {
+                    exports.extend(parse_ffi_class(impl_block));
+                }
+            }
+        }
+    }
+
+    exports
+}
+
+fn has_ffi_class_attr(impl_block: &syn::ItemImpl) -> bool {
+    impl_block
+        .attrs
+        .iter()
+        .any(|attr| attr.path().is_ident("ffi_class"))
+}
+
+fn to_snake_case(name: &str) -> String {
+    let mut result = String::new();
+    for (i, c) in name.chars().enumerate() {
+        if c.is_uppercase() {
+            if i > 0 {
+                result.push('_');
+            }
+            result.push(c.to_ascii_lowercase());
+        } else {
+            result.push(c);
+        }
+    }
+    result
+}
+
+fn parse_ffi_class(impl_block: &syn::ItemImpl) -> Vec<FfiExport> {
+    let mut exports = Vec::new();
+
+    let type_name = match impl_block.self_ty.as_ref() {
+        Type::Path(path) => path.path.segments.last().map(|s| s.ident.to_string()),
+        _ => None,
+    };
+
+    let type_name = match type_name {
+        Some(name) => name,
+        None => return exports,
+    };
+
+    let snake_name = to_snake_case(&type_name);
+
+    exports.push(FfiExport {
+        name: format!("{}_new", snake_name),
+        params: vec![],
+        return_kind: FfiReturnKind::Primitive(format!("struct {} *", type_name)),
+    });
+
+    exports.push(FfiExport {
+        name: format!("{}_free", snake_name),
+        params: vec![("handle".to_string(), format!("struct {} *", type_name))],
+        return_kind: FfiReturnKind::Unit,
+    });
+
+    for item in &impl_block.items {
+        if let syn::ImplItem::Fn(method) = item {
+            let has_self = method
+                .sig
+                .inputs
+                .first()
+                .map(|arg| matches!(arg, FnArg::Receiver(_)))
+                .unwrap_or(false);
+
+            if !has_self {
+                continue;
+            }
+
+            let method_name = method.sig.ident.to_string();
+            if method_name == "new" {
+                continue;
+            }
+
+            let mut params = vec![("handle".to_string(), format!("struct {} *", type_name))];
+
+            for arg in method.sig.inputs.iter().skip(1) {
+                if let FnArg::Typed(pat_type) = arg {
+                    let param_name = match pat_type.pat.as_ref() {
+                        Pat::Ident(ident) => ident.ident.to_string(),
+                        _ => continue,
+                    };
+                    if let Some(c_type) = rust_type_to_c(&pat_type.ty) {
+                        params.push((param_name, c_type));
+                    }
+                }
+            }
+
+            let return_kind = match &method.sig.output {
+                ReturnType::Default => FfiReturnKind::Unit,
+                ReturnType::Type(_, ty) => classify_return_type(ty),
+            };
+
+            exports.push(FfiExport {
+                name: format!("{}_{}", snake_name, method_name),
+                params,
+                return_kind,
+            });
         }
     }
 
