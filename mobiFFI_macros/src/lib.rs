@@ -613,18 +613,7 @@ pub fn ffi_export(_attr: TokenStream, item: TokenStream) -> TokenStream {
 }
 
 fn to_snake_case(name: &str) -> String {
-    let mut result = String::new();
-    for (i, c) in name.chars().enumerate() {
-        if c.is_uppercase() {
-            if i > 0 {
-                result.push('_');
-            }
-            result.push(c.to_ascii_lowercase());
-        } else {
-            result.push(c);
-        }
-    }
-    result
+    name.to_ascii_lowercase()
 }
 
 #[proc_macro_attribute]
@@ -804,16 +793,34 @@ fn generate_method_export(
 
     let fn_output = &method.sig.output;
     let has_conversions = !conversions.is_empty();
+    let is_unit_return = matches!(fn_output, ReturnType::Default);
 
     let call_expr = quote! { (*handle).#method_name(#(#call_args),*) };
 
-    let body = if has_conversions {
-        quote! {
-            #(#conversions)*
-            #call_expr
-        }
+    let (body, return_type) = if is_unit_return {
+        let b = if has_conversions {
+            quote! {
+                #(#conversions)*
+                #call_expr;
+                crate::FfiStatus::OK
+            }
+        } else {
+            quote! {
+                #call_expr;
+                crate::FfiStatus::OK
+            }
+        };
+        (b, quote! { -> crate::FfiStatus })
     } else {
-        call_expr
+        let b = if has_conversions {
+            quote! {
+                #(#conversions)*
+                #call_expr
+            }
+        } else {
+            call_expr
+        };
+        (b, quote! { #fn_output })
     };
 
     if ffi_params.is_empty() {
@@ -821,7 +828,7 @@ fn generate_method_export(
             #[unsafe(no_mangle)]
             pub unsafe extern "C" fn #export_name(
                 handle: *mut #type_name
-            ) #fn_output {
+            ) #return_type {
                 #body
             }
         })
@@ -831,7 +838,7 @@ fn generate_method_export(
             pub unsafe extern "C" fn #export_name(
                 handle: *mut #type_name,
                 #(#ffi_params),*
-            ) #fn_output {
+            ) #return_type {
                 #body
             }
         })

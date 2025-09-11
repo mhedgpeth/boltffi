@@ -285,32 +285,18 @@ func testForEachCallback() -> Bool {
     return context.points.count == 3 && context.points[0].x == 1.0 && context.points[2].x == 5.0
 }
 
-func testSumCallback() -> Bool {
+func testSum() -> Bool {
     let store = mffi_datastore_new()
 
     _ = mffi_datastore_add(store, DataPoint(x: 1.0, y: 2.0, timestamp: 100))
     _ = mffi_datastore_add(store, DataPoint(x: 3.0, y: 4.0, timestamp: 200))
 
-    let context = CallbackContext()
-    let contextPtr = Unmanaged.passUnretained(context).toOpaque()
-
-    let callback: @convention(c) (UnsafeMutableRawPointer?, Double) -> Void = { userData, sum in
-        guard let ptr = userData else { return }
-        let ctx = Unmanaged<CallbackContext>.fromOpaque(ptr).takeUnretainedValue()
-        ctx.sumResult = sum
-    }
-
-    let status = mffi_datastore_sum_async(store, callback, contextPtr)
+    let sum = mffi_datastore_sum(store)
     mffi_datastore_free(store)
 
-    guard status.code == 0 else {
-        print("FAILED: sum_async returned status \(status.code)")
-        return false
-    }
+    print("Sum result: \(sum)")
 
-    print("Sum result: \(context.sumResult)")
-
-    return context.sumResult == 10.0
+    return sum == 10.0
 }
 
 if testForEachCallback() {
@@ -320,7 +306,7 @@ if testForEachCallback() {
     exit(1)
 }
 
-if testSumCallback() {
+if testSum() {
     print("SUCCESS: Sum callback works!")
 } else {
     print("FAILED: Sum callback test failed")

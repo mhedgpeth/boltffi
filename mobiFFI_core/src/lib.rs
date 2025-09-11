@@ -144,36 +144,30 @@ pub struct DataPoint {
     pub timestamp: i64,
 }
 
-struct DataStore {
+pub struct DataStore {
     items: Vec<DataPoint>,
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn mffi_datastore_new() -> *mut DataStore {
-    HandleBox::new(DataStore { items: Vec::new() }).into_raw()
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn mffi_datastore_add(handle: *mut DataStore, point: DataPoint) -> FfiStatus {
-    match HandleBox::from_raw(handle) {
-        Some(mut store) => {
-            store.as_mut().items.push(point);
-            core::mem::forget(store);
-            FfiStatus::OK
-        }
-        None => FfiStatus::NULL_POINTER,
+#[ffi_class]
+impl DataStore {
+    pub fn new() -> Self {
+        Self { items: Vec::new() }
     }
-}
 
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn mffi_datastore_len(handle: *mut DataStore) -> usize {
-    match HandleBox::from_raw(handle) {
-        Some(store) => {
-            let len = store.as_ref().items.len();
-            core::mem::forget(store);
-            len
-        }
-        None => 0,
+    pub fn add(&mut self, point: DataPoint) {
+        self.items.push(point);
+    }
+
+    pub fn len(&self) -> usize {
+        self.items.len()
+    }
+
+    pub fn foreach(&self, mut callback: impl FnMut(DataPoint)) {
+        self.items.iter().for_each(|p| callback(*p));
+    }
+
+    pub fn sum(&self) -> f64 {
+        self.items.iter().map(|p| p.x + p.y).sum()
     }
 }
 
@@ -184,75 +178,21 @@ pub unsafe extern "C" fn mffi_datastore_copy_into(
     dst_cap: usize,
     written: *mut usize,
 ) -> FfiStatus {
-    if dst.is_null() || written.is_null() {
+    if handle.is_null() || dst.is_null() || written.is_null() {
         return FfiStatus::NULL_POINTER;
     }
 
-    match HandleBox::from_raw(handle) {
-        Some(store) => {
-            let items = &store.as_ref().items;
-            let items_len = items.len();
-            let copy_count = items_len.min(dst_cap);
+    let store = &*handle;
+    let items = &store.items;
+    let copy_count = items.len().min(dst_cap);
 
-            core::ptr::copy_nonoverlapping(items.as_ptr(), dst, copy_count);
-            *written = copy_count;
+    core::ptr::copy_nonoverlapping(items.as_ptr(), dst, copy_count);
+    *written = copy_count;
 
-            let status = if items_len > dst_cap {
-                FfiStatus::BUFFER_TOO_SMALL
-            } else {
-                FfiStatus::OK
-            };
-
-            core::mem::forget(store);
-            status
-        }
-        None => FfiStatus::NULL_POINTER,
-    }
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn mffi_datastore_free(handle: *mut DataStore) {
-    if let Some(store) = HandleBox::from_raw(handle) {
-        drop(store);
-    }
-}
-
-pub type DataPointCallback = extern "C" fn(user_data: *mut core::ffi::c_void, point: DataPoint);
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn mffi_datastore_foreach(
-    handle: *mut DataStore,
-    callback: DataPointCallback,
-    user_data: *mut core::ffi::c_void,
-) -> FfiStatus {
-    match HandleBox::from_raw(handle) {
-        Some(store) => {
-            store.as_ref().items.iter().for_each(|point| {
-                callback(user_data, *point);
-            });
-            core::mem::forget(store);
-            FfiStatus::OK
-        }
-        None => fail_with_error(FfiStatus::NULL_POINTER, "datastore handle is null"),
-    }
-}
-
-pub type SumCallback = extern "C" fn(user_data: *mut core::ffi::c_void, sum: f64);
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn mffi_datastore_sum_async(
-    handle: *mut DataStore,
-    callback: SumCallback,
-    user_data: *mut core::ffi::c_void,
-) -> FfiStatus {
-    match HandleBox::from_raw(handle) {
-        Some(store) => {
-            let sum: f64 = store.as_ref().items.iter().map(|p| p.x + p.y).sum();
-            core::mem::forget(store);
-            callback(user_data, sum);
-            FfiStatus::OK
-        }
-        None => fail_with_error(FfiStatus::NULL_POINTER, "datastore handle is null"),
+    if items.len() > dst_cap {
+        FfiStatus::BUFFER_TOO_SMALL
+    } else {
+        FfiStatus::OK
     }
 }
 

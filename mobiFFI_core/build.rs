@@ -92,18 +92,7 @@ fn has_ffi_class_attr(impl_block: &syn::ItemImpl) -> bool {
 }
 
 fn to_snake_case(name: &str) -> String {
-    let mut result = String::new();
-    for (i, c) in name.chars().enumerate() {
-        if c.is_uppercase() {
-            if i > 0 {
-                result.push('_');
-            }
-            result.push(c.to_ascii_lowercase());
-        } else {
-            result.push(c);
-        }
-    }
-    result
+    name.to_ascii_lowercase()
 }
 
 fn parse_ffi_class(impl_block: &syn::ItemImpl) -> Vec<FfiExport> {
@@ -159,7 +148,15 @@ fn parse_ffi_class(impl_block: &syn::ItemImpl) -> Vec<FfiExport> {
                         Pat::Ident(ident) => ident.ident.to_string(),
                         _ => continue,
                     };
-                    if let Some(c_type) = rust_type_to_c(&pat_type.ty) {
+                    
+                    if is_string_param(&pat_type.ty) {
+                        params.push((format!("{}_ptr", param_name), "const uint8_t*".to_string()));
+                        params.push((format!("{}_len", param_name), "uintptr_t".to_string()));
+                    } else if let Some(arg_types) = extract_callback_arg_types(&pat_type.ty) {
+                        let cb_sig = format!("void (*)(void*, {})", arg_types.join(", "));
+                        params.push((format!("{}_cb", param_name), cb_sig));
+                        params.push((format!("{}_ud", param_name), "void*".to_string()));
+                    } else if let Some(c_type) = rust_type_to_c(&pat_type.ty) {
                         params.push((param_name, c_type));
                     }
                 }
