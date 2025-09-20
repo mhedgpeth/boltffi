@@ -558,149 +558,252 @@ if isSuccess {
     exit(1)
 }
 
-print("\n--- Testing async with completion callback ---")
+print("\n--- Testing poll-based async (foreign-driven) ---")
 
 import Dispatch
 
-class AsyncContext {
-    var completed = false
-    var status: Int32 = -1
-    var result: Int32 = 0
+class PollContext {
+    var pollResult: Int8 = -1
     let semaphore = DispatchSemaphore(value: 0)
 }
 
-let asyncCtx = AsyncContext()
-let asyncCtxPtr = Unmanaged.passUnretained(asyncCtx).toOpaque()
-
-let asyncCallback: @convention(c) (UnsafeMutableRawPointer?, FfiStatus, Int32) -> Void = { userData, status, result in
-    guard let ptr = userData else { return }
-    let ctx = Unmanaged<AsyncContext>.fromOpaque(ptr).takeUnretainedValue()
-    ctx.status = status.code
-    ctx.result = result
-    ctx.completed = true
+let pollContinuation: @convention(c) (UInt64, Int8) -> Void = { callbackData, pollResult in
+    let ptr = UnsafeMutableRawPointer(bitPattern: UInt(callbackData))!
+    let ctx = Unmanaged<PollContext>.fromOpaque(ptr).takeUnretainedValue()
+    ctx.pollResult = pollResult
     ctx.semaphore.signal()
 }
 
-let pending = mffi_compute_heavy_async(21, asyncCtxPtr, asyncCallback)
-print("Started async computation with pending handle: \(pending != nil)")
-
-let waitResult = asyncCtx.semaphore.wait(timeout: .now() + 5.0)
-if waitResult == .timedOut {
-    print("FAILED: Async operation timed out")
-    mffi_pending_cancel(pending)
-    mffi_pending_free(pending)
-    exit(1)
+func pollUntilReady<T>(
+    handle: RustFutureHandle?,
+    poll: (RustFutureHandle?, UInt64, RustFutureContinuationCallback?) -> Void,
+    complete: (RustFutureHandle?, UnsafeMutablePointer<FfiStatus>?) -> T,
+    free: (RustFutureHandle?) -> Void
+) -> (FfiStatus, T)? {
+    guard let handle = handle else { return nil }
+    let pollCtx = PollContext()
+    let pollCtxPtr = Unmanaged.passRetained(pollCtx).toOpaque()
+    let callbackData = UInt64(UInt(bitPattern: pollCtxPtr))
+    
+    var maxPolls = 10
+    while maxPolls > 0 {
+        poll(handle, callbackData, pollContinuation)
+        let waitResult = pollCtx.semaphore.wait(timeout: .now() + 5.0)
+        if waitResult == .timedOut {
+            Unmanaged<PollContext>.fromOpaque(pollCtxPtr).release()
+            free(handle)
+            return nil
+        }
+        
+        if pollCtx.pollResult == 0 {
+            var status = FfiStatus()
+            let result = complete(handle, &status)
+            free(handle)
+            Unmanaged<PollContext>.fromOpaque(pollCtxPtr).release()
+            return (status, result)
+        }
+        maxPolls -= 1
+    }
+    Unmanaged<PollContext>.fromOpaque(pollCtxPtr).release()
+    free(handle)
+    return nil
 }
 
-print("Async result: status=\(asyncCtx.status), result=\(asyncCtx.result)")
+let computeHandle = mffi_compute_heavy(21)
+print("Created async future handle")
 
-if asyncCtx.status == 0 && asyncCtx.result == 42 {
-    print("SUCCESS: Async computation works! (21 * 2 = 42)")
+if let (status, result) = pollUntilReady(
+    handle: computeHandle,
+    poll: mffi_compute_heavy_poll,
+    complete: mffi_compute_heavy_complete,
+    free: mffi_compute_heavy_free
+) {
+    print("Async result: status=\(status.code), result=\(result)")
+    if status.code == 0 && result == 42 {
+        print("SUCCESS: Poll-based async i32 works! (21 * 2 = 42)")
+    } else {
+        print("FAILED: Expected status=0, result=42")
+        exit(1)
+    }
 } else {
-    print("FAILED: Expected status=0, result=42, got status=\(asyncCtx.status), result=\(asyncCtx.result)")
-    mffi_pending_free(pending)
+    print("FAILED: Async operation timed out or failed")
     exit(1)
 }
-
-mffi_pending_free(pending)
-print("Freed pending handle")
 
 print("\n--- Testing async with Result return ---")
 
-let fetchCtx = AsyncContext()
-let fetchCtxPtr = Unmanaged.passUnretained(fetchCtx).toOpaque()
-
-let fetchCallback: @convention(c) (UnsafeMutableRawPointer?, FfiStatus, Int32) -> Void = { userData, status, result in
-    guard let ptr = userData else { return }
-    let ctx = Unmanaged<AsyncContext>.fromOpaque(ptr).takeUnretainedValue()
-    ctx.status = status.code
-    ctx.result = result
-    ctx.semaphore.signal()
-}
-
-let fetchPending = mffi_fetch_data_async(5, fetchCtxPtr, fetchCallback)
-_ = fetchCtx.semaphore.wait(timeout: .now() + 5.0)
-
-print("Fetch result: status=\(fetchCtx.status), result=\(fetchCtx.result)")
-
-if fetchCtx.status == 0 && fetchCtx.result == 50 {
-    print("SUCCESS: Async Result Ok works! (5 * 10 = 50)")
+let fetchHandle = mffi_fetch_data(5)
+if let (status, result) = pollUntilReady(
+    handle: fetchHandle,
+    poll: mffi_fetch_data_poll,
+    complete: mffi_fetch_data_complete,
+    free: mffi_fetch_data_free
+) {
+    print("Fetch result: status=\(status.code), result=\(result)")
+    if status.code == 0 && result == 50 {
+        print("SUCCESS: Async Result Ok works! (5 * 10 = 50)")
+    } else {
+        print("FAILED: Expected status=0, result=50")
+        exit(1)
+    }
 } else {
-    print("FAILED: Expected status=0, result=50")
-    mffi_pending_free(fetchPending)
+    print("FAILED: Async fetch timed out")
     exit(1)
 }
-
-mffi_pending_free(fetchPending)
 
 print("\n--- Testing async String return ---")
 
-class StringAsyncContext {
-    var status: Int32 = -1
-    var result: FfiString = FfiString(ptr: nil, len: 0, cap: 0)
-    let semaphore = DispatchSemaphore(value: 0)
-}
-
-let strCtx = StringAsyncContext()
-let strCtxPtr = Unmanaged.passUnretained(strCtx).toOpaque()
-
-let strCallback: @convention(c) (UnsafeMutableRawPointer?, FfiStatus, FfiString) -> Void = { userData, status, result in
-    guard let ptr = userData else { return }
-    let ctx = Unmanaged<StringAsyncContext>.fromOpaque(ptr).takeUnretainedValue()
-    ctx.status = status.code
-    ctx.result = result
-    ctx.semaphore.signal()
-}
-
-let strPending = mffi_async_make_string_async(42, strCtxPtr, strCallback)
-_ = strCtx.semaphore.wait(timeout: .now() + 5.0)
-
-let strResult = strCtx.result.ptr != nil ? String(cString: strCtx.result.ptr!) : ""
-print("async_make_string result: status=\(strCtx.status), value=\"\(strResult)\"")
-
-if strCtx.status == 0 && strResult == "Value is: 42" {
-    print("SUCCESS: Async String return works!")
+let strHandle = mffi_async_make_string(42)
+if let (status, result) = pollUntilReady(
+    handle: strHandle,
+    poll: mffi_async_make_string_poll,
+    complete: mffi_async_make_string_complete,
+    free: mffi_async_make_string_free
+) {
+    let strResult = result.ptr != nil ? String(cString: result.ptr!) : ""
+    print("async_make_string result: status=\(status.code), value=\"\(strResult)\"")
+    mffi_free_string(result)
+    if status.code == 0 && strResult == "Value is: 42" {
+        print("SUCCESS: Async String return works!")
+    } else {
+        print("FAILED: Expected 'Value is: 42', got '\(strResult)'")
+        exit(1)
+    }
 } else {
-    print("FAILED: Expected 'Value is: 42', got '\(strResult)'")
-    mffi_pending_free(strPending)
+    print("FAILED: Async String timed out")
     exit(1)
 }
-
-mffi_free_string(strCtx.result)
-mffi_pending_free(strPending)
 
 print("\n--- Testing async struct return ---")
 
-class PointAsyncContext {
-    var status: Int32 = -1
-    var result: DataPoint = DataPoint(x: 0, y: 0, timestamp: 0)
-    let semaphore = DispatchSemaphore(value: 0)
-}
-
-let pointCtx = PointAsyncContext()
-let pointCtxPtr = Unmanaged.passUnretained(pointCtx).toOpaque()
-
-let pointCallback: @convention(c) (UnsafeMutableRawPointer?, FfiStatus, DataPoint) -> Void = { userData, status, result in
-    guard let ptr = userData else { return }
-    let ctx = Unmanaged<PointAsyncContext>.fromOpaque(ptr).takeUnretainedValue()
-    ctx.status = status.code
-    ctx.result = result
-    ctx.semaphore.signal()
-}
-
-let pointPending = mffi_async_fetch_point_async(3.14, 2.71, pointCtxPtr, pointCallback)
-_ = pointCtx.semaphore.wait(timeout: .now() + 5.0)
-
-print("async_fetch_point result: status=\(pointCtx.status), x=\(pointCtx.result.x), y=\(pointCtx.result.y)")
-
-if pointCtx.status == 0 && pointCtx.result.x == 3.14 && pointCtx.result.y == 2.71 {
-    print("SUCCESS: Async struct return works!")
+let pointHandle = mffi_async_fetch_point(3.14, 2.71)
+if let (status, result) = pollUntilReady(
+    handle: pointHandle,
+    poll: mffi_async_fetch_point_poll,
+    complete: mffi_async_fetch_point_complete,
+    free: mffi_async_fetch_point_free
+) {
+    print("async_fetch_point result: status=\(status.code), x=\(result.x), y=\(result.y)")
+    if status.code == 0 && result.x == 3.14 && result.y == 2.71 {
+        print("SUCCESS: Async struct return works!")
+    } else {
+        print("FAILED: Expected x=3.14, y=2.71")
+        exit(1)
+    }
 } else {
-    print("FAILED: Expected x=3.14, y=2.71")
-    mffi_pending_free(pointPending)
+    print("FAILED: Async struct timed out")
     exit(1)
 }
 
-mffi_pending_free(pointPending)
+print("\n--- Testing async Vec return ---")
+
+let vecHandle = mffi_async_get_numbers(5)
+if let (status, result) = pollUntilReady(
+    handle: vecHandle,
+    poll: mffi_async_get_numbers_poll,
+    complete: mffi_async_get_numbers_complete,
+    free: mffi_async_get_numbers_free
+) {
+    print("async_get_numbers result: status=\(status.code), len=\(result.len)")
+    if status.code == 0 && result.len == 5 {
+        print("SUCCESS: Async Vec return works!")
+    } else {
+        print("FAILED: Expected len=5")
+        exit(1)
+    }
+    mffi_free_buf_i32(result)
+} else {
+    print("FAILED: Async Vec timed out")
+    exit(1)
+}
+
+print("\n--- Testing async Option return ---")
+
+let optHandle = mffi_async_find_value(5)
+if let (status, result) = pollUntilReady(
+    handle: optHandle,
+    poll: mffi_async_find_value_poll,
+    complete: mffi_async_find_value_complete,
+    free: mffi_async_find_value_free
+) {
+    print("async_find_value(5) result: status=\(status.code), isSome=\(result.isSome), value=\(result.value)")
+    if status.code == 0 && result.isSome && result.value == 500 {
+        print("SUCCESS: Async Option Some works!")
+    } else {
+        print("FAILED: Expected Some(500)")
+        exit(1)
+    }
+} else {
+    print("FAILED: Async Option timed out")
+    exit(1)
+}
+
+let optNoneHandle = mffi_async_find_value(-1)
+if let (status, result) = pollUntilReady(
+    handle: optNoneHandle,
+    poll: mffi_async_find_value_poll,
+    complete: mffi_async_find_value_complete,
+    free: mffi_async_find_value_free
+) {
+    print("async_find_value(-1) result: status=\(status.code), isSome=\(result.isSome)")
+    if status.code == 0 && !result.isSome {
+        print("SUCCESS: Async Option None works!")
+    } else {
+        print("FAILED: Expected None")
+        exit(1)
+    }
+} else {
+    print("FAILED: Async Option None timed out")
+    exit(1)
+}
+
+print("\n--- Testing async with &str param ---")
+
+let asyncName = "World"
+let asyncNameData = Array(asyncName.utf8)
+let greetHandle = asyncNameData.withUnsafeBufferPointer { buf in
+    mffi_async_greeting(buf.baseAddress, UInt(buf.count))
+}
+if let (status, result) = pollUntilReady(
+    handle: greetHandle,
+    poll: mffi_async_greeting_poll,
+    complete: mffi_async_greeting_complete,
+    free: mffi_async_greeting_free
+) {
+    let greetResult = result.ptr != nil ? String(cString: result.ptr!) : ""
+    print("async_greeting result: status=\(status.code), value=\"\(greetResult)\"")
+    mffi_free_string(result)
+    if status.code == 0 && greetResult == "Hello, World!" {
+        print("SUCCESS: Async &str param works!")
+    } else {
+        print("FAILED: Expected 'Hello, World!', got '\(greetResult)'")
+        exit(1)
+    }
+} else {
+    print("FAILED: Async greeting timed out")
+    exit(1)
+}
+
+print("\n--- Testing async Result<Vec<T>, E> ---")
+
+let resultVecHandle = mffi_async_fetch_numbers(4)
+if let (status, result) = pollUntilReady(
+    handle: resultVecHandle,
+    poll: mffi_async_fetch_numbers_poll,
+    complete: mffi_async_fetch_numbers_complete,
+    free: mffi_async_fetch_numbers_free
+) {
+    print("async_fetch_numbers(4) result: status=\(status.code), len=\(result.len)")
+    if status.code == 0 && result.len == 4 {
+        print("SUCCESS: Async Result<Vec<T>, E> Ok works!")
+    } else {
+        print("FAILED: Expected len=4")
+        exit(1)
+    }
+    mffi_free_buf_i32(result)
+} else {
+    print("FAILED: Async Result<Vec> timed out")
+    exit(1)
+}
 
 print("\n=== ALL TESTS PASSED ===")

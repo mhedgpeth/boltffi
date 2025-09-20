@@ -2,6 +2,7 @@
 
 pub mod handle;
 pub mod pending;
+pub mod rustfuture;
 pub mod safety;
 pub mod status;
 pub mod types;
@@ -9,9 +10,20 @@ pub mod types;
 pub use handle::HandleBox;
 pub use mobiFFI_macros::{FfiType, ffi_class, ffi_export};
 pub use pending::{CancellationToken, PendingHandle};
+pub use rustfuture::{RustFuture, RustFutureContinuationCallback, RustFutureHandle, RustFuturePoll};
 pub use safety::catch_ffi_panic;
 pub use status::{FfiStatus, clear_last_error, set_last_error, take_last_error};
 pub use types::{FfiBuf, FfiOption, FfiSlice, FfiString};
+
+#[unsafe(no_mangle)]
+pub extern "C" fn mffi_free_buf_i32(buf: FfiBuf<i32>) {
+    drop(buf);
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn mffi_option_i32_is_some(opt: FfiOption<i32>) -> bool {
+    opt.is_some()
+}
 
 unsafe fn read_input_str<'a>(ptr: *const u8, len: usize) -> Option<&'a str> {
     if ptr.is_null() {
@@ -310,3 +322,33 @@ pub async fn async_fetch_point(x: f64, y: f64) -> DataPoint {
     std::thread::sleep(std::time::Duration::from_millis(20));
     DataPoint { x, y, timestamp: 12345 }
 }
+
+#[ffi_export]
+pub async fn async_get_numbers(count: i32) -> Vec<i32> {
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    (0..count).collect()
+}
+
+#[ffi_export]
+pub async fn async_find_value(needle: i32) -> Option<i32> {
+    std::thread::sleep(std::time::Duration::from_millis(10));
+    if needle > 0 { Some(needle * 100) } else { None }
+}
+
+#[ffi_export]
+pub async fn async_greeting(name: &str) -> String {
+    std::thread::sleep(std::time::Duration::from_millis(10));
+    format!("Hello, {}!", name)
+}
+
+#[ffi_export]
+pub async fn async_fetch_numbers(id: i32) -> Result<Vec<i32>, &'static str> {
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    if id > 0 {
+        Ok((0..id).map(|x| x * 2).collect())
+    } else {
+        Err("invalid id")
+    }
+}
+
+

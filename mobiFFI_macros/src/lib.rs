@@ -255,6 +255,122 @@ fn transform_params(inputs: &syn::punctuated::Punctuated<FnArg, syn::Token![,]>)
     FfiParams { ffi_params, conversions, call_args }
 }
 
+struct AsyncFfiParams {
+    ffi_params: Vec<proc_macro2::TokenStream>,
+    pre_spawn: Vec<proc_macro2::TokenStream>,
+    thread_setup: Vec<proc_macro2::TokenStream>,
+    call_args: Vec<proc_macro2::TokenStream>,
+    move_vars: Vec<syn::Ident>,
+}
+
+fn transform_params_async(inputs: &syn::punctuated::Punctuated<FnArg, syn::Token![,]>) -> AsyncFfiParams {
+    let mut ffi_params = Vec::new();
+    let mut pre_spawn = Vec::new();
+    let mut thread_setup = Vec::new();
+    let mut call_args = Vec::new();
+    let mut move_vars = Vec::new();
+
+    for arg in inputs.iter() {
+        if let FnArg::Typed(pat_type) = arg {
+            let name = match pat_type.pat.as_ref() {
+                Pat::Ident(ident) => ident.ident.clone(),
+                _ => continue,
+            };
+
+            match classify_param_transform(&pat_type.ty) {
+                ParamTransform::StrRef => {
+                    let ptr_name = syn::Ident::new(&format!("{}_ptr", name), name.span());
+                    let len_name = syn::Ident::new(&format!("{}_len", name), name.span());
+                    let owned_name = syn::Ident::new(&format!("{}_owned", name), name.span());
+
+                    ffi_params.push(quote! { #ptr_name: *const u8 });
+                    ffi_params.push(quote! { #len_name: usize });
+
+                    pre_spawn.push(quote! {
+                        let #owned_name: String = if #ptr_name.is_null() {
+                            String::new()
+                        } else {
+                            match core::str::from_utf8(unsafe { core::slice::from_raw_parts(#ptr_name, #len_name) }) {
+                                Ok(s) => s.to_string(),
+                                Err(_) => {
+                                    panic!(concat!(stringify!(#name), " is not valid UTF-8"));
+                                }
+                            }
+                        };
+                    });
+
+                    thread_setup.push(quote! {
+                        let #name: &str = &#owned_name;
+                    });
+
+                    move_vars.push(owned_name);
+                    call_args.push(quote! { #name });
+                }
+                ParamTransform::OwnedString => {
+                    let ptr_name = syn::Ident::new(&format!("{}_ptr", name), name.span());
+                    let len_name = syn::Ident::new(&format!("{}_len", name), name.span());
+
+                    ffi_params.push(quote! { #ptr_name: *const u8 });
+                    ffi_params.push(quote! { #len_name: usize });
+
+                    pre_spawn.push(quote! {
+                        let #name: String = if #ptr_name.is_null() {
+                            String::new()
+                        } else {
+                            match core::str::from_utf8(unsafe { core::slice::from_raw_parts(#ptr_name, #len_name) }) {
+                                Ok(s) => s.to_string(),
+                                Err(_) => {
+                                    panic!(concat!(stringify!(#name), " is not valid UTF-8"));
+                                }
+                            }
+                        };
+                    });
+
+                    move_vars.push(name.clone());
+                    call_args.push(quote! { #name });
+                }
+                ParamTransform::Callback(_arg_types) => {
+                    panic!("Callbacks are not supported in async functions");
+                }
+                ParamTransform::SliceRef(inner_ty) => {
+                    let ptr_name = syn::Ident::new(&format!("{}_ptr", name), name.span());
+                    let len_name = syn::Ident::new(&format!("{}_len", name), name.span());
+                    let owned_name = syn::Ident::new(&format!("{}_vec", name), name.span());
+
+                    ffi_params.push(quote! { #ptr_name: *const #inner_ty });
+                    ffi_params.push(quote! { #len_name: usize });
+
+                    pre_spawn.push(quote! {
+                        let #owned_name: Vec<#inner_ty> = if #ptr_name.is_null() {
+                            Vec::new()
+                        } else {
+                            unsafe { core::slice::from_raw_parts(#ptr_name, #len_name) }.to_vec()
+                        };
+                    });
+
+                    thread_setup.push(quote! {
+                        let #name: &[#inner_ty] = &#owned_name;
+                    });
+
+                    move_vars.push(owned_name);
+                    call_args.push(quote! { #name });
+                }
+                ParamTransform::SliceMut(_inner_ty) => {
+                    panic!("Mutable slices are not supported in async functions");
+                }
+                ParamTransform::PassThrough => {
+                    let ty = &pat_type.ty;
+                    ffi_params.push(quote! { #name: #ty });
+                    move_vars.push(name.clone());
+                    call_args.push(quote! { #name });
+                }
+            }
+        }
+    }
+
+    AsyncFfiParams { ffi_params, pre_spawn, thread_setup, call_args, move_vars }
+}
+
 enum ReturnKind {
     Unit,
     Primitive,
@@ -330,9 +446,27 @@ enum AsyncReturnKind {
     Primitive(proc_macro2::TokenStream),
     String,
     Struct(proc_macro2::TokenStream),
+    Vec(proc_macro2::TokenStream),
+    Option(proc_macro2::TokenStream),
     ResultPrimitive(proc_macro2::TokenStream),
     ResultString,
     ResultStruct(proc_macro2::TokenStream),
+    ResultVec(proc_macro2::TokenStream),
+}
+
+fn extract_generic_inner(ty: &Type, wrapper: &str) -> Option<syn::Type> {
+    if let Type::Path(path) = ty {
+        if let Some(segment) = path.path.segments.last() {
+            if segment.ident == wrapper {
+                if let syn::PathArguments::AngleBracketed(args) = &segment.arguments {
+                    if let Some(syn::GenericArgument::Type(inner_ty)) = args.args.first() {
+                        return Some(inner_ty.clone());
+                    }
+                }
+            }
+        }
+    }
+    None
 }
 
 fn classify_async_return(output: &ReturnType) -> AsyncReturnKind {
@@ -345,16 +479,27 @@ fn classify_async_return(output: &ReturnType) -> AsyncReturnKind {
                 return AsyncReturnKind::String;
             }
 
+            if let Some(inner_ty) = extract_generic_inner(ty, "Vec") {
+                return AsyncReturnKind::Vec(quote! { #inner_ty });
+            }
+
+            if let Some(inner_ty) = extract_generic_inner(ty, "Option") {
+                return AsyncReturnKind::Option(quote! { #inner_ty });
+            }
+
             if let Type::Path(path) = ty.as_ref() {
                 if let Some(segment) = path.path.segments.last() {
                     if segment.ident == "Result" {
                         if let syn::PathArguments::AngleBracketed(args) = &segment.arguments {
                             if let Some(syn::GenericArgument::Type(inner_ty)) = args.args.first() {
                                 let inner_str = quote::quote!(#inner_ty).to_string().replace(" ", "");
+                                
                                 if inner_str == "String" || inner_str == "std::string::String" {
                                     return AsyncReturnKind::ResultString;
                                 } else if inner_str == "()" {
                                     return AsyncReturnKind::Unit;
+                                } else if let Some(vec_inner) = extract_generic_inner(inner_ty, "Vec") {
+                                    return AsyncReturnKind::ResultVec(quote! { #vec_inner });
                                 } else if is_primitive_type(&inner_str) {
                                     return AsyncReturnKind::ResultPrimitive(quote! { #inner_ty });
                                 } else {
@@ -380,6 +525,132 @@ fn is_primitive_type(s: &str) -> bool {
              "f32" | "f64" | "bool" | "usize" | "isize" | "()")
 }
 
+fn get_ffi_return_type(return_kind: &AsyncReturnKind) -> proc_macro2::TokenStream {
+    match return_kind {
+        AsyncReturnKind::Unit => quote! { () },
+        AsyncReturnKind::Primitive(ty) => quote! { #ty },
+        AsyncReturnKind::String => quote! { crate::FfiString },
+        AsyncReturnKind::Struct(ty) => quote! { #ty },
+        AsyncReturnKind::Vec(inner_ty) => quote! { crate::FfiBuf<#inner_ty> },
+        AsyncReturnKind::Option(inner_ty) => quote! { crate::FfiOption<#inner_ty> },
+        AsyncReturnKind::ResultPrimitive(ty) => quote! { #ty },
+        AsyncReturnKind::ResultString => quote! { crate::FfiString },
+        AsyncReturnKind::ResultStruct(ty) => quote! { #ty },
+        AsyncReturnKind::ResultVec(inner_ty) => quote! { crate::FfiBuf<#inner_ty> },
+    }
+}
+
+fn get_rust_return_type(return_kind: &AsyncReturnKind) -> proc_macro2::TokenStream {
+    match return_kind {
+        AsyncReturnKind::Unit => quote! { () },
+        AsyncReturnKind::Primitive(ty) => quote! { #ty },
+        AsyncReturnKind::String => quote! { String },
+        AsyncReturnKind::Struct(ty) => quote! { #ty },
+        AsyncReturnKind::Vec(inner_ty) => quote! { Vec<#inner_ty> },
+        AsyncReturnKind::Option(inner_ty) => quote! { Option<#inner_ty> },
+        AsyncReturnKind::ResultPrimitive(ty) => quote! { Result<#ty, Box<dyn std::error::Error + Send + Sync>> },
+        AsyncReturnKind::ResultString => quote! { Result<String, Box<dyn std::error::Error + Send + Sync>> },
+        AsyncReturnKind::ResultStruct(ty) => quote! { Result<#ty, Box<dyn std::error::Error + Send + Sync>> },
+        AsyncReturnKind::ResultVec(inner_ty) => quote! { Result<Vec<#inner_ty>, Box<dyn std::error::Error + Send + Sync>> },
+    }
+}
+
+fn get_complete_conversion(return_kind: &AsyncReturnKind) -> proc_macro2::TokenStream {
+    match return_kind {
+        AsyncReturnKind::Unit => quote! {
+            if !out_status.is_null() { *out_status = crate::FfiStatus::OK; }
+            ()
+        },
+        AsyncReturnKind::Primitive(_) => quote! {
+            if !out_status.is_null() { *out_status = crate::FfiStatus::OK; }
+            result
+        },
+        AsyncReturnKind::String => quote! {
+            if !out_status.is_null() { *out_status = crate::FfiStatus::OK; }
+            crate::FfiString::from(result)
+        },
+        AsyncReturnKind::Struct(_) => quote! {
+            if !out_status.is_null() { *out_status = crate::FfiStatus::OK; }
+            result
+        },
+        AsyncReturnKind::Vec(_) => quote! {
+            if !out_status.is_null() { *out_status = crate::FfiStatus::OK; }
+            crate::FfiBuf::from_vec(result)
+        },
+        AsyncReturnKind::Option(_) => quote! {
+            if !out_status.is_null() { *out_status = crate::FfiStatus::OK; }
+            crate::FfiOption::from(result)
+        },
+        AsyncReturnKind::ResultPrimitive(_) => quote! {
+            match result {
+                Ok(value) => {
+                    if !out_status.is_null() { *out_status = crate::FfiStatus::OK; }
+                    value
+                }
+                Err(e) => {
+                    crate::set_last_error(&e.to_string());
+                    if !out_status.is_null() { *out_status = crate::FfiStatus::INTERNAL_ERROR; }
+                    Default::default()
+                }
+            }
+        },
+        AsyncReturnKind::ResultString => quote! {
+            match result {
+                Ok(value) => {
+                    if !out_status.is_null() { *out_status = crate::FfiStatus::OK; }
+                    crate::FfiString::from(value)
+                }
+                Err(e) => {
+                    crate::set_last_error(&e.to_string());
+                    if !out_status.is_null() { *out_status = crate::FfiStatus::INTERNAL_ERROR; }
+                    crate::FfiString::default()
+                }
+            }
+        },
+        AsyncReturnKind::ResultStruct(_) => quote! {
+            match result {
+                Ok(value) => {
+                    if !out_status.is_null() { *out_status = crate::FfiStatus::OK; }
+                    value
+                }
+                Err(e) => {
+                    crate::set_last_error(&e.to_string());
+                    if !out_status.is_null() { *out_status = crate::FfiStatus::INTERNAL_ERROR; }
+                    unsafe { core::mem::zeroed() }
+                }
+            }
+        },
+        AsyncReturnKind::ResultVec(_) => quote! {
+            match result {
+                Ok(value) => {
+                    if !out_status.is_null() { *out_status = crate::FfiStatus::OK; }
+                    crate::FfiBuf::from_vec(value)
+                }
+                Err(e) => {
+                    crate::set_last_error(&e.to_string());
+                    if !out_status.is_null() { *out_status = crate::FfiStatus::INTERNAL_ERROR; }
+                    crate::FfiBuf::default()
+                }
+            }
+        },
+    }
+}
+
+fn get_default_ffi_value(return_kind: &AsyncReturnKind) -> proc_macro2::TokenStream {
+    match return_kind {
+        AsyncReturnKind::Unit => quote! { () },
+        AsyncReturnKind::Primitive(_) => quote! { Default::default() },
+        AsyncReturnKind::String => quote! { crate::FfiString::default() },
+        AsyncReturnKind::Struct(_) => quote! { unsafe { core::mem::zeroed() } },
+        AsyncReturnKind::Vec(_) => quote! { crate::FfiBuf::default() },
+        AsyncReturnKind::Option(_) => quote! { crate::FfiOption::default() },
+        AsyncReturnKind::ResultPrimitive(_) => quote! { Default::default() },
+        AsyncReturnKind::ResultString => quote! { crate::FfiString::default() },
+        AsyncReturnKind::ResultStruct(_) => quote! { unsafe { core::mem::zeroed() } },
+        AsyncReturnKind::ResultVec(_) => quote! { crate::FfiBuf::default() },
+    }
+}
+
 fn generate_async_export(input: &ItemFn) -> TokenStream {
     let fn_name = &input.sig.ident;
     let fn_inputs = &input.sig.inputs;
@@ -387,113 +658,84 @@ fn generate_async_export(input: &ItemFn) -> TokenStream {
     let fn_vis = &input.vis;
     let fn_block = &input.block;
 
-    let export_name = format!("mffi_{}_async", fn_name);
-    let export_ident = syn::Ident::new(&export_name, fn_name.span());
+    let base_name = format!("mffi_{}", fn_name);
+    let entry_ident = syn::Ident::new(&base_name, fn_name.span());
+    let poll_ident = syn::Ident::new(&format!("{}_poll", base_name), fn_name.span());
+    let complete_ident = syn::Ident::new(&format!("{}_complete", base_name), fn_name.span());
+    let cancel_ident = syn::Ident::new(&format!("{}_cancel", base_name), fn_name.span());
+    let free_ident = syn::Ident::new(&format!("{}_free", base_name), fn_name.span());
 
-    let callback_type_name = format!("{}Callback", to_pascal_case(&fn_name.to_string()));
-    let callback_type_ident = syn::Ident::new(&callback_type_name, fn_name.span());
-
-    let FfiParams { ffi_params, conversions, call_args } = transform_params(fn_inputs);
-
+    let AsyncFfiParams { ffi_params, pre_spawn, thread_setup, call_args, move_vars } = transform_params_async(fn_inputs);
     let return_kind = classify_async_return(fn_output);
+    
+    let ffi_return_type = get_ffi_return_type(&return_kind);
+    let rust_return_type = get_rust_return_type(&return_kind);
+    let complete_conversion = get_complete_conversion(&return_kind);
+    let default_value = get_default_ffi_value(&return_kind);
 
-    let (callback_result_type, call_and_callback) = match &return_kind {
-        AsyncReturnKind::Unit => (
-            quote! { () },
-            quote! { callback(user_data, crate::FfiStatus::OK, ()); }
-        ),
-        AsyncReturnKind::Primitive(ty) => (
-            quote! { #ty },
-            quote! { callback(user_data, crate::FfiStatus::OK, result); }
-        ),
-        AsyncReturnKind::String => (
-            quote! { crate::FfiString },
-            quote! { callback(user_data, crate::FfiStatus::OK, crate::FfiString::from(result)); }
-        ),
-        AsyncReturnKind::Struct(ty) => (
-            quote! { #ty },
-            quote! { callback(user_data, crate::FfiStatus::OK, result); }
-        ),
-        AsyncReturnKind::ResultPrimitive(ty) => (
-            quote! { #ty },
-            quote! {
-                match result {
-                    Ok(value) => callback(user_data, crate::FfiStatus::OK, value),
-                    Err(e) => {
-                        crate::set_last_error(&e.to_string());
-                        callback(user_data, crate::FfiStatus::INTERNAL_ERROR, Default::default());
-                    }
-                }
+    let future_body = quote! {
+        #(#thread_setup)*
+        #fn_name(#(#call_args),*).await
+    };
+
+    let entry_fn = if ffi_params.is_empty() {
+        quote! {
+            #[unsafe(no_mangle)]
+            #fn_vis extern "C" fn #entry_ident() -> crate::RustFutureHandle {
+                crate::rustfuture::rust_future_new(async move {
+                    #future_body
+                })
             }
-        ),
-        AsyncReturnKind::ResultString => (
-            quote! { crate::FfiString },
-            quote! {
-                match result {
-                    Ok(value) => callback(user_data, crate::FfiStatus::OK, crate::FfiString::from(value)),
-                    Err(e) => {
-                        crate::set_last_error(&e.to_string());
-                        callback(user_data, crate::FfiStatus::INTERNAL_ERROR, crate::FfiString::default());
-                    }
-                }
+        }
+    } else {
+        quote! {
+            #[unsafe(no_mangle)]
+            #fn_vis extern "C" fn #entry_ident(#(#ffi_params),*) -> crate::RustFutureHandle {
+                #(#pre_spawn)*
+                #(let _ = &#move_vars;)*
+                crate::rustfuture::rust_future_new(async move {
+                    #future_body
+                })
             }
-        ),
-        AsyncReturnKind::ResultStruct(ty) => (
-            quote! { #ty },
-            quote! {
-                match result {
-                    Ok(value) => callback(user_data, crate::FfiStatus::OK, value),
-                    Err(e) => {
-                        crate::set_last_error(&e.to_string());
-                        callback(user_data, crate::FfiStatus::INTERNAL_ERROR, unsafe { core::mem::zeroed() });
-                    }
-                }
-            }
-        ),
+        }
     };
 
     let expanded = quote! {
-        #fn_vis fn #fn_name(#fn_inputs) #fn_output #fn_block
+        #fn_vis async fn #fn_name(#fn_inputs) #fn_output #fn_block
 
-        type #callback_type_ident = extern "C" fn(
-            user_data: *mut core::ffi::c_void,
-            status: crate::FfiStatus,
-            result: #callback_result_type
-        );
+        #entry_fn
 
         #[unsafe(no_mangle)]
-        #fn_vis extern "C" fn #export_ident(
-            #(#ffi_params,)*
-            user_data: *mut core::ffi::c_void,
-            callback: #callback_type_ident,
-        ) -> *mut crate::PendingHandle {
-            let pending = Box::new(crate::PendingHandle::new());
-            let token = pending.cancellation_token();
-            let pending_ptr = Box::into_raw(pending);
+        #fn_vis extern "C" fn #poll_ident(
+            handle: crate::RustFutureHandle,
+            callback_data: u64,
+            callback: crate::RustFutureContinuationCallback,
+        ) {
+            unsafe { crate::rustfuture::rust_future_poll::<#rust_return_type>(handle, callback, callback_data) }
+        }
 
-            let user_data_val = user_data as usize;
-
-            std::thread::spawn(move || {
-                let user_data = user_data_val as *mut core::ffi::c_void;
-
-                if token.is_cancelled() {
-                    callback(user_data, crate::FfiStatus::CANCELLED, Default::default());
-                    return;
+        #[unsafe(no_mangle)]
+        #fn_vis unsafe extern "C" fn #complete_ident(
+            handle: crate::RustFutureHandle,
+            out_status: *mut crate::FfiStatus,
+        ) -> #ffi_return_type {
+            match crate::rustfuture::rust_future_complete::<#rust_return_type>(handle) {
+                Some(result) => { #complete_conversion }
+                None => {
+                    if !out_status.is_null() { *out_status = crate::FfiStatus::CANCELLED; }
+                    #default_value
                 }
+            }
+        }
 
-                #(#conversions)*
+        #[unsafe(no_mangle)]
+        #fn_vis extern "C" fn #cancel_ident(handle: crate::RustFutureHandle) {
+            unsafe { crate::rustfuture::rust_future_cancel::<#rust_return_type>(handle) }
+        }
 
-                let result = #fn_name(#(#call_args),*);
-
-                if token.is_cancelled() {
-                    callback(user_data, crate::FfiStatus::CANCELLED, Default::default());
-                    return;
-                }
-
-                #call_and_callback
-            });
-
-            pending_ptr
+        #[unsafe(no_mangle)]
+        #fn_vis extern "C" fn #free_ident(handle: crate::RustFutureHandle) {
+            unsafe { crate::rustfuture::rust_future_free::<#rust_return_type>(handle) }
         }
     };
 

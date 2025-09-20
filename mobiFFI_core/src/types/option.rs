@@ -54,6 +54,12 @@ impl<T: Copy> From<FfiOption<T>> for Option<T> {
     }
 }
 
+impl<T: Copy> Default for FfiOption<T> {
+    fn default() -> Self {
+        Self::none()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

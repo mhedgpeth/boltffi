@@ -42,6 +42,7 @@ enum FfiReturnKind {
     ResultString,
     Vec(String),
     OptionPrimitive(String),
+    AsyncPoll(String),
 }
 
 struct FfiExport {
@@ -485,6 +486,88 @@ fn extract_slice_type(ty: &Type) -> Option<(String, bool)> {
     None
 }
 
+fn extract_generic_inner_type(ty: &Type, wrapper: &str) -> Option<Type> {
+    if let Type::Path(path) = ty {
+        if let Some(segment) = path.path.segments.last() {
+            if segment.ident == wrapper {
+                if let syn::PathArguments::AngleBracketed(args) = &segment.arguments {
+                    if let Some(syn::GenericArgument::Type(inner_ty)) = args.args.first() {
+                        return Some(inner_ty.clone());
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+fn rust_to_cbindgen_name(rust_type: &str) -> String {
+    match rust_type {
+        "int8_t" => "i8",
+        "int16_t" => "i16",
+        "int32_t" => "i32",
+        "int64_t" => "i64",
+        "uint8_t" => "u8",
+        "uint16_t" => "u16",
+        "uint32_t" => "u32",
+        "uint64_t" => "u64",
+        "float" => "f32",
+        "double" => "f64",
+        "bool" => "bool",
+        other => other,
+    }.to_string()
+}
+
+fn classify_async_callback_type(ty: &Type) -> String {
+    let type_str = quote::quote!(#ty).to_string().replace(" ", "");
+    
+    if type_str == "String" || type_str == "std::string::String" {
+        return "struct FfiString".to_string();
+    }
+
+    if let Some(inner_ty) = extract_generic_inner_type(ty, "Vec") {
+        let inner_c = rust_type_to_c(&inner_ty).unwrap_or_else(|| "void".to_string());
+        let cbindgen_name = rust_to_cbindgen_name(&inner_c);
+        return format!("struct FfiBuf_{}", cbindgen_name);
+    }
+
+    if let Some(inner_ty) = extract_generic_inner_type(ty, "Option") {
+        let inner_c = rust_type_to_c(&inner_ty).unwrap_or_else(|| "void".to_string());
+        let cbindgen_name = rust_to_cbindgen_name(&inner_c);
+        return format!("struct FfiOption_{}", cbindgen_name);
+    }
+
+    if let Type::Path(path) = ty {
+        if let Some(segment) = path.path.segments.last() {
+            if segment.ident == "Result" {
+                if let syn::PathArguments::AngleBracketed(args) = &segment.arguments {
+                    if let Some(syn::GenericArgument::Type(inner_ty)) = args.args.first() {
+                        let inner_str = quote::quote!(#inner_ty).to_string().replace(" ", "");
+                        
+                        if inner_str == "String" || inner_str == "std::string::String" {
+                            return "struct FfiString".to_string();
+                        }
+                        
+                        if inner_str == "()" {
+                            return "void".to_string();
+                        }
+
+                        if let Some(vec_inner) = extract_generic_inner_type(inner_ty, "Vec") {
+                            let inner_c = rust_type_to_c(&vec_inner).unwrap_or_else(|| "void".to_string());
+                            let cbindgen_name = rust_to_cbindgen_name(&inner_c);
+                            return format!("struct FfiBuf_{}", cbindgen_name);
+                        }
+
+                        return rust_type_to_c(inner_ty).unwrap_or_else(|| "void".to_string());
+                    }
+                }
+            }
+        }
+    }
+
+    rust_type_to_c(ty).unwrap_or_else(|| "void".to_string())
+}
+
 fn parse_ffi_function(func: &ItemFn) -> Option<FfiExport> {
     let name = func.sig.ident.to_string();
     let is_async = func.sig.asyncness.is_some();
@@ -522,53 +605,13 @@ fn parse_ffi_function(func: &ItemFn) -> Option<FfiExport> {
     if is_async {
         let result_type = match &func.sig.output {
             ReturnType::Default => "void".to_string(),
-            ReturnType::Type(_, ty) => {
-                let type_str = quote::quote!(#ty).to_string().replace(" ", "");
-                
-                if type_str == "String" || type_str == "std::string::String" {
-                    "struct FfiString".to_string()
-                } else if let Type::Path(path) = ty.as_ref() {
-                    if let Some(segment) = path.path.segments.last() {
-                        if segment.ident == "Result" {
-                            if let syn::PathArguments::AngleBracketed(args) = &segment.arguments {
-                                if let Some(syn::GenericArgument::Type(inner_ty)) = args.args.first() {
-                                    let inner_str = quote::quote!(#inner_ty).to_string().replace(" ", "");
-                                    if inner_str == "String" || inner_str == "std::string::String" {
-                                        "struct FfiString".to_string()
-                                    } else if inner_str == "()" {
-                                        "void".to_string()
-                                    } else {
-                                        rust_type_to_c(inner_ty).unwrap_or_else(|| "void".to_string())
-                                    }
-                                } else {
-                                    "void".to_string()
-                                }
-                            } else {
-                                "void".to_string()
-                            }
-                        } else {
-                            rust_type_to_c(ty).unwrap_or_else(|| "void".to_string())
-                        }
-                    } else {
-                        "void".to_string()
-                    }
-                } else {
-                    rust_type_to_c(ty).unwrap_or_else(|| "void".to_string())
-                }
-            }
+            ReturnType::Type(_, ty) => classify_async_callback_type(ty),
         };
 
-        let callback_sig = format!(
-            "void (*)(void*, struct FfiStatus, {})",
-            result_type
-        );
-        params.push(("user_data".to_string(), "void*".to_string()));
-        params.push(("callback".to_string(), callback_sig));
-
         return Some(FfiExport {
-            name: format!("{}_async", name),
+            name,
             params,
-            return_kind: FfiReturnKind::Primitive("struct PendingHandle *".to_string()),
+            return_kind: FfiReturnKind::AsyncPoll(result_type),
         });
     }
 
@@ -672,6 +715,36 @@ fn generate_export_declaration(export: &FfiExport) -> String {
                 copy_params.join(", ")
             )
         }
+        FfiReturnKind::AsyncPoll(result_type) => {
+            let entry_params = if base_params.is_empty() {
+                "void".to_string()
+            } else {
+                base_params.join(", ")
+            };
+
+            let mut out = String::new();
+            out.push_str(&format!(
+                "RustFutureHandle mffi_{}({});\n",
+                export.name, entry_params
+            ));
+            out.push_str(&format!(
+                "void mffi_{}_poll(RustFutureHandle handle, uint64_t callback_data, RustFutureContinuationCallback callback);\n",
+                export.name
+            ));
+            out.push_str(&format!(
+                "{} mffi_{}_complete(RustFutureHandle handle, struct FfiStatus* out_status);\n",
+                result_type, export.name
+            ));
+            out.push_str(&format!(
+                "void mffi_{}_cancel(RustFutureHandle handle);\n",
+                export.name
+            ));
+            out.push_str(&format!(
+                "void mffi_{}_free(RustFutureHandle handle);\n",
+                export.name
+            ));
+            out
+        }
         _ => {
             let mut params = base_params;
             let ret_type = match &export.return_kind {
@@ -689,7 +762,7 @@ fn generate_export_declaration(export: &FfiExport) -> String {
                     params.push(format!("{} *out", ty));
                     "int32_t".to_string()
                 }
-                FfiReturnKind::Vec(_) => unreachable!(),
+                FfiReturnKind::Vec(_) | FfiReturnKind::AsyncPoll(_) => unreachable!(),
             };
 
             let params_str = if params.is_empty() {
@@ -774,15 +847,98 @@ fn generate_enum_typedef(e: &FfiEnum) -> String {
     out
 }
 
+fn collect_generic_type_instantiations(exports: &[FfiExport]) -> Vec<(String, String, String)> {
+    use std::collections::HashSet;
+    let mut seen = HashSet::new();
+    let mut types = Vec::new();
+    
+    for export in exports {
+        if export.name.ends_with("_async") {
+            for (_, param_type) in &export.params {
+                if param_type.starts_with("void (*)(void*, struct FfiStatus, struct FfiBuf_") {
+                    let inner = param_type
+                        .trim_start_matches("void (*)(void*, struct FfiStatus, struct FfiBuf_")
+                        .trim_end_matches(")");
+                    let key = format!("FfiBuf_{}", inner);
+                    if !seen.contains(&key) {
+                        seen.insert(key);
+                        types.push(("FfiBuf".to_string(), inner.to_string(), c_type_for_generic(inner)));
+                    }
+                } else if param_type.starts_with("void (*)(void*, struct FfiStatus, struct FfiOption_") {
+                    let inner = param_type
+                        .trim_start_matches("void (*)(void*, struct FfiStatus, struct FfiOption_")
+                        .trim_end_matches(")");
+                    let key = format!("FfiOption_{}", inner);
+                    if !seen.contains(&key) {
+                        seen.insert(key);
+                        types.push(("FfiOption".to_string(), inner.to_string(), c_type_for_generic(inner)));
+                    }
+                }
+            }
+        }
+    }
+    
+    types
+}
+
+fn c_type_for_generic(rust_name: &str) -> String {
+    match rust_name {
+        "i8" => "int8_t",
+        "i16" => "int16_t",
+        "i32" => "int32_t",
+        "i64" => "int64_t",
+        "u8" => "uint8_t",
+        "u16" => "uint16_t",
+        "u32" => "uint32_t",
+        "u64" => "uint64_t",
+        "f32" => "float",
+        "f64" => "double",
+        "bool" => "bool",
+        other => other,
+    }.to_string()
+}
+
 fn append_macro_exports(header_path: &PathBuf, exports: &[FfiExport], structs: &[FfiStruct], enums: &[FfiEnum]) {
     let mut header = fs::read_to_string(header_path).unwrap_or_default();
 
     if let Some(pos) = header.rfind("#endif") {
+        let generic_types = collect_generic_type_instantiations(exports);
+        
+        for (wrapper, inner, _) in &generic_types {
+            let empty_pattern = format!("typedef struct {}_{} {{\n}} {}_{};", wrapper, inner, wrapper, inner);
+            header = header.replace(&empty_pattern, "");
+        }
+        
+        let generic_defs: String = generic_types
+            .iter()
+            .filter(|(wrapper, inner, _)| !header.contains(&format!("typedef struct {}_{} {{\n  ", wrapper, inner)))
+            .map(|(wrapper, inner, c_type)| {
+                if wrapper == "FfiBuf" {
+                    format!(
+                        "typedef struct FfiBuf_{} {{\n  {} *ptr;\n  uintptr_t len;\n  uintptr_t cap;\n}} FfiBuf_{};\n\nvoid mffi_free_buf_{}(struct FfiBuf_{} buf);\n\n",
+                        inner, c_type, inner, inner, inner
+                    )
+                } else {
+                    format!(
+                        "typedef struct FfiOption_{} {{\n  bool isSome;\n  {} value;\n}} FfiOption_{};\n\nbool mffi_option_{}_is_some(struct FfiOption_{} opt);\n\n",
+                        inner, c_type, inner, inner, inner
+                    )
+                }
+            })
+            .collect::<String>();
+
         let enum_defs: String = enums
             .iter()
             .filter(|e| !header.contains(&format!("typedef {} {};", repr_to_c_type(&e.repr), e.name)))
             .map(generate_enum_typedef)
             .collect();
+
+        let has_async = exports.iter().any(|e| matches!(e.return_kind, FfiReturnKind::AsyncPoll(_)));
+        let rust_future_defs = if has_async && !header.contains("RustFutureHandle") {
+            "typedef const void* RustFutureHandle;\ntypedef void (*RustFutureContinuationCallback)(uint64_t callback_data, RustFuturePoll poll_result);\n\n"
+        } else {
+            ""
+        };
 
         let struct_defs: String = structs
             .iter()
@@ -796,7 +952,7 @@ fn append_macro_exports(header_path: &PathBuf, exports: &[FfiExport], structs: &
             .collect();
 
         let marker = "\n/* Macro-generated types and exports */\n";
-        header.insert_str(pos, &format!("{}{}{}{}\n", marker, enum_defs, struct_defs, declarations));
+        header.insert_str(pos, &format!("{}{}{}{}{}{}\n", marker, generic_defs, enum_defs, rust_future_defs, struct_defs, declarations));
         fs::write(header_path, header).expect("Failed to write header");
     }
 }

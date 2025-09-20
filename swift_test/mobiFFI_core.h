@@ -14,6 +14,17 @@
 
 typedef struct PendingHandle PendingHandle;
 
+typedef struct FfiBuf_i32 {
+  int32_t *ptr;
+  uintptr_t len;
+  uintptr_t cap;
+} FfiBuf_i32;
+
+typedef struct FfiOption_i32 {
+  bool isSome;
+  int32_t value;
+} FfiOption_i32;
+
 typedef struct FfiBuf_u8 {
   uint8_t *ptr;
   uintptr_t len;
@@ -37,6 +48,10 @@ typedef struct FfiStatus {
 #define FfiStatus_INTERNAL_ERROR (FfiStatus){ .code = 100 }
 
 #define PANIC_STATUS (FfiStatus){ .code = 10 }
+
+void mffi_free_buf_i32(struct FfiBuf_i32 buf);
+
+bool mffi_option_i32_is_some(struct FfiOption_i32 opt);
 
 uint32_t mffi_version_major(void);
 
@@ -74,6 +89,13 @@ typedef struct ApiResult {
 #define ApiResult_TAG_Success 0
 #define ApiResult_TAG_ErrorCode 1
 #define ApiResult_TAG_ErrorWithData 2
+
+typedef int8_t RustFuturePoll;
+#define RustFuturePoll_Ready 0
+#define RustFuturePoll_MaybeReady 1
+
+typedef const void* RustFutureHandle;
+typedef void (*RustFutureContinuationCallback)(uint64_t callback_data, RustFuturePoll poll_result);
 
 typedef struct DataPoint {
   double x;
@@ -114,9 +136,45 @@ int32_t mffi_direction_to_degrees(Direction dir);
 int32_t mffi_find_even(int32_t value, int32_t *out);
 ApiResult mffi_process_value(int32_t value);
 bool mffi_api_result_is_success(ApiResult result);
-struct PendingHandle * mffi_compute_heavy_async(int32_t input, void* user_data, void (*callback)(void*, struct FfiStatus, int32_t));
-struct PendingHandle * mffi_fetch_data_async(int32_t id, void* user_data, void (*callback)(void*, struct FfiStatus, int32_t));
-struct PendingHandle * mffi_async_make_string_async(int32_t value, void* user_data, void (*callback)(void*, struct FfiStatus, struct FfiString));
-struct PendingHandle * mffi_async_fetch_point_async(double x, double y, void* user_data, void (*callback)(void*, struct FfiStatus, DataPoint));
+RustFutureHandle mffi_compute_heavy(int32_t input);
+void mffi_compute_heavy_poll(RustFutureHandle handle, uint64_t callback_data, RustFutureContinuationCallback callback);
+int32_t mffi_compute_heavy_complete(RustFutureHandle handle, struct FfiStatus* out_status);
+void mffi_compute_heavy_cancel(RustFutureHandle handle);
+void mffi_compute_heavy_free(RustFutureHandle handle);
+RustFutureHandle mffi_fetch_data(int32_t id);
+void mffi_fetch_data_poll(RustFutureHandle handle, uint64_t callback_data, RustFutureContinuationCallback callback);
+int32_t mffi_fetch_data_complete(RustFutureHandle handle, struct FfiStatus* out_status);
+void mffi_fetch_data_cancel(RustFutureHandle handle);
+void mffi_fetch_data_free(RustFutureHandle handle);
+RustFutureHandle mffi_async_make_string(int32_t value);
+void mffi_async_make_string_poll(RustFutureHandle handle, uint64_t callback_data, RustFutureContinuationCallback callback);
+struct FfiString mffi_async_make_string_complete(RustFutureHandle handle, struct FfiStatus* out_status);
+void mffi_async_make_string_cancel(RustFutureHandle handle);
+void mffi_async_make_string_free(RustFutureHandle handle);
+RustFutureHandle mffi_async_fetch_point(double x, double y);
+void mffi_async_fetch_point_poll(RustFutureHandle handle, uint64_t callback_data, RustFutureContinuationCallback callback);
+DataPoint mffi_async_fetch_point_complete(RustFutureHandle handle, struct FfiStatus* out_status);
+void mffi_async_fetch_point_cancel(RustFutureHandle handle);
+void mffi_async_fetch_point_free(RustFutureHandle handle);
+RustFutureHandle mffi_async_get_numbers(int32_t count);
+void mffi_async_get_numbers_poll(RustFutureHandle handle, uint64_t callback_data, RustFutureContinuationCallback callback);
+struct FfiBuf_i32 mffi_async_get_numbers_complete(RustFutureHandle handle, struct FfiStatus* out_status);
+void mffi_async_get_numbers_cancel(RustFutureHandle handle);
+void mffi_async_get_numbers_free(RustFutureHandle handle);
+RustFutureHandle mffi_async_find_value(int32_t needle);
+void mffi_async_find_value_poll(RustFutureHandle handle, uint64_t callback_data, RustFutureContinuationCallback callback);
+struct FfiOption_i32 mffi_async_find_value_complete(RustFutureHandle handle, struct FfiStatus* out_status);
+void mffi_async_find_value_cancel(RustFutureHandle handle);
+void mffi_async_find_value_free(RustFutureHandle handle);
+RustFutureHandle mffi_async_greeting(const uint8_t* name_ptr, uintptr_t name_len);
+void mffi_async_greeting_poll(RustFutureHandle handle, uint64_t callback_data, RustFutureContinuationCallback callback);
+struct FfiString mffi_async_greeting_complete(RustFutureHandle handle, struct FfiStatus* out_status);
+void mffi_async_greeting_cancel(RustFutureHandle handle);
+void mffi_async_greeting_free(RustFutureHandle handle);
+RustFutureHandle mffi_async_fetch_numbers(int32_t id);
+void mffi_async_fetch_numbers_poll(RustFutureHandle handle, uint64_t callback_data, RustFutureContinuationCallback callback);
+struct FfiBuf_i32 mffi_async_fetch_numbers_complete(RustFutureHandle handle, struct FfiStatus* out_status);
+void mffi_async_fetch_numbers_cancel(RustFutureHandle handle);
+void mffi_async_fetch_numbers_free(RustFutureHandle handle);
 
 #endif  /* MOBIFFI_CORE_H */

@@ -61,6 +61,16 @@ impl<T> From<Vec<T>> for FfiBuf<T> {
     }
 }
 
+impl<T> Default for FfiBuf<T> {
+    fn default() -> Self {
+        Self {
+            ptr: core::ptr::null_mut(),
+            len: 0,
+            cap: 0,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
