@@ -1,5 +1,5 @@
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Condvar, Mutex};
+use std::sync::{Arc, Condvar, Mutex, Weak};
 use std::time::Duration;
 
 use crate::ringbuffer::SpscRingBuffer;
@@ -171,6 +171,60 @@ pub unsafe fn subscription_free<T: Send + 'static>(handle: SubscriptionHandle) {
 
     let subscription = unsafe { Box::from_raw(handle as *mut EventSubscription<T>) };
     drop(subscription);
+}
+
+pub struct StreamProducer<T: Send + Copy + 'static> {
+    active_subscriptions: Mutex<Vec<Weak<EventSubscription<T>>>>,
+    default_capacity: usize,
+}
+
+impl<T: Send + Copy + 'static> StreamProducer<T> {
+    pub fn new(default_capacity: usize) -> Self {
+        Self {
+            active_subscriptions: Mutex::new(Vec::new()),
+            default_capacity,
+        }
+    }
+
+    pub fn subscribe(&self) -> Arc<EventSubscription<T>> {
+        self.subscribe_with_capacity(self.default_capacity)
+    }
+
+    pub fn subscribe_with_capacity(&self, capacity: usize) -> Arc<EventSubscription<T>> {
+        let subscription = Arc::new(EventSubscription::new(capacity));
+        self.active_subscriptions
+            .lock()
+            .unwrap()
+            .push(Arc::downgrade(&subscription));
+        subscription
+    }
+
+    pub fn push(&self, event: T) {
+        let mut subscriptions = self.active_subscriptions.lock().unwrap();
+        subscriptions.retain(|weak_subscription| {
+            weak_subscription
+                .upgrade()
+                .map(|subscription| {
+                    subscription.push_event(event);
+                    true
+                })
+                .unwrap_or(false)
+        });
+    }
+
+    pub fn subscriber_count(&self) -> usize {
+        let subscriptions = self.active_subscriptions.lock().unwrap();
+        subscriptions
+            .iter()
+            .filter(|weak| weak.strong_count() > 0)
+            .count()
+    }
+}
+
+impl<T: Send + Copy + 'static> Default for StreamProducer<T> {
+    fn default() -> Self {
+        Self::new(256)
+    }
 }
 
 #[cfg(test)]

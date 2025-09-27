@@ -10,13 +10,13 @@ pub mod subscription;
 pub mod types;
 
 pub use handle::HandleBox;
-pub use mobiFFI_macros::{FfiType, ffi_class, ffi_export};
+pub use mobiFFI_macros::{FfiType, ffi_class, ffi_export, ffi_stream};
 pub use pending::{CancellationToken, PendingHandle};
 pub use ringbuffer::SpscRingBuffer;
 pub use rustfuture::{RustFuture, RustFutureContinuationCallback, RustFutureHandle, RustFuturePoll};
 pub use safety::catch_ffi_panic;
 pub use status::{FfiStatus, clear_last_error, set_last_error, take_last_error};
-pub use subscription::{EventSubscription, SubscriptionHandle, WaitResult};
+pub use subscription::{EventSubscription, StreamProducer, SubscriptionHandle, WaitResult};
 pub use types::{FfiBuf, FfiOption, FfiSlice, FfiString};
 
 #[unsafe(no_mangle)]
@@ -402,4 +402,42 @@ pub extern "C" fn mffi_test_events_unsubscribe(handle: SubscriptionHandle) {
 #[unsafe(no_mangle)]
 pub extern "C" fn mffi_test_events_free(handle: SubscriptionHandle) {
     unsafe { subscription::subscription_free::<TestEvent>(handle) }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct SensorReading {
+    pub sensor_id: i32,
+    pub timestamp_ms: i64,
+    pub value: f64,
+}
+
+pub struct SensorMonitor {
+    readings_producer: StreamProducer<SensorReading>,
+}
+
+#[ffi_class]
+impl SensorMonitor {
+    pub fn new() -> Self {
+        Self {
+            readings_producer: StreamProducer::new(512),
+        }
+    }
+
+    #[ffi_stream(item = SensorReading)]
+    pub fn readings(&self) -> std::sync::Arc<EventSubscription<SensorReading>> {
+        self.readings_producer.subscribe()
+    }
+
+    pub fn emit_reading(&self, sensor_id: i32, timestamp_ms: i64, value: f64) {
+        self.readings_producer.push(SensorReading {
+            sensor_id,
+            timestamp_ms,
+            value,
+        });
+    }
+
+    pub fn subscriber_count(&self) -> usize {
+        self.readings_producer.subscriber_count()
+    }
 }

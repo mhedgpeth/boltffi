@@ -909,4 +909,67 @@ print("SUCCESS: Wait returns unsubscribed after unsubscribe!")
 mffi_test_events_free(subscription)
 print("Freed subscription")
 
+print("\n--- Testing #[ffi_stream] macro ---")
+
+let sensorMonitor = mffi_sensormonitor_new()
+print("Created SensorMonitor")
+
+let readingsSubscription = mffi_sensormonitor_readings(sensorMonitor)
+print("Subscribed to readings via #[ffi_stream] macro")
+
+let subscriberCount = mffi_sensormonitor_subscriber_count(sensorMonitor)
+print("Subscriber count: \(subscriberCount)")
+
+if subscriberCount != 1 {
+    print("FAILED: Expected 1 subscriber, got \(subscriberCount)")
+    mffi_sensormonitor_free(sensorMonitor)
+    exit(1)
+}
+print("SUCCESS: Subscriber count is correct!")
+
+mffi_sensormonitor_emit_reading(sensorMonitor, 1, 1000, 25.5)
+mffi_sensormonitor_emit_reading(sensorMonitor, 1, 2000, 26.0)
+mffi_sensormonitor_emit_reading(sensorMonitor, 2, 1500, 100.0)
+print("Emitted 3 sensor readings")
+
+var readingBuffer = [SensorReading](repeating: SensorReading(sensor_id: 0, timestamp_ms: 0, value: 0), count: 10)
+let readingsPopped = readingBuffer.withUnsafeMutableBufferPointer { buffer in
+    mffi_sensormonitor_readings_pop_batch(readingsSubscription, buffer.baseAddress, UInt(buffer.count))
+}
+print("Popped \(readingsPopped) readings via macro-generated pop_batch")
+
+if readingsPopped != 3 {
+    print("FAILED: Expected 3 readings, got \(readingsPopped)")
+    mffi_sensormonitor_readings_free(readingsSubscription)
+    mffi_sensormonitor_free(sensorMonitor)
+    exit(1)
+}
+
+if readingBuffer[0].sensor_id == 1 && readingBuffer[0].timestamp_ms == 1000 && readingBuffer[0].value == 25.5 {
+    print("SUCCESS: First reading correct (sensor=1, ts=1000, val=25.5)")
+} else {
+    print("FAILED: First reading incorrect")
+    mffi_sensormonitor_readings_free(readingsSubscription)
+    mffi_sensormonitor_free(sensorMonitor)
+    exit(1)
+}
+
+let waitResult = mffi_sensormonitor_readings_wait(readingsSubscription, 10)
+print("Wait on empty subscription: \(waitResult) (0=Timeout)")
+
+if waitResult != 0 {
+    print("FAILED: Expected timeout, got \(waitResult)")
+    mffi_sensormonitor_readings_free(readingsSubscription)
+    mffi_sensormonitor_free(sensorMonitor)
+    exit(1)
+}
+print("SUCCESS: Wait timeout works via macro!")
+
+mffi_sensormonitor_readings_unsubscribe(readingsSubscription)
+mffi_sensormonitor_readings_free(readingsSubscription)
+mffi_sensormonitor_free(sensorMonitor)
+print("Cleaned up SensorMonitor and subscription")
+
+print("SUCCESS: #[ffi_stream] macro generates working streaming API!")
+
 print("\n=== ALL TESTS PASSED ===")

@@ -23,11 +23,11 @@ fn main() {
         .expect("Unable to generate bindings")
         .write_to_file(&header_path);
 
-    let macro_exports = collect_ffi_exports(&crate_dir.join("src"));
+    let (macro_exports, stream_exports) = collect_ffi_exports(&crate_dir.join("src"));
     let repr_c_structs = collect_repr_c_structs(&crate_dir.join("src"));
     let ffi_enums = collect_ffi_enums(&crate_dir.join("src"));
-    if !macro_exports.is_empty() || !repr_c_structs.is_empty() || !ffi_enums.is_empty() {
-        append_macro_exports(&header_path, &macro_exports, &repr_c_structs, &ffi_enums);
+    if !macro_exports.is_empty() || !repr_c_structs.is_empty() || !ffi_enums.is_empty() || !stream_exports.is_empty() {
+        append_macro_exports(&header_path, &macro_exports, &repr_c_structs, &ffi_enums, &stream_exports);
     }
 
     println!("cargo:rerun-if-changed=src/");
@@ -49,6 +49,12 @@ struct FfiExport {
     name: String,
     params: Vec<(String, String)>,
     return_kind: FfiReturnKind,
+}
+
+struct FfiStreamExport {
+    class_name: String,
+    method_name: String,
+    item_type: String,
 }
 
 struct FfiStruct {
@@ -260,8 +266,9 @@ fn collect_ffi_enums(src_dir: &PathBuf) -> Vec<FfiEnum> {
     enums
 }
 
-fn collect_ffi_exports(src_dir: &PathBuf) -> Vec<FfiExport> {
+fn collect_ffi_exports(src_dir: &PathBuf) -> (Vec<FfiExport>, Vec<FfiStreamExport>) {
     let mut exports = Vec::new();
+    let mut stream_exports = Vec::new();
 
     for entry in WalkDir::new(src_dir)
         .into_iter()
@@ -288,13 +295,15 @@ fn collect_ffi_exports(src_dir: &PathBuf) -> Vec<FfiExport> {
             }
             if let syn::Item::Impl(impl_block) = item {
                 if has_ffi_class_attr(impl_block) {
-                    exports.extend(parse_ffi_class(impl_block));
+                    let (class_exports, class_streams) = parse_ffi_class(impl_block);
+                    exports.extend(class_exports);
+                    stream_exports.extend(class_streams);
                 }
             }
         }
     }
 
-    exports
+    (exports, stream_exports)
 }
 
 fn has_ffi_class_attr(impl_block: &syn::ItemImpl) -> bool {
@@ -308,8 +317,28 @@ fn to_snake_case(name: &str) -> String {
     name.to_ascii_lowercase()
 }
 
-fn parse_ffi_class(impl_block: &syn::ItemImpl) -> Vec<FfiExport> {
+fn extract_ffi_stream_item(attrs: &[syn::Attribute]) -> Option<String> {
+    attrs.iter().find_map(|attr| {
+        if !attr.path().is_ident("ffi_stream") {
+            return None;
+        }
+
+        let mut item_type: Option<String> = None;
+        let _ = attr.parse_nested_meta(|meta| {
+            if meta.path.is_ident("item") {
+                let ty: syn::Type = meta.value()?.parse()?;
+                item_type = rust_type_to_c(&ty);
+            }
+            Ok(())
+        });
+
+        item_type
+    })
+}
+
+fn parse_ffi_class(impl_block: &syn::ItemImpl) -> (Vec<FfiExport>, Vec<FfiStreamExport>) {
     let mut exports = Vec::new();
+    let mut stream_exports = Vec::new();
 
     let type_name = match impl_block.self_ty.as_ref() {
         Type::Path(path) => path.path.segments.last().map(|s| s.ident.to_string()),
@@ -318,7 +347,7 @@ fn parse_ffi_class(impl_block: &syn::ItemImpl) -> Vec<FfiExport> {
 
     let type_name = match type_name {
         Some(name) => name,
-        None => return exports,
+        None => return (exports, stream_exports),
     };
 
     let snake_name = to_snake_case(&type_name);
@@ -350,6 +379,15 @@ fn parse_ffi_class(impl_block: &syn::ItemImpl) -> Vec<FfiExport> {
 
             let method_name = method.sig.ident.to_string();
             if method_name == "new" {
+                continue;
+            }
+
+            if let Some(item_type) = extract_ffi_stream_item(&method.attrs) {
+                stream_exports.push(FfiStreamExport {
+                    class_name: snake_name.clone(),
+                    method_name: method_name.clone(),
+                    item_type,
+                });
                 continue;
             }
 
@@ -396,7 +434,7 @@ fn parse_ffi_class(impl_block: &syn::ItemImpl) -> Vec<FfiExport> {
         }
     }
 
-    exports
+    (exports, stream_exports)
 }
 
 fn has_ffi_export_attr(func: &ItemFn) -> bool {
@@ -914,7 +952,40 @@ fn c_type_for_generic(rust_name: &str) -> String {
     }.to_string()
 }
 
-fn append_macro_exports(header_path: &PathBuf, exports: &[FfiExport], structs: &[FfiStruct], enums: &[FfiEnum]) {
+fn to_pascal_case(snake: &str) -> String {
+    snake
+        .split('_')
+        .filter(|s| !s.is_empty())
+        .map(|word| {
+            let mut chars = word.chars();
+            match chars.next() {
+                None => String::new(),
+                Some(first) => first.to_uppercase().chain(chars).collect(),
+            }
+        })
+        .collect()
+}
+
+fn generate_stream_declarations(stream: &FfiStreamExport) -> String {
+    let base_name = format!("mffi_{}_{}", stream.class_name, stream.method_name);
+    let item_type = &stream.item_type;
+    let pascal_class_name = to_pascal_case(&stream.class_name);
+    
+    format!(
+        "SubscriptionHandle {}(const struct {} *handle);\n\
+         uintptr_t {}_pop_batch(SubscriptionHandle subscription_handle, struct {} *output_ptr, uintptr_t output_capacity);\n\
+         int32_t {}_wait(SubscriptionHandle subscription_handle, uint32_t timeout_milliseconds);\n\
+         void {}_unsubscribe(SubscriptionHandle subscription_handle);\n\
+         void {}_free(SubscriptionHandle subscription_handle);\n\n",
+        base_name, pascal_class_name,
+        base_name, item_type,
+        base_name,
+        base_name,
+        base_name,
+    )
+}
+
+fn append_macro_exports(header_path: &PathBuf, exports: &[FfiExport], structs: &[FfiStruct], enums: &[FfiEnum], stream_exports: &[FfiStreamExport]) {
     let mut header = fs::read_to_string(header_path).unwrap_or_default();
 
     if let Some(pos) = header.rfind("#endif") {
@@ -967,8 +1038,13 @@ fn append_macro_exports(header_path: &PathBuf, exports: &[FfiExport], structs: &
             .map(generate_export_declaration)
             .collect();
 
+        let stream_declarations: String = stream_exports
+            .iter()
+            .map(generate_stream_declarations)
+            .collect();
+
         let marker = "\n/* Macro-generated types and exports */\n";
-        header.insert_str(pos, &format!("{}{}{}{}{}{}\n", marker, generic_defs, enum_defs, rust_future_defs, struct_defs, declarations));
+        header.insert_str(pos, &format!("{}{}{}{}{}{}{}\n", marker, generic_defs, enum_defs, rust_future_defs, struct_defs, declarations, stream_declarations));
         fs::write(header_path, header).expect("Failed to write header");
     }
 }

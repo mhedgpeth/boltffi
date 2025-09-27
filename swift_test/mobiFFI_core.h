@@ -135,6 +135,12 @@ typedef struct DataPoint {
   int64_t timestamp;
 } DataPoint;
 
+typedef struct SensorReading {
+  int32_t sensor_id;
+  int64_t timestamp_ms;
+  double value;
+} SensorReading;
+
 struct FfiStatus mffi_greeting(const uint8_t* name_ptr, uintptr_t name_len, struct FfiString *out);
 struct FfiStatus mffi_concat(const uint8_t* first_ptr, uintptr_t first_len, const uint8_t* second_ptr, uintptr_t second_len, struct FfiString *out);
 struct FfiStatus mffi_reverse_string(const uint8_t* input_ptr, uintptr_t input_len, struct FfiString *out);
@@ -208,5 +214,15 @@ void mffi_async_fetch_numbers_poll(RustFutureHandle handle, uint64_t callback_da
 struct FfiBuf_i32 mffi_async_fetch_numbers_complete(RustFutureHandle handle, struct FfiStatus* out_status);
 void mffi_async_fetch_numbers_cancel(RustFutureHandle handle);
 void mffi_async_fetch_numbers_free(RustFutureHandle handle);
+struct SensorMonitor * mffi_sensormonitor_new(void);
+struct FfiStatus mffi_sensormonitor_free(struct SensorMonitor * handle);
+struct FfiStatus mffi_sensormonitor_emit_reading(struct SensorMonitor * handle, int32_t sensor_id, int64_t timestamp_ms, double value);
+uintptr_t mffi_sensormonitor_subscriber_count(struct SensorMonitor * handle);
+SubscriptionHandle mffi_sensormonitor_readings(const struct Sensormonitor *handle);
+uintptr_t mffi_sensormonitor_readings_pop_batch(SubscriptionHandle subscription_handle, struct SensorReading *output_ptr, uintptr_t output_capacity);
+int32_t mffi_sensormonitor_readings_wait(SubscriptionHandle subscription_handle, uint32_t timeout_milliseconds);
+void mffi_sensormonitor_readings_unsubscribe(SubscriptionHandle subscription_handle);
+void mffi_sensormonitor_readings_free(SubscriptionHandle subscription_handle);
+
 
 #endif  /* MOBIFFI_CORE_H */
