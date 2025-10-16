@@ -1,23 +1,44 @@
 let subscription = {{ subscribe_fn }}(self.handle)
+let buffer = UnsafeMutablePointer<{{ item_type }}>.allocate(capacity: 64)
 
-Task {
-    let buffer = UnsafeMutablePointer<{{ item_type }}>.allocate(capacity: 64)
-    defer { buffer.deallocate() }
+class CallbackContext {
+    let subscription: SubscriptionHandle
+    let buffer: UnsafeMutablePointer<{{ item_type }}>
+    let callback: ({{ item_type }}) -> Void
+    var isActive = true
     
-    while true {
-        let waitResult = {{ wait_fn }}(subscription, 1000)
-        if waitResult < 0 { break }
-        if waitResult == 0 { continue }
-        
-        let count = {{ pop_batch_fn }}(subscription, buffer, 64)
-        for index in 0..<Int(count) {
-            callback(buffer[index])
-        }
+    init(subscription: SubscriptionHandle, buffer: UnsafeMutablePointer<{{ item_type }}>, callback: @escaping ({{ item_type }}) -> Void) {
+        self.subscription = subscription
+        self.buffer = buffer
+        self.callback = callback
     }
-    
-    {{ free_fn }}(subscription)
 }
 
+let context = CallbackContext(subscription: subscription, buffer: buffer, callback: callback)
+
+func poll(ctx: CallbackContext) {
+    guard ctx.isActive else { return }
+    
+    {{ poll_fn }}(ctx.subscription, UInt64(UInt(bitPattern: Unmanaged.passRetained(ctx).toOpaque()))) { callbackData, pollResult in
+        let ctx = Unmanaged<CallbackContext>.fromOpaque(UnsafeRawPointer(bitPattern: UInt(callbackData))!).takeRetainedValue()
+        guard ctx.isActive else { return }
+        
+        let count = {{ pop_batch_fn }}(ctx.subscription, ctx.buffer, 64)
+        for index in 0..<Int(count) {
+            ctx.callback(ctx.buffer[index])
+        }
+        
+        if pollResult == 0 && ctx.isActive {
+            poll(ctx: ctx)
+        }
+    }
+}
+
+poll(ctx: context)
+
 return {{ class_name }}{{ method_name_pascal }}Cancellable {
+    context.isActive = false
     {{ unsubscribe_fn }}(subscription)
+    {{ free_fn }}(subscription)
+    buffer.deallocate()
 }

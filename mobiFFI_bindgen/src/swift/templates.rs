@@ -250,7 +250,7 @@ pub struct StreamAsyncBodyTemplate {
     pub item_type: String,
     pub subscribe_fn: String,
     pub pop_batch_fn: String,
-    pub wait_fn: String,
+    pub poll_fn: String,
     pub unsubscribe_fn: String,
     pub free_fn: String,
 }
@@ -262,7 +262,7 @@ impl StreamAsyncBodyTemplate {
             item_type: TypeMapper::map_type(&stream.item_type),
             subscribe_fn: stream.ffi_subscribe(&class_prefix),
             pop_batch_fn: stream.ffi_pop_batch(&class_prefix),
-            wait_fn: stream.ffi_wait(&class_prefix),
+            poll_fn: stream.ffi_poll(&class_prefix),
             unsubscribe_fn: stream.ffi_unsubscribe(&class_prefix),
             free_fn: stream.ffi_free(&class_prefix),
         }
@@ -296,7 +296,7 @@ pub struct StreamCallbackBodyTemplate {
     pub method_name_pascal: String,
     pub subscribe_fn: String,
     pub pop_batch_fn: String,
-    pub wait_fn: String,
+    pub poll_fn: String,
     pub unsubscribe_fn: String,
     pub free_fn: String,
 }
@@ -310,7 +310,7 @@ impl StreamCallbackBodyTemplate {
             method_name_pascal: NamingConvention::class_name(&stream.name),
             subscribe_fn: stream.ffi_subscribe(&class_prefix),
             pop_batch_fn: stream.ffi_pop_batch(&class_prefix),
-            wait_fn: stream.ffi_wait(&class_prefix),
+            poll_fn: stream.ffi_poll(&class_prefix),
             unsubscribe_fn: stream.ffi_unsubscribe(&class_prefix),
             free_fn: stream.ffi_free(&class_prefix),
         }
@@ -433,6 +433,49 @@ impl AsyncThrowingMethodBodyTemplate {
                 .as_ref()
                 .map(TypeMapper::map_type)
                 .unwrap_or_else(|| "Void".into()),
+        }
+    }
+}
+
+#[derive(Template)]
+#[template(path = "swift/stream_subscription.txt", escape = "none")]
+pub struct StreamSubscriptionTemplate {
+    pub class_name: String,
+    pub method_name_pascal: String,
+    pub item_type: String,
+    pub pop_batch_fn: String,
+    pub wait_fn: String,
+    pub unsubscribe_fn: String,
+    pub free_fn: String,
+}
+
+impl StreamSubscriptionTemplate {
+    pub fn from_stream(stream: &StreamMethod, class: &Class, module: &Module) -> Self {
+        let class_prefix = class.ffi_prefix(&module.ffi_prefix());
+        Self {
+            class_name: NamingConvention::class_name(&class.name),
+            method_name_pascal: NamingConvention::class_name(&stream.name),
+            item_type: TypeMapper::map_type(&stream.item_type),
+            pop_batch_fn: stream.ffi_pop_batch(&class_prefix),
+            wait_fn: stream.ffi_wait(&class_prefix),
+            unsubscribe_fn: stream.ffi_unsubscribe(&class_prefix),
+            free_fn: stream.ffi_free(&class_prefix),
+        }
+    }
+}
+
+#[derive(Template)]
+#[template(path = "swift/stream_cancellable.txt", escape = "none")]
+pub struct StreamCancellableTemplate {
+    pub class_name: String,
+    pub method_name_pascal: String,
+}
+
+impl StreamCancellableTemplate {
+    pub fn from_stream(stream: &StreamMethod, class: &Class, _module: &Module) -> Self {
+        Self {
+            class_name: NamingConvention::class_name(&class.name),
+            method_name_pascal: NamingConvention::class_name(&stream.name),
         }
     }
 }

@@ -47,6 +47,10 @@ impl StreamMethod {
         format!("{}_{}_wait", class_prefix, self.name.to_lowercase())
     }
 
+    pub fn ffi_poll(&self, class_prefix: &str) -> String {
+        format!("{}_{}_poll", class_prefix, self.name.to_lowercase())
+    }
+
     pub fn ffi_unsubscribe(&self, class_prefix: &str) -> String {
         format!("{}_{}_unsubscribe", class_prefix, self.name.to_lowercase())
     }

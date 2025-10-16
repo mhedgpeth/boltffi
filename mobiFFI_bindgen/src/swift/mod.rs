@@ -5,11 +5,14 @@ mod types;
 
 use askama::Template;
 
-use crate::model::{Class, Enumeration, Module, Record};
+use crate::model::{Class, Enumeration, Module, Record, StreamMode};
 
 pub use body::BodyRenderer;
 pub use names::NamingConvention;
-pub use templates::{ClassTemplate, CStyleEnumTemplate, DataEnumTemplate, RecordTemplate};
+pub use templates::{
+    ClassTemplate, CStyleEnumTemplate, DataEnumTemplate, RecordTemplate,
+    StreamCancellableTemplate, StreamSubscriptionTemplate,
+};
 pub use types::TypeMapper;
 
 pub struct Swift;
@@ -37,5 +40,26 @@ impl Swift {
         ClassTemplate::from_class(class, module)
             .render()
             .expect("class template failed")
+    }
+
+    pub fn render_stream_wrappers(class: &Class, module: &Module) -> String {
+        class
+            .streams
+            .iter()
+            .filter_map(|stream| match stream.mode {
+                StreamMode::Batch => Some(
+                    StreamSubscriptionTemplate::from_stream(stream, class, module)
+                        .render()
+                        .expect("subscription template failed"),
+                ),
+                StreamMode::Callback => Some(
+                    StreamCancellableTemplate::from_stream(stream, class, module)
+                        .render()
+                        .expect("cancellable template failed"),
+                ),
+                StreamMode::Async => None,
+            })
+            .collect::<Vec<_>>()
+            .join("\n\n")
     }
 }

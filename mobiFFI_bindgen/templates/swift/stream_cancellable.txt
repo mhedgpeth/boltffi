@@ -1,0 +1,18 @@
+public final class {{ class_name }}{{ method_name_pascal }}Cancellable {
+    private var isCancelled = false
+    private let cancelAction: () -> Void
+
+    init(onCancel: @escaping () -> Void) {
+        self.cancelAction = onCancel
+    }
+
+    deinit {
+        cancel()
+    }
+
+    public func cancel() {
+        guard !isCancelled else { return }
+        isCancelled = true
+        cancelAction()
+    }
+}

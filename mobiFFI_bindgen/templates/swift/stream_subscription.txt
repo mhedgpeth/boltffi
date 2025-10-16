@@ -1,0 +1,26 @@
+public final class {{ class_name }}{{ method_name_pascal }}Subscription {
+    private let handle: SubscriptionHandle
+    private var isUnsubscribed = false
+
+    init(handle: SubscriptionHandle) {
+        self.handle = handle
+    }
+
+    deinit {
+        {{ free_fn }}(handle)
+    }
+
+    public func popBatch(into buffer: UnsafeMutablePointer<{{ item_type }}>, capacity: UInt) -> UInt {
+        {{ pop_batch_fn }}(handle, buffer, capacity)
+    }
+
+    public func wait(timeout: UInt32) -> Int32 {
+        {{ wait_fn }}(handle, timeout)
+    }
+
+    public func unsubscribe() {
+        guard !isUnsubscribed else { return }
+        isUnsubscribed = true
+        {{ unsubscribe_fn }}(handle)
+    }
+}

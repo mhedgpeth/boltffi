@@ -1015,10 +1015,12 @@ fn generate_stream_declarations(stream: &FfiStreamExport) -> String {
         "SubscriptionHandle {}(const struct {} *handle);\n\
          uintptr_t {}_pop_batch(SubscriptionHandle subscription_handle, struct {} *output_ptr, uintptr_t output_capacity);\n\
          int32_t {}_wait(SubscriptionHandle subscription_handle, uint32_t timeout_milliseconds);\n\
+         void {}_poll(SubscriptionHandle subscription_handle, uint64_t callback_data, StreamContinuationCallback callback);\n\
          void {}_unsubscribe(SubscriptionHandle subscription_handle);\n\
          void {}_free(SubscriptionHandle subscription_handle);\n\n",
         base_name, pascal_class_name,
         base_name, item_type,
+        base_name,
         base_name,
         base_name,
         base_name,
@@ -1067,6 +1069,13 @@ fn append_macro_exports(header_path: &PathBuf, exports: &[FfiExport], structs: &
             ""
         };
 
+        let has_streams = !stream_exports.is_empty();
+        let stream_continuation_defs = if has_streams && !header.contains("StreamContinuationCallback") {
+            "typedef void (*StreamContinuationCallback)(uint64_t callback_data, int8_t poll_result);\n\n"
+        } else {
+            ""
+        };
+
         let struct_defs: String = structs
             .iter()
             .filter(|s| !header.contains(&format!("typedef struct {} {{", s.name)))
@@ -1084,7 +1093,7 @@ fn append_macro_exports(header_path: &PathBuf, exports: &[FfiExport], structs: &
             .collect();
 
         let marker = "\n/* Macro-generated types and exports */\n";
-        header.insert_str(pos, &format!("{}{}{}{}{}{}{}\n", marker, generic_defs, enum_defs, rust_future_defs, struct_defs, declarations, stream_declarations));
+        header.insert_str(pos, &format!("{}{}{}{}{}{}{}{}\n", marker, generic_defs, enum_defs, rust_future_defs, stream_continuation_defs, struct_defs, declarations, stream_declarations));
         fs::write(header_path, header).expect("Failed to write header");
     }
 }

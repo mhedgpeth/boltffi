@@ -16,7 +16,10 @@ pub use ringbuffer::SpscRingBuffer;
 pub use rustfuture::{RustFuture, RustFutureContinuationCallback, RustFutureHandle, RustFuturePoll};
 pub use safety::catch_ffi_panic;
 pub use status::{FfiStatus, clear_last_error, set_last_error, take_last_error};
-pub use subscription::{EventSubscription, StreamProducer, SubscriptionHandle, WaitResult};
+pub use subscription::{
+    EventSubscription, StreamContinuationCallback, StreamPollResult, StreamProducer,
+    SubscriptionHandle, WaitResult,
+};
 pub use types::{FfiBuf, FfiOption, FfiSlice, FfiString};
 
 #[unsafe(no_mangle)]

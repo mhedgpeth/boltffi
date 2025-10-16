@@ -1475,6 +1475,7 @@ fn generate_stream_exports(
     let subscribe_ident = syn::Ident::new(&base_name, method_name.span());
     let pop_batch_ident = syn::Ident::new(&format!("{}_pop_batch", base_name), method_name.span());
     let wait_ident = syn::Ident::new(&format!("{}_wait", base_name), method_name.span());
+    let poll_ident = syn::Ident::new(&format!("{}_poll", base_name), method_name.span());
     let unsubscribe_ident = syn::Ident::new(&format!("{}_unsubscribe", base_name), method_name.span());
     let free_ident = syn::Ident::new(&format!("{}_free", base_name), method_name.span());
 
@@ -1524,6 +1525,22 @@ fn generate_stream_exports(
                 &*(subscription_handle as *const crate::EventSubscription<#item_type>)
             };
             subscription.wait_for_events(timeout_milliseconds) as i32
+        }
+
+        #[unsafe(no_mangle)]
+        pub unsafe extern "C" fn #poll_ident(
+            subscription_handle: crate::SubscriptionHandle,
+            callback_data: u64,
+            callback: crate::StreamContinuationCallback,
+        ) {
+            if subscription_handle.is_null() {
+                callback(callback_data, crate::StreamPollResult::ItemsAvailable);
+                return;
+            }
+            let subscription = unsafe {
+                &*(subscription_handle as *const crate::EventSubscription<#item_type>)
+            };
+            subscription.poll(callback_data, callback);
         }
 
         #[unsafe(no_mangle)]

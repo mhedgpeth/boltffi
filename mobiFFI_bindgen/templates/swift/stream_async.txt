@@ -1,27 +1,50 @@
 AsyncStream<{{ item_type }}> { continuation in
     let subscription = {{ subscribe_fn }}(self.handle)
+    let buffer = UnsafeMutablePointer<{{ item_type }}>.allocate(capacity: 16)
     
     continuation.onTermination = { @Sendable _ in
         {{ unsubscribe_fn }}(subscription)
         {{ free_fn }}(subscription)
+        buffer.deallocate()
     }
     
-    Task {
-        let buffer = UnsafeMutablePointer<{{ item_type }}>.allocate(capacity: 1)
-        defer { buffer.deallocate() }
+    class StreamContext {
+        let subscription: SubscriptionHandle
+        let buffer: UnsafeMutablePointer<{{ item_type }}>
+        let continuation: AsyncStream<{{ item_type }}>.Continuation
+        var isActive = true
         
-        while true {
-            let waitResult = {{ wait_fn }}(subscription, 1000)
+        init(subscription: SubscriptionHandle, buffer: UnsafeMutablePointer<{{ item_type }}>, continuation: AsyncStream<{{ item_type }}>.Continuation) {
+            self.subscription = subscription
+            self.buffer = buffer
+            self.continuation = continuation
+        }
+    }
+    
+    let context = StreamContext(subscription: subscription, buffer: buffer, continuation: continuation)
+    
+    func poll(ctx: StreamContext) {
+        guard ctx.isActive else { return }
+        
+        {{ poll_fn }}(ctx.subscription, UInt64(UInt(bitPattern: Unmanaged.passRetained(ctx).toOpaque()))) { callbackData, pollResult in
+            let ctx = Unmanaged<StreamContext>.fromOpaque(UnsafeRawPointer(bitPattern: UInt(callbackData))!).takeRetainedValue()
+            guard ctx.isActive else { return }
             
-            if waitResult < 0 { break }
-            if waitResult == 0 { continue }
-            
-            let count = {{ pop_batch_fn }}(subscription, buffer, 1)
+            let count = {{ pop_batch_fn }}(ctx.subscription, ctx.buffer, 16)
             if count > 0 {
-                continuation.yield(buffer.pointee)
+                for i in 0..<Int(count) {
+                    ctx.continuation.yield(ctx.buffer[i])
+                }
+            }
+            
+            if pollResult == 0 {
+                poll(ctx: ctx)
+            } else {
+                ctx.isActive = false
+                ctx.continuation.finish()
             }
         }
-        
-        continuation.finish()
     }
+    
+    poll(ctx: context)
 }

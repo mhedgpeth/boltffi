@@ -111,6 +111,16 @@ typedef struct ApiResult {
 #define ApiResult_TAG_ErrorCode 1
 #define ApiResult_TAG_ErrorWithData 2
 
+typedef int8_t StreamPollResult;
+#define StreamPollResult_ItemsAvailable 0
+#define StreamPollResult_Pending 1
+
+typedef uint8_t ContinuationState;
+#define ContinuationState_Empty 0
+#define ContinuationState_Waked 1
+#define ContinuationState_Stored 2
+#define ContinuationState_Cancelled 3
+
 typedef int32_t WaitResult;
 #define WaitResult_EventsAvailable 1
 #define WaitResult_Timeout 0
@@ -128,6 +138,8 @@ typedef uint8_t SchedulerStateTag;
 
 typedef const void* RustFutureHandle;
 typedef void (*RustFutureContinuationCallback)(uint64_t callback_data, RustFuturePoll poll_result);
+
+typedef void (*StreamContinuationCallback)(uint64_t callback_data, int8_t poll_result);
 
 typedef struct DataPoint {
   double x;
@@ -221,6 +233,7 @@ uintptr_t mffi_sensormonitor_subscriber_count(struct SensorMonitor * handle);
 SubscriptionHandle mffi_sensormonitor_readings(const struct Sensormonitor *handle);
 uintptr_t mffi_sensormonitor_readings_pop_batch(SubscriptionHandle subscription_handle, struct SensorReading *output_ptr, uintptr_t output_capacity);
 int32_t mffi_sensormonitor_readings_wait(SubscriptionHandle subscription_handle, uint32_t timeout_milliseconds);
+void mffi_sensormonitor_readings_poll(SubscriptionHandle subscription_handle, uint64_t callback_data, StreamContinuationCallback callback);
 void mffi_sensormonitor_readings_unsubscribe(SubscriptionHandle subscription_handle);
 void mffi_sensormonitor_readings_free(SubscriptionHandle subscription_handle);
 

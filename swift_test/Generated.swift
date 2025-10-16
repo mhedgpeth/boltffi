@@ -88,30 +88,53 @@ public final class SensorMonitor {
     public func readings() -> AsyncStream<SensorReading> {
         AsyncStream<SensorReading> { continuation in
     let subscription = mffi_sensormonitor_readings(self.handle)
+    let buffer = UnsafeMutablePointer<SensorReading>.allocate(capacity: 16)
     
     continuation.onTermination = { @Sendable _ in
         mffi_sensormonitor_readings_unsubscribe(subscription)
         mffi_sensormonitor_readings_free(subscription)
+        buffer.deallocate()
     }
     
-    Task {
-        let buffer = UnsafeMutablePointer<SensorReading>.allocate(capacity: 1)
-        defer { buffer.deallocate() }
+    class StreamContext {
+        let subscription: SubscriptionHandle
+        let buffer: UnsafeMutablePointer<SensorReading>
+        let continuation: AsyncStream<SensorReading>.Continuation
+        var isActive = true
         
-        while true {
-            let waitResult = mffi_sensormonitor_readings_wait(subscription, 1000)
+        init(subscription: SubscriptionHandle, buffer: UnsafeMutablePointer<SensorReading>, continuation: AsyncStream<SensorReading>.Continuation) {
+            self.subscription = subscription
+            self.buffer = buffer
+            self.continuation = continuation
+        }
+    }
+    
+    let context = StreamContext(subscription: subscription, buffer: buffer, continuation: continuation)
+    
+    func poll(ctx: StreamContext) {
+        guard ctx.isActive else { return }
+        
+        mffi_sensormonitor_readings_poll(ctx.subscription, UInt64(UInt(bitPattern: Unmanaged.passRetained(ctx).toOpaque()))) { callbackData, pollResult in
+            let ctx = Unmanaged<StreamContext>.fromOpaque(UnsafeRawPointer(bitPattern: UInt(callbackData))!).takeRetainedValue()
+            guard ctx.isActive else { return }
             
-            if waitResult < 0 { break }
-            if waitResult == 0 { continue }
-            
-            let count = mffi_sensormonitor_readings_pop_batch(subscription, buffer, 1)
+            let count = mffi_sensormonitor_readings_pop_batch(ctx.subscription, ctx.buffer, 16)
             if count > 0 {
-                continuation.yield(buffer.pointee)
+                for i in 0..<Int(count) {
+                    ctx.continuation.yield(ctx.buffer[i])
+                }
+            }
+            
+            if pollResult == 0 {
+                poll(ctx: ctx)
+            } else {
+                ctx.isActive = false
+                ctx.continuation.finish()
             }
         }
-        
-        continuation.finish()
     }
+    
+    poll(ctx: context)
 }
     }
 }

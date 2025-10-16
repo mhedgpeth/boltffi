@@ -1,14 +1,148 @@
-use std::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU64, AtomicU8, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 
 use crate::ringbuffer::SpscRingBuffer;
+
+#[repr(i8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StreamPollResult {
+    ItemsAvailable = 0,
+    Pending = 1,
+}
+
+pub type StreamContinuationCallback = extern "C" fn(callback_data: u64, StreamPollResult);
+
+#[repr(u8)]
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ContinuationState {
+    Empty = 0,
+    Waked = 1,
+    Stored = 2,
+    Cancelled = 3,
+}
+
+impl ContinuationState {
+    fn from_raw(value: u8) -> Self {
+        match value {
+            0 => Self::Empty,
+            1 => Self::Waked,
+            2 => Self::Stored,
+            3 => Self::Cancelled,
+            _ => Self::Empty,
+        }
+    }
+}
+
+struct StreamContinuationScheduler {
+    state: AtomicU8,
+    callback_data: AtomicU64,
+    callback_ptr: AtomicPtr<()>,
+}
+
+impl StreamContinuationScheduler {
+    fn new() -> Self {
+        Self {
+            state: AtomicU8::new(ContinuationState::Empty as u8),
+            callback_data: AtomicU64::new(0),
+            callback_ptr: AtomicPtr::new(std::ptr::null_mut()),
+        }
+    }
+
+    fn current_state(&self) -> ContinuationState {
+        ContinuationState::from_raw(self.state.load(Ordering::Acquire))
+    }
+
+    fn try_transition(&self, from: ContinuationState, to: ContinuationState) -> bool {
+        self.state
+            .compare_exchange(from as u8, to as u8, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+    }
+
+    fn store_continuation(&self, callback: StreamContinuationCallback, callback_data: u64) {
+        loop {
+            match self.current_state() {
+                ContinuationState::Empty => {
+                    self.callback_data.store(callback_data, Ordering::Release);
+                    self.callback_ptr.store(callback as *mut (), Ordering::Release);
+                    if self.try_transition(ContinuationState::Empty, ContinuationState::Stored) {
+                        return;
+                    }
+                }
+                ContinuationState::Waked => {
+                    if self.try_transition(ContinuationState::Waked, ContinuationState::Empty) {
+                        callback(callback_data, StreamPollResult::ItemsAvailable);
+                        return;
+                    }
+                }
+                ContinuationState::Stored => {
+                    self.invoke_stored(StreamPollResult::ItemsAvailable);
+                    self.callback_data.store(callback_data, Ordering::Release);
+                    self.callback_ptr.store(callback as *mut (), Ordering::Release);
+                    return;
+                }
+                ContinuationState::Cancelled => {
+                    callback(callback_data, StreamPollResult::ItemsAvailable);
+                    return;
+                }
+            }
+        }
+    }
+
+    fn wake(&self) {
+        loop {
+            match self.current_state() {
+                ContinuationState::Stored => {
+                    if self.try_transition(ContinuationState::Stored, ContinuationState::Empty) {
+                        self.invoke_stored(StreamPollResult::ItemsAvailable);
+                        return;
+                    }
+                }
+                ContinuationState::Empty => {
+                    if self.try_transition(ContinuationState::Empty, ContinuationState::Waked) {
+                        return;
+                    }
+                }
+                ContinuationState::Waked | ContinuationState::Cancelled => return,
+            }
+        }
+    }
+
+    fn cancel(&self) {
+        loop {
+            match self.current_state() {
+                ContinuationState::Stored => {
+                    if self.try_transition(ContinuationState::Stored, ContinuationState::Cancelled) {
+                        self.invoke_stored(StreamPollResult::ItemsAvailable);
+                        return;
+                    }
+                }
+                ContinuationState::Empty | ContinuationState::Waked => {
+                    if self.try_transition(self.current_state(), ContinuationState::Cancelled) {
+                        return;
+                    }
+                }
+                ContinuationState::Cancelled => return,
+            }
+        }
+    }
+
+    fn invoke_stored(&self, result: StreamPollResult) {
+        let callback_ptr = self.callback_ptr.load(Ordering::Acquire);
+        let callback_data = self.callback_data.load(Ordering::Acquire);
+        if !callback_ptr.is_null() {
+            let callback: StreamContinuationCallback = unsafe { std::mem::transmute(callback_ptr) };
+            callback(callback_data, result);
+        }
+    }
+}
 
 pub struct EventSubscription<T: Send + 'static> {
     ring_buffer: SpscRingBuffer<T>,
     is_active: AtomicBool,
     notification_mutex: Mutex<()>,
     notification_condvar: Condvar,
+    continuation_scheduler: StreamContinuationScheduler,
 }
 
 #[repr(i32)]
@@ -26,6 +160,7 @@ impl<T: Send + 'static> EventSubscription<T> {
             is_active: AtomicBool::new(true),
             notification_mutex: Mutex::new(()),
             notification_condvar: Condvar::new(),
+            continuation_scheduler: StreamContinuationScheduler::new(),
         }
     }
 
@@ -42,6 +177,7 @@ impl<T: Send + 'static> EventSubscription<T> {
 
         if push_succeeded {
             self.notification_condvar.notify_one();
+            self.continuation_scheduler.wake();
         }
 
         push_succeeded
@@ -89,9 +225,24 @@ impl<T: Send + 'static> EventSubscription<T> {
         }
     }
 
+    pub fn poll(&self, callback_data: u64, callback: StreamContinuationCallback) {
+        if !self.is_active() {
+            callback(callback_data, StreamPollResult::ItemsAvailable);
+            return;
+        }
+
+        if self.ring_buffer.available_count() > 0 {
+            callback(callback_data, StreamPollResult::ItemsAvailable);
+            return;
+        }
+
+        self.continuation_scheduler.store_continuation(callback, callback_data);
+    }
+
     pub fn unsubscribe(&self) {
         self.is_active.store(false, Ordering::Release);
         self.notification_condvar.notify_all();
+        self.continuation_scheduler.cancel();
     }
 
     pub fn available_count(&self) -> usize {
@@ -153,6 +304,20 @@ pub unsafe fn subscription_wait<T: Send + 'static>(
 
     let subscription = unsafe { &*(handle as *const EventSubscription<T>) };
     subscription.wait_for_events(timeout_milliseconds) as i32
+}
+
+pub unsafe fn subscription_poll<T: Send + 'static>(
+    handle: SubscriptionHandle,
+    callback_data: u64,
+    callback: StreamContinuationCallback,
+) {
+    if handle.is_null() {
+        callback(callback_data, StreamPollResult::ItemsAvailable);
+        return;
+    }
+
+    let subscription = unsafe { &*(handle as *const EventSubscription<T>) };
+    subscription.poll(callback_data, callback);
 }
 
 pub unsafe fn subscription_unsubscribe<T: Send + 'static>(handle: SubscriptionHandle) {
