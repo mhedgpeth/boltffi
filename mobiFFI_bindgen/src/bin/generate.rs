@@ -22,6 +22,11 @@ fn generate_swift(module: &Module) -> String {
 
     output.push_str("import Foundation\n\n");
 
+    for function in &module.functions {
+        output.push_str(&Swift::render_function(function, module));
+        output.push_str("\n\n");
+    }
+
     for class in &module.classes {
         let wrappers = Swift::render_stream_wrappers(class, module);
         if !wrappers.is_empty() {
@@ -65,9 +70,10 @@ fn main() {
     };
 
     println!(
-        "Found {} classes, {} records",
+        "Found {} classes, {} records, {} functions",
         module.classes.len(),
-        module.records.len()
+        module.records.len(),
+        module.functions.len()
     );
 
     let metadata_dir = PathBuf::from("target").join(&module_name);
@@ -95,6 +101,15 @@ fn main() {
     println!("\n--- Records ---");
     for record in &module.records {
         println!("  {} ({} fields)", record.name, record.fields.len());
+    }
+
+    println!("\n--- Functions ---");
+    for function in &module.functions {
+        println!(
+            "  {} ({} params)",
+            function.name,
+            function.inputs.len()
+        );
     }
 
     println!("\n--- Callback Traits ---");

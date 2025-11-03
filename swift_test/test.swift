@@ -12,6 +12,7 @@ func runTests() {
     print("Testing MobiFFI Swift binding...")
     print("Using generated ergonomic API\n")
 
+    testFreeFunctions()
     testCounter()
     testDataStore()
     testAccumulator()
@@ -19,6 +20,32 @@ func runTests() {
     testCallbackTrait()
     
     print("\n=== ALL TESTS PASSED ===")
+}
+
+func testFreeFunctions() {
+    print("--- Testing Free Functions ---")
+    
+    let greet = greeting(name: "Ali")
+    print("greeting(\"Ali\") = \"\(greet)\"")
+    assert(greet == "Hello, Ali!", "Expected 'Hello, Ali!'")
+    
+    let combined = concat(first: "Mobi", second: "FFI")
+    print("concat(\"Mobi\", \"FFI\") = \"\(combined)\"")
+    assert(combined == "MobiFFI", "Expected 'MobiFFI'")
+    
+    let reversed = reverseString(input: "Hello")
+    print("reverseString(\"Hello\") = \"\(reversed)\"")
+    assert(reversed == "olleH", "Expected 'olleH'")
+    
+    let sum = addNumbers(first: 10, second: 20)
+    print("addNumbers(10, 20) = \(sum)")
+    assert(sum == 30, "Expected 30")
+    
+    let product = multiplyFloats(first: 2.5, second: 4.0)
+    print("multiplyFloats(2.5, 4.0) = \(product)")
+    assert(product == 10.0, "Expected 10.0")
+    
+    print("SUCCESS: Free functions work!\n")
 }
 
 func testCounter() {

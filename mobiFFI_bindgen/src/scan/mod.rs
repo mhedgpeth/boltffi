@@ -4,14 +4,15 @@ use syn::{Attribute, Fields, FnArg, ImplItem, Item, ItemImpl, ItemStruct, ItemTr
 use walkdir::WalkDir;
 
 use crate::model::{
-    CallbackTrait, Class, Constructor, Method, Module, Parameter, Primitive, Receiver, Record,
-    RecordField, StreamMethod, StreamMode, TraitMethod, TraitMethodParam, Type as MType,
+    CallbackTrait, Class, Constructor, Function, Method, Module, Parameter, Primitive, Receiver,
+    Record, RecordField, StreamMethod, StreamMode, TraitMethod, TraitMethodParam, Type as MType,
 };
 
 pub struct SourceScanner {
     module_name: String,
     classes: Vec<ScannedClass>,
     records: Vec<ScannedRecord>,
+    functions: Vec<ScannedFunction>,
     callback_traits: Vec<ScannedCallbackTrait>,
 }
 
@@ -41,6 +42,13 @@ struct ScannedRecord {
     fields: Vec<(String, MType)>,
 }
 
+struct ScannedFunction {
+    name: String,
+    params: Vec<(String, MType)>,
+    output: Option<MType>,
+    is_async: bool,
+}
+
 struct ScannedCallbackTrait {
     name: String,
     methods: Vec<ScannedTraitMethod>,
@@ -59,6 +67,7 @@ impl SourceScanner {
             module_name: module_name.into(),
             classes: Vec::new(),
             records: Vec::new(),
+            functions: Vec::new(),
             callback_traits: Vec::new(),
         }
     }
@@ -109,6 +118,11 @@ impl SourceScanner {
                     self.process_callback_trait(item_trait);
                 }
             }
+            Item::Fn(item_fn) => {
+                if has_attribute(&item_fn.attrs, "ffi_export") {
+                    self.process_function(item_fn);
+                }
+            }
             _ => {}
         }
     }
@@ -129,6 +143,73 @@ impl SourceScanner {
         };
 
         self.records.push(ScannedRecord { name, fields });
+    }
+
+    fn process_function(&mut self, item_fn: &syn::ItemFn) {
+        let name = item_fn.sig.ident.to_string();
+        let is_async = item_fn.sig.asyncness.is_some();
+
+        let typed_params: Vec<_> = item_fn
+            .sig
+            .inputs
+            .iter()
+            .filter_map(|arg| {
+                if let FnArg::Typed(pat_type) = arg {
+                    Some(pat_type)
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        let params: Vec<(String, MType)> = typed_params
+            .iter()
+            .filter_map(|pat_type| {
+                let param_name = match &*pat_type.pat {
+                    syn::Pat::Ident(pat_ident) => pat_ident.ident.to_string(),
+                    _ => return None,
+                };
+                let param_type = rust_type_to_ffi_type(&pat_type.ty)?;
+                Some((param_name, param_type))
+            })
+            .collect();
+
+        if params.len() != typed_params.len() {
+            return;
+        }
+
+        let output = match &item_fn.sig.output {
+            syn::ReturnType::Default => None,
+            syn::ReturnType::Type(_, ty) => {
+                let converted = rust_type_to_ffi_type(ty);
+                if converted.is_none() {
+                    return;
+                }
+                converted
+            }
+        };
+
+        if let Some(ref out_ty) = output {
+            if matches!(out_ty, MType::Vec(_) | MType::Option(_) | MType::Result { .. } | MType::Enum(_) | MType::Record(_)) {
+                return;
+            }
+        }
+
+        let has_unsupported_params = params.iter().any(|(_, ty)| matches!(ty, MType::Callback(_) | MType::Enum(_) | MType::Record(_) | MType::Slice(_) | MType::MutSlice(_)));
+        if has_unsupported_params {
+            return;
+        }
+
+        if is_async {
+            return;
+        }
+
+        self.functions.push(ScannedFunction {
+            name,
+            params,
+            output,
+            is_async,
+        });
     }
 
     fn process_callback_trait(&mut self, item_trait: &ItemTrait) {
@@ -269,6 +350,11 @@ impl SourceScanner {
             return None;
         }
 
+        let has_slice_params = params.iter().any(|(_, ty)| matches!(ty, MType::Slice(_) | MType::MutSlice(_)));
+        if has_slice_params {
+            return None;
+        }
+
         let output = match &method.sig.output {
             syn::ReturnType::Default => None,
             syn::ReturnType::Type(_, ty) => rust_type_to_ffi_type(ty),
@@ -304,6 +390,20 @@ impl SourceScanner {
                 r = r.with_field(RecordField::new(&name, ty));
             }
             module = module.with_record(r);
+        }
+
+        for function in self.functions {
+            let mut f = Function::new(&function.name);
+            for (name, ty) in function.params {
+                f = f.with_param(Parameter::new(&name, ty));
+            }
+            if let Some(output) = function.output {
+                f = f.with_output(output);
+            }
+            if function.is_async {
+                f = f.make_async();
+            }
+            module = module.with_function(f);
         }
 
         for class in self.classes {
@@ -452,6 +552,10 @@ fn rust_type_to_ffi_type(ty: &Type) -> Option<MType> {
                 }
             }
             
+            if ident == "Result" || ident == "Vec" || ident == "Option" {
+                return None;
+            }
+            
             let path_str = type_path
                 .path
                 .segments
@@ -469,7 +573,19 @@ fn rust_type_to_ffi_type(ty: &Type) -> Option<MType> {
                     return Some(MType::String);
                 }
             }
+            if let Type::Slice(slice) = &*type_ref.elem {
+                let inner = rust_type_to_ffi_type(&slice.elem)?;
+                return if type_ref.mutability.is_some() {
+                    Some(MType::MutSlice(Box::new(inner)))
+                } else {
+                    Some(MType::Slice(Box::new(inner)))
+                };
+            }
             rust_type_to_ffi_type(&type_ref.elem)
+        }
+        Type::Slice(slice) => {
+            let inner = rust_type_to_ffi_type(&slice.elem)?;
+            Some(MType::Slice(Box::new(inner)))
         }
         Type::ImplTrait(impl_trait) => {
             for bound in &impl_trait.bounds {
@@ -529,6 +645,9 @@ fn string_to_ffi_type(s: &str) -> Option<MType> {
         s if s.starts_with("Option<") => {
             let inner = &s[7..s.len() - 1];
             Some(MType::Option(Box::new(string_to_ffi_type(inner)?)))
+        }
+        s if s.starts_with("Result<") => {
+            None
         }
         s => Some(MType::Record(s.to_string())),
     }

@@ -54,6 +54,8 @@ pub enum Type {
     Primitive(Primitive),
     String,
     Bytes,
+    Slice(Box<Type>),
+    MutSlice(Box<Type>),
     Vec(Box<Type>),
     Option(Box<Type>),
     Result { ok: Box<Type>, err: Box<Type> },

@@ -1,7 +1,7 @@
 use askama::Template;
 
 use crate::model::{
-    CallbackTrait, Class, Enumeration, Method, Module, Record, StreamMethod, StreamMode,
+    CallbackTrait, Class, Enumeration, Function, Method, Module, Record, StreamMethod, StreamMode,
 };
 
 use super::body::BodyRenderer;
@@ -39,6 +39,78 @@ impl RecordTemplate {
             has_aliases,
         }
     }
+}
+
+#[derive(Template)]
+#[template(path = "swift/function.txt", escape = "none")]
+pub struct FunctionTemplate {
+    pub func_name: String,
+    pub ffi_name: String,
+    pub params: Vec<FunctionParamView>,
+    pub return_type: Option<String>,
+    pub returns_string: bool,
+    pub is_async: bool,
+    pub throws: bool,
+    pub has_string_params: bool,
+    pub has_slice_params: bool,
+}
+
+impl FunctionTemplate {
+    pub fn from_function(function: &Function, module: &Module) -> Self {
+        use crate::model::Type;
+
+        let returns_string = function
+            .output
+            .as_ref()
+            .map(|ty| matches!(ty, Type::String))
+            .unwrap_or(false);
+
+        let has_string_params = function
+            .inputs
+            .iter()
+            .any(|p| matches!(p.param_type, Type::String));
+
+        let has_slice_params = function
+            .inputs
+            .iter()
+            .any(|p| matches!(p.param_type, Type::Slice(_) | Type::MutSlice(_)));
+
+        Self {
+            func_name: NamingConvention::method_name(&function.name),
+            ffi_name: function.ffi_name(&module.ffi_prefix()),
+            params: function
+                .inputs
+                .iter()
+                .map(|p| FunctionParamView {
+                    swift_name: NamingConvention::param_name(&p.name),
+                    swift_type: TypeMapper::map_type(&p.param_type),
+                    ffi_conversion: TypeMapper::to_ffi_conversion(&p.name, &p.param_type),
+                    is_string: matches!(p.param_type, Type::String),
+                    is_slice: matches!(p.param_type, Type::Slice(_)),
+                    is_mut_slice: matches!(p.param_type, Type::MutSlice(_)),
+                })
+                .collect(),
+            return_type: function
+                .output
+                .as_ref()
+                .filter(|ty| !ty.is_void())
+                .map(TypeMapper::map_type),
+            returns_string,
+            is_async: function.is_async,
+            throws: function.throws(),
+            has_string_params,
+            has_slice_params,
+        }
+    }
+}
+
+pub struct FunctionParamView {
+    pub swift_name: String,
+    pub swift_type: String,
+    pub ffi_conversion: String,
+    pub is_string: bool,
+    pub is_slice: bool,
+    pub is_mut_slice: bool,
 }
 
 #[derive(Template)]

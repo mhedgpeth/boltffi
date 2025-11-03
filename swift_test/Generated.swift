@@ -1,5 +1,51 @@
 import Foundation
 
+public func greeting(name: String) -> String {
+    var result = FfiString(ptr: nil, len: 0, cap: 0)
+    return name.withCString { namePtr in
+    let status = mffi_greeting(namePtr, UInt(name.utf8.count), &result)
+    defer { mffi_free_string(result) }
+    return String(data: Data(bytes: result.ptr!, count: Int(result.len)), encoding: .utf8)!
+    }
+}
+
+public func concat(first: String, second: String) -> String {
+    var result = FfiString(ptr: nil, len: 0, cap: 0)
+    return first.withCString { firstPtr in
+    return second.withCString { secondPtr in
+    let status = mffi_concat(firstPtr, UInt(first.utf8.count), secondPtr, UInt(second.utf8.count), &result)
+    defer { mffi_free_string(result) }
+    return String(data: Data(bytes: result.ptr!, count: Int(result.len)), encoding: .utf8)!
+    }
+    }
+}
+
+public func reverseString(input: String) -> String {
+    var result = FfiString(ptr: nil, len: 0, cap: 0)
+    return input.withCString { inputPtr in
+    let status = mffi_reverse_string(inputPtr, UInt(input.utf8.count), &result)
+    defer { mffi_free_string(result) }
+    return String(data: Data(bytes: result.ptr!, count: Int(result.len)), encoding: .utf8)!
+    }
+}
+
+public func addNumbers(first: Int32, second: Int32) -> Int32 {
+    return mffi_add_numbers(first, second)
+}
+
+public func multiplyFloats(first: Double, second: Double) -> Double {
+    return mffi_multiply_floats(first, second)
+}
+
+public func makeGreeting(name: String) -> String {
+    var result = FfiString(ptr: nil, len: 0, cap: 0)
+    return name.withCString { namePtr in
+    let status = mffi_make_greeting(namePtr, UInt(name.utf8.count), &result)
+    defer { mffi_free_string(result) }
+    return String(data: Data(bytes: result.ptr!, count: Int(result.len)), encoding: .utf8)!
+    }
+}
+
 
 public final class Counter {
     let handle: OpaquePointer

@@ -5,13 +5,13 @@ mod types;
 
 use askama::Template;
 
-use crate::model::{CallbackTrait, Class, Enumeration, Module, Record, StreamMode};
+use crate::model::{CallbackTrait, Class, Enumeration, Function, Module, Record, StreamMode};
 
 pub use body::BodyRenderer;
 pub use names::NamingConvention;
 pub use templates::{
-    CallbackTraitTemplate, ClassTemplate, CStyleEnumTemplate, DataEnumTemplate, RecordTemplate,
-    StreamCancellableTemplate, StreamSubscriptionTemplate,
+    CallbackTraitTemplate, ClassTemplate, CStyleEnumTemplate, DataEnumTemplate, FunctionTemplate,
+    RecordTemplate, StreamCancellableTemplate, StreamSubscriptionTemplate,
 };
 pub use types::TypeMapper;
 
@@ -67,5 +67,11 @@ impl Swift {
         CallbackTraitTemplate::from_trait(callback_trait, module)
             .render()
             .expect("callback trait template failed")
+    }
+
+    pub fn render_function(function: &Function, module: &Module) -> String {
+        FunctionTemplate::from_function(function, module)
+            .render()
+            .expect("function template failed")
     }
 }

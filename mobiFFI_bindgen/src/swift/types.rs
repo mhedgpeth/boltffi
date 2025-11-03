@@ -10,6 +10,8 @@ impl TypeMapper {
             Type::Primitive(primitive) => Self::map_primitive(*primitive),
             Type::String => "String".into(),
             Type::Bytes => "Data".into(),
+            Type::Slice(inner) => format!("[{}]", Self::map_type(inner)),
+            Type::MutSlice(inner) => format!("[{}]", Self::map_type(inner)),
             Type::Vec(inner) => format!("[{}]", Self::map_type(inner)),
             Type::Option(inner) => format!("{}?", Self::map_type(inner)),
             Type::Result { ok, .. } => Self::map_type(ok),
@@ -46,6 +48,8 @@ impl TypeMapper {
             Type::Primitive(primitive) => Self::ffi_primitive(*primitive),
             Type::String => "UnsafePointer<CChar>".into(),
             Type::Bytes => "UnsafePointer<UInt8>".into(),
+            Type::Slice(inner) => format!("UnsafePointer<{}>", Self::ffi_type(inner)),
+            Type::MutSlice(inner) => format!("UnsafeMutablePointer<{}>", Self::ffi_type(inner)),
             Type::Vec(_) => "UnsafeMutableRawPointer".into(),
             Type::Option(inner) => Self::ffi_type(inner),
             Type::Result { ok, .. } => Self::ffi_type(ok),
@@ -108,5 +112,22 @@ impl TypeMapper {
             ty,
             Type::String | Type::Bytes | Type::Vec(_) | Type::Option(_) | Type::Object(_) | Type::BoxedTrait(_)
         )
+    }
+
+    pub fn to_ffi_conversion(param_name: &str, ty: &Type) -> String {
+        match ty {
+            Type::String => format!("{}", param_name),
+            Type::Primitive(_) => param_name.to_string(),
+            Type::Record(_) => param_name.to_string(),
+            Type::Enum(_) => param_name.to_string(),
+            _ => param_name.to_string(),
+        }
+    }
+
+    pub fn from_ffi_conversion(ty: &Type, expr: &str) -> String {
+        match ty {
+            Type::String => format!("String(cString: {}.ptr!)", expr),
+            _ => expr.to_string(),
+        }
     }
 }
