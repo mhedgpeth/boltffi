@@ -645,14 +645,16 @@ pub struct SyncMethodBodyTemplate {
     pub ffi_name: String,
     pub params: Vec<MethodParamView>,
     pub has_return: bool,
-    pub has_slice_params: bool,
+    pub has_pointer_params: bool,
 }
 
 pub struct MethodParamView {
     pub swift_name: String,
     pub ffi_arg: String,
+    pub is_string: bool,
     pub is_slice: bool,
     pub is_mut_slice: bool,
+    pub is_vec: bool,
 }
 
 fn param_to_ffi_arg(param: &crate::model::Parameter) -> String {
@@ -665,9 +667,6 @@ fn param_to_ffi_arg(param: &crate::model::Parameter) -> String {
                 class_name, class_name, name
             )
         }
-        crate::model::Type::Slice(_) | crate::model::Type::MutSlice(_) => {
-            format!("{}Ptr.baseAddress, UInt({}Ptr.count)", name, name)
-        }
         _ => name,
     }
 }
@@ -677,19 +676,26 @@ impl SyncMethodBodyTemplate {
         let class_prefix = class.ffi_prefix(&module.ffi_prefix());
         let params: Vec<_> = method
             .non_callback_params()
-            .map(|p| MethodParamView {
-                swift_name: NamingConvention::param_name(&p.name),
-                ffi_arg: param_to_ffi_arg(p),
-                is_slice: matches!(p.param_type, crate::model::Type::Slice(_)),
-                is_mut_slice: matches!(p.param_type, crate::model::Type::MutSlice(_)),
+            .map(|param| {
+                let swift_name = NamingConvention::param_name(&param.name);
+                MethodParamView {
+                    swift_name: swift_name.clone(),
+                    ffi_arg: param_to_ffi_arg(param),
+                    is_string: matches!(param.param_type, crate::model::Type::String),
+                    is_slice: matches!(param.param_type, crate::model::Type::Slice(_)),
+                    is_mut_slice: matches!(param.param_type, crate::model::Type::MutSlice(_)),
+                    is_vec: matches!(param.param_type, crate::model::Type::Vec(_)),
+                }
             })
             .collect();
-        let has_slice_params = params.iter().any(|p| p.is_slice || p.is_mut_slice);
+        let has_pointer_params = params
+            .iter()
+            .any(|param| param.is_string || param.is_slice || param.is_mut_slice || param.is_vec);
         Self {
             ffi_name: method.ffi_name(&class_prefix),
             params,
             has_return: method.output.as_ref().map_or(false, |t| !t.is_void()),
-            has_slice_params,
+            has_pointer_params,
         }
     }
 }
@@ -698,8 +704,9 @@ impl SyncMethodBodyTemplate {
 #[template(path = "swift/method_callback.txt", escape = "none")]
 pub struct CallbackMethodBodyTemplate {
     pub ffi_name: String,
-    pub args: Vec<String>,
+    pub params: Vec<MethodParamView>,
     pub has_return: bool,
+    pub has_pointer_params: bool,
     pub callbacks: Vec<CallbackView>,
 }
 
@@ -719,13 +726,30 @@ impl CallbackMethodBodyTemplate {
         let class_prefix = class.ffi_prefix(&module.ffi_prefix());
         let method_name_pascal = NamingConvention::class_name(&method.name);
 
+        let params: Vec<_> = method
+            .non_callback_params()
+            .map(|param| {
+                let swift_name = NamingConvention::param_name(&param.name);
+                MethodParamView {
+                    swift_name: swift_name.clone(),
+                    ffi_arg: param_to_ffi_arg(param),
+                    is_string: matches!(param.param_type, crate::model::Type::String),
+                    is_slice: matches!(param.param_type, crate::model::Type::Slice(_)),
+                    is_mut_slice: matches!(param.param_type, crate::model::Type::MutSlice(_)),
+                    is_vec: matches!(param.param_type, crate::model::Type::Vec(_)),
+                }
+            })
+            .collect();
+
+        let has_pointer_params = params
+            .iter()
+            .any(|param| param.is_string || param.is_slice || param.is_mut_slice || param.is_vec);
+
         Self {
             ffi_name: method.ffi_name(&class_prefix),
-            args: method
-                .non_callback_params()
-                .map(|p| NamingConvention::param_name(&p.name))
-                .collect(),
+            params,
             has_return: method.output.as_ref().map_or(false, |t| !t.is_void()),
+            has_pointer_params,
             callbacks: method
                 .callback_params()
                 .enumerate()
@@ -765,20 +789,38 @@ impl CallbackMethodBodyTemplate {
 #[template(path = "swift/method_throwing.txt", escape = "none")]
 pub struct ThrowingMethodBodyTemplate {
     pub ffi_name: String,
-    pub args: Vec<String>,
+    pub params: Vec<MethodParamView>,
+    pub has_pointer_params: bool,
     pub return_type: String,
 }
 
 impl ThrowingMethodBodyTemplate {
     pub fn from_method(method: &Method, class: &Class, module: &Module) -> Self {
         let class_prefix = class.ffi_prefix(&module.ffi_prefix());
+        let params: Vec<_> = method
+            .inputs
+            .iter()
+            .map(|param| {
+                let swift_name = NamingConvention::param_name(&param.name);
+                MethodParamView {
+                    swift_name: swift_name.clone(),
+                    ffi_arg: param_to_ffi_arg(param),
+                    is_string: matches!(param.param_type, crate::model::Type::String),
+                    is_slice: matches!(param.param_type, crate::model::Type::Slice(_)),
+                    is_mut_slice: matches!(param.param_type, crate::model::Type::MutSlice(_)),
+                    is_vec: matches!(param.param_type, crate::model::Type::Vec(_)),
+                }
+            })
+            .collect();
+
+        let has_pointer_params = params
+            .iter()
+            .any(|param| param.is_string || param.is_slice || param.is_mut_slice || param.is_vec);
+
         Self {
             ffi_name: method.ffi_name(&class_prefix),
-            args: method
-                .inputs
-                .iter()
-                .map(|p| NamingConvention::param_name(&p.name))
-                .collect(),
+            params,
+            has_pointer_params,
             return_type: method
                 .output
                 .as_ref()

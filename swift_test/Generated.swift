@@ -40,8 +40,9 @@ private func ensureOk(_ status: FfiStatus, context: StaticString = #function) {
 
 public func greeting(name: String) -> String {
     var result = FfiString(ptr: nil, len: 0, cap: 0)
-    return name.withCString { namePtr in
-	    let status = mffi_greeting(namePtr, Int(name.utf8.count), &result)
+	    return
+	    name.withCString { namePtr in
+	    let status = mffi_greeting(UnsafeRawPointer(namePtr).assumingMemoryBound(to: UInt8.self), Int(name.utf8.count), &result)
 	    defer { mffi_free_string(result) }
 	    ensureOk(status)
 	    return stringFromFfi(result)
@@ -50,9 +51,10 @@ public func greeting(name: String) -> String {
 
 public func concat(first: String, second: String) -> String {
     var result = FfiString(ptr: nil, len: 0, cap: 0)
-    return first.withCString { firstPtr in
-    second.withCString { secondPtr in
-	    let status = mffi_concat(firstPtr, Int(first.utf8.count), secondPtr, Int(second.utf8.count), &result)
+	    return
+	    first.withCString { firstPtr in
+	    second.withCString { secondPtr in
+	    let status = mffi_concat(UnsafeRawPointer(firstPtr).assumingMemoryBound(to: UInt8.self), Int(first.utf8.count), UnsafeRawPointer(secondPtr).assumingMemoryBound(to: UInt8.self), Int(second.utf8.count), &result)
 	    defer { mffi_free_string(result) }
 	    ensureOk(status)
 	    return stringFromFfi(result)
@@ -62,8 +64,9 @@ public func concat(first: String, second: String) -> String {
 
 public func reverseString(input: String) -> String {
     var result = FfiString(ptr: nil, len: 0, cap: 0)
-    return input.withCString { inputPtr in
-	    let status = mffi_reverse_string(inputPtr, Int(input.utf8.count), &result)
+	    return
+	    input.withCString { inputPtr in
+	    let status = mffi_reverse_string(UnsafeRawPointer(inputPtr).assumingMemoryBound(to: UInt8.self), Int(input.utf8.count), &result)
 	    defer { mffi_free_string(result) }
 	    ensureOk(status)
 	    return stringFromFfi(result)
@@ -71,25 +74,27 @@ public func reverseString(input: String) -> String {
 }
 
 public func copyBytes(src: [UInt8], dst: inout [UInt8]) -> UInt {
-    return src.withUnsafeBufferPointer { srcPtr in
-    dst.withUnsafeMutableBufferPointer { dstPtr in
-    return mffi_copy_bytes(srcPtr.baseAddress, Int(srcPtr.count), dstPtr.baseAddress, Int(dstPtr.count))
+	    return
+	    src.withUnsafeBufferPointer { srcPtr in
+	    dst.withUnsafeMutableBufferPointer { dstPtr in
+	    return mffi_copy_bytes(srcPtr.baseAddress, Int(srcPtr.count), dstPtr.baseAddress, Int(dstPtr.count))
     }
     }
 }
 
 public func addNumbers(first: Int32, second: Int32) -> Int32 {
-    return mffi_add_numbers(first, second)
+	    return mffi_add_numbers(first, second)
 }
 
 public func multiplyFloats(first: Double, second: Double) -> Double {
-    return mffi_multiply_floats(first, second)
+	    return mffi_multiply_floats(first, second)
 }
 
 public func makeGreeting(name: String) -> String {
     var result = FfiString(ptr: nil, len: 0, cap: 0)
-    return name.withCString { namePtr in
-	    let status = mffi_make_greeting(namePtr, Int(name.utf8.count), &result)
+	    return
+	    name.withCString { namePtr in
+	    let status = mffi_make_greeting(UnsafeRawPointer(namePtr).assumingMemoryBound(to: UInt8.self), Int(name.utf8.count), &result)
 	    defer { mffi_free_string(result) }
 	    ensureOk(status)
 	    return stringFromFfi(result)
@@ -127,29 +132,30 @@ public func foreachRange(start: Int32, end: Int32, callback: @escaping (Int32) -
 }
 
 public func oppositeDirection(dir: Direction) -> Direction {
-    return mffi_opposite_direction(dir)
+	    return mffi_opposite_direction(dir)
 }
 
 public func directionToDegrees(dir: Direction) -> Int32 {
-    return mffi_direction_to_degrees(dir)
+	    return mffi_direction_to_degrees(dir)
 }
 
 public func findEven(value: Int32) -> Int32? {
-    var outValue: Int32 = 0
-    let isSome = mffi_find_even(value, &outValue)
-    return isSome != 0 ? outValue : nil
+	    var outValue: Int32 = 0
+	    let isSome = mffi_find_even(value, &outValue)
+	    return isSome != 0 ? outValue : nil
 }
 
 public func processValue(value: Int32) -> ApiResult {
-    return mffi_process_value(value)
+	    return mffi_process_value(value)
 }
 
 public func apiResultIsSuccess(result: ApiResult) -> Bool {
-    return mffi_api_result_is_success(result)
+	    return mffi_api_result_is_success(result)
 }
 
 public func computeHeavy(input: Int32) async throws -> Int32 {
-    let futureHandle = mffi_compute_heavy(input)
+    let futureHandle =
+            mffi_compute_heavy(input)
     
     class FutureContext {
         let handle: RustFutureHandle?
@@ -192,7 +198,8 @@ public func computeHeavy(input: Int32) async throws -> Int32 {
 }
 
 public func fetchData(id: Int32) async throws -> Int32 {
-    let futureHandle = mffi_fetch_data(id)
+    let futureHandle =
+            mffi_fetch_data(id)
     
     class FutureContext {
         let handle: RustFutureHandle?
@@ -235,7 +242,8 @@ public func fetchData(id: Int32) async throws -> Int32 {
 }
 
 public func asyncMakeString(value: Int32) async throws -> String {
-    let futureHandle = mffi_async_make_string(value)
+    let futureHandle =
+            mffi_async_make_string(value)
     
     class FutureContext {
         let handle: RustFutureHandle?
@@ -280,7 +288,8 @@ public func asyncMakeString(value: Int32) async throws -> String {
 }
 
 public func asyncFetchPoint(x: Double, y: Double) async throws -> DataPoint {
-    let futureHandle = mffi_async_fetch_point(x, y)
+    let futureHandle =
+            mffi_async_fetch_point(x, y)
     
     class FutureContext {
         let handle: RustFutureHandle?
@@ -323,7 +332,8 @@ public func asyncFetchPoint(x: Double, y: Double) async throws -> DataPoint {
 }
 
 public func asyncGetNumbers(count: Int32) async throws -> [Int32] {
-    let futureHandle = mffi_async_get_numbers(count)
+    let futureHandle =
+            mffi_async_get_numbers(count)
     
     class FutureContext {
         let handle: RustFutureHandle?
@@ -369,7 +379,8 @@ public func asyncGetNumbers(count: Int32) async throws -> [Int32] {
 }
 
 public func asyncFindValue(needle: Int32) async throws -> Int32? {
-    let futureHandle = mffi_async_find_value(needle)
+    let futureHandle =
+            mffi_async_find_value(needle)
     
     class FutureContext {
         let handle: RustFutureHandle?
@@ -412,7 +423,10 @@ public func asyncFindValue(needle: Int32) async throws -> Int32? {
 }
 
 public func asyncGreeting(name: String) async throws -> String {
-    let futureHandle = mffi_async_greeting(name, Int(name.utf8.count))
+    let futureHandle =
+        name.withCString { namePtr in
+            mffi_async_greeting(UnsafeRawPointer(namePtr).assumingMemoryBound(to: UInt8.self), Int(name.utf8.count))
+        }
     
     class FutureContext {
         let handle: RustFutureHandle?
@@ -457,7 +471,8 @@ public func asyncGreeting(name: String) async throws -> String {
 }
 
 public func asyncFetchNumbers(id: Int32) async throws -> [Int32] {
-    let futureHandle = mffi_async_fetch_numbers(id)
+    let futureHandle =
+            mffi_async_fetch_numbers(id)
     
     class FutureContext {
         let handle: RustFutureHandle?
@@ -564,8 +579,10 @@ ensureOk(status)
     }
 
     public func copyInto(dst: inout [DataPoint]) -> UInt {
-        return dst.withUnsafeMutableBufferPointer { dstPtr in
-mffi_datastore_copy_into(handle, dstPtr.baseAddress, UInt(dstPtr.count))
+        
+return
+dst.withUnsafeMutableBufferPointer { dstPtr in
+mffi_datastore_copy_into(handle, dstPtr.baseAddress, Int(dstPtr.count))
 }
     }
 
@@ -575,11 +592,11 @@ mffi_datastore_copy_into(handle, dstPtr.baseAddress, UInt(dstPtr.count))
         class ForeachCallbackBox { let fn_: ForeachCallbackFn; init(_ fn_: @escaping ForeachCallbackFn) { self.fn_ = fn_ } }
         let callbackBox = ForeachCallbackBox(callback)
         let callbackPtr = Unmanaged.passRetained(callbackBox).toOpaque()
+        defer { Unmanaged<ForeachCallbackBox>.fromOpaque(callbackPtr).release() }
         let callbackTrampoline: @convention(c) (UnsafeMutableRawPointer?, DataPoint) -> Void = { ud, val in
             Unmanaged<ForeachCallbackBox>.fromOpaque(ud!).takeUnretainedValue().fn_(val)
         }
         let status = mffi_datastore_foreach(handle, callbackTrampoline, callbackPtr)
-        Unmanaged<ForeachCallbackBox>.fromOpaque(callbackPtr).release()
         ensureOk(status)
     }
 

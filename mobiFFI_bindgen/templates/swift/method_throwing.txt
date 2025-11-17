@@ -1,6 +1,23 @@
+{%- if has_pointer_params %}
+return 
+{%- endif -%}
+{%- for param in params -%}
+{%- if param.is_string %}
+{{ param.swift_name }}.withCString { {{ param.swift_name }}Ptr in
+{% else if param.is_slice %}
+{{ param.swift_name }}.withUnsafeBufferPointer { {{ param.swift_name }}Ptr in
+{% else if param.is_mut_slice %}
+{{ param.swift_name }}.withUnsafeMutableBufferPointer { {{ param.swift_name }}Ptr in
+{% else if param.is_vec %}
+{{ param.swift_name }}.withUnsafeBufferPointer { {{ param.swift_name }}Ptr in
+{% endif -%}
+{%- endfor -%}
 var status = FfiStatus()
-let result = {{ ffi_name }}(handle{% for arg in args %}, {{ arg }}{% endfor %}, &status)
-if status.code != 0 {
-    throw FfiError(status: status)
-}
+let result = {{ ffi_name }}(handle{% for param in params %}, {% if param.is_string %}UnsafeRawPointer({{ param.swift_name }}Ptr).assumingMemoryBound(to: UInt8.self), Int({{ param.swift_name }}.utf8.count){% else if param.is_slice || param.is_mut_slice || param.is_vec %}{{ param.swift_name }}Ptr.baseAddress, Int({{ param.swift_name }}Ptr.count){% else %}{{ param.ffi_arg }}{% endif %}{% endfor %}, &status)
+try checkStatus(status)
 return result as {{ return_type }}
+{%- for param in params -%}
+{%- if param.is_string || param.is_slice || param.is_mut_slice || param.is_vec %}
+}
+{%- endif -%}
+{%- endfor -%}
