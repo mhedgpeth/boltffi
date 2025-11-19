@@ -43,53 +43,46 @@ private func ensureOk(_ status: FfiStatus, context: StaticString = #function) {
 {%- if has_async %}
 final class FfiFutureState<T>: @unchecked Sendable {
     typealias Continuation = CheckedContinuation<T, Error>
-    
+
     enum FinishDecision {
         case alreadyFinished
         case finishWithoutContinuation
         case finishWithContinuation(Continuation)
     }
-    
+
+    final class ContinuationBox {
+        let continuation: Continuation
+        init(_ continuation: Continuation) { self.continuation = continuation }
+    }
+
     let handle: RustFutureHandle?
-    private var stateTag: UInt8 = 0
-    private var continuation: Continuation?
-    
+    private var continuationSlot: UInt64 = 0
+
     init(handle: RustFutureHandle?) {
         self.handle = handle
     }
-    
+
     func installContinuation(_ continuation: Continuation) -> Bool {
-        let claimed = withUnsafeMutablePointer(to: &stateTag) { {{ prefix }}_atomic_u8_cas($0, 0, 1) }
-        guard claimed else { return false }
-        self.continuation = continuation
-        let installed = withUnsafeMutablePointer(to: &stateTag) { {{ prefix }}_atomic_u8_cas($0, 1, 2) }
-        if installed { return true }
-        self.continuation = nil
+        let box = ContinuationBox(continuation)
+        let raw = UInt64(UInt(bitPattern: Unmanaged.passRetained(box).toOpaque()))
+        let prior = withUnsafeMutablePointer(to: &continuationSlot) { {{ prefix }}_atomic_u64_exchange($0, raw) }
+
+        if prior == 0 { return true }
+        if prior == 1 {
+            Unmanaged.passUnretained(box).release()
+            return false
+        }
+        withUnsafeMutablePointer(to: &continuationSlot) { _ = {{ prefix }}_atomic_u64_exchange($0, prior) }
+        Unmanaged.passUnretained(box).release()
         return false
     }
 
-    func canPoll() -> Bool {
-        !(withUnsafeMutablePointer(to: &stateTag) { {{ prefix }}_atomic_u8_cas($0, 3, 3) })
-    }
-    
     func decideFinish() -> FinishDecision {
-        if (withUnsafeMutablePointer(to: &stateTag) { {{ prefix }}_atomic_u8_cas($0, 2, 3) }) {
-            if let continuation = continuation {
-                self.continuation = nil
-                return .finishWithContinuation(continuation)
-            }
-            return .finishWithoutContinuation
-        }
-
-        if (withUnsafeMutablePointer(to: &stateTag) { {{ prefix }}_atomic_u8_cas($0, 0, 3) }) {
-            return .finishWithoutContinuation
-        }
-
-        if (withUnsafeMutablePointer(to: &stateTag) { {{ prefix }}_atomic_u8_cas($0, 1, 3) }) {
-            return .finishWithoutContinuation
-        }
-
-        return .alreadyFinished
+        let prior = withUnsafeMutablePointer(to: &continuationSlot) { {{ prefix }}_atomic_u64_exchange($0, 1) }
+        if prior == 1 { return .alreadyFinished }
+        if prior == 0 { return .finishWithoutContinuation }
+        let box = Unmanaged<ContinuationBox>.fromOpaque(UnsafeRawPointer(bitPattern: UInt(prior))!).takeRetainedValue()
+        return .finishWithContinuation(box.continuation)
     }
 }
 {%- endif %}
