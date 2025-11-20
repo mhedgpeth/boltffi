@@ -6,6 +6,11 @@ public struct FfiError: Error {
     public init(status: FfiStatus, message: String = "") { self.status = status; self.message = message }
 }
 
+private enum StreamPollResult: Int8 {
+    case ready = 0
+    case closed = 1
+}
+
 @inline(__always)
 private func stringFromFfi(_ ffiString: FfiString) -> String {
     guard ffiString.len > 0, let pointer = ffiString.ptr else { return "" }
@@ -940,7 +945,7 @@ ensureOk(status)
         }
 
         private func handlePoll(pollResult: Int8) {
-            let isClosed = pollResult == 1
+            let isClosed = pollResult == StreamPollResult.closed.rawValue
 
             let entered = withUnsafeMutablePointer(to: &callbackTag) { mffi_atomic_u8_cas($0, 0, 1) }
             guard entered else {
