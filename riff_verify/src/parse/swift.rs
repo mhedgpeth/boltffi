@@ -304,7 +304,17 @@ impl SwiftExtractor {
         }
 
         if call_text.contains(".release()") {
-            let opaque_name = call_text.split('.').next()?.trim();
+            let opaque_name = if call_text.contains("fromOpaque(") {
+                call_text
+                    .split("fromOpaque(")
+                    .nth(1)
+                    .and_then(|s| s.split(')').next())
+                    .unwrap_or("")
+                    .trim()
+            } else {
+                call_text.split('.').next().unwrap_or("").trim()
+            };
+            
             let opaque_var = ctx.get_var(opaque_name)?;
             return Some(Statement::Release {
                 opaque_var,
