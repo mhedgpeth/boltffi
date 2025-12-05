@@ -3,7 +3,7 @@ use std::time::Instant;
 
 use crate::analysis::EffectCollector;
 use crate::contract::{ContractLoader, FfiContract};
-use crate::parse::{ParseError, SwiftParser};
+use crate::parse::{LanguageParser, ParseError, SwiftParser};
 use crate::report::VerificationResult;
 use crate::rules::{RuleRegistry, Violation};
 

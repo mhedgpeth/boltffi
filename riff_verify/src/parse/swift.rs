@@ -9,10 +9,13 @@ use crate::ir::{
     StatusCheckKind, UnitKind, VarId, VarIdGenerator, VarName, VerifyUnit,
 };
 use crate::source::{ByteLength, ByteOffset, SourceFile, SourceSpan};
+use super::language::LanguageParser;
+use super::patterns::FfiPatterns;
 use super::ParseError;
 
 pub struct SwiftParser {
     parser: Parser,
+    patterns: FfiPatterns,
 }
 
 impl SwiftParser {
@@ -24,25 +27,29 @@ impl SwiftParser {
             .map_err(|e| ParseError::SyntaxError {
                 message: format!("failed to set Swift language: {}", e),
             })?;
-        Ok(Self { parser })
+        Ok(Self { 
+            parser,
+            patterns: FfiPatterns::swift(),
+        })
+    }
+}
+
+impl LanguageParser for SwiftParser {
+    fn language_name(&self) -> &'static str {
+        "Swift"
     }
 
-    pub fn parse_file(&mut self, path: &Path) -> Result<Vec<VerifyUnit>, ParseError> {
-        let content = std::fs::read_to_string(path)?;
-        self.parse_source(path, &content)
+    fn file_extensions(&self) -> &'static [&'static str] {
+        &["swift"]
     }
 
-    pub fn parse_source(
-        &mut self,
-        path: &Path,
-        source: &str,
-    ) -> Result<Vec<VerifyUnit>, ParseError> {
+    fn parse_source(&mut self, path: &Path, source: &str) -> Result<Vec<VerifyUnit>, ParseError> {
         let tree = self.parser.parse(source, None).ok_or_else(|| ParseError::SyntaxError {
             message: "failed to parse Swift source".to_string(),
         })?;
 
         let source_file = Arc::new(SourceFile::new(path, source));
-        let extractor = SwiftExtractor::new(source_file, source.to_string());
+        let extractor = SwiftExtractor::new(source_file, source.to_string(), self.patterns.clone());
         extractor.extract_units(&tree)
     }
 }
@@ -56,11 +63,12 @@ impl Default for SwiftParser {
 struct SwiftExtractor {
     source_file: Arc<SourceFile>,
     source: String,
+    patterns: FfiPatterns,
 }
 
 impl SwiftExtractor {
-    fn new(source_file: Arc<SourceFile>, source: String) -> Self {
-        Self { source_file, source }
+    fn new(source_file: Arc<SourceFile>, source: String, patterns: FfiPatterns) -> Self {
+        Self { source_file, source, patterns }
     }
 
     fn extract_units(self, tree: &Tree) -> Result<Vec<VerifyUnit>, ParseError> {
@@ -227,11 +235,11 @@ impl SwiftExtractor {
         
         let var_id = ctx.new_var(&name);
 
-        if text.contains(".allocate(") {
+        if self.patterns.is_allocate(&text) {
             return self.extract_allocate_statement(node, var_id, &text);
         }
 
-        if text.contains("passRetained") {
+        if self.patterns.is_retain(&text) {
             return self.extract_pass_retained_statement(node, var_id, &text, ctx);
         }
 
@@ -277,7 +285,7 @@ impl SwiftExtractor {
     fn extract_call_statement(&self, node: Node, ctx: &mut ExtractionContext) -> Option<Statement> {
         let call_text = self.node_text(node);
 
-        if call_text.starts_with("defer ") || call_text.starts_with("defer{") {
+        if self.patterns.is_defer(&call_text) {
             let body_start = call_text.find('{')? + 1;
             let body_end = call_text.rfind('}')?;
             let _body_text = &call_text[body_start..body_end];
@@ -290,7 +298,7 @@ impl SwiftExtractor {
             return Some(Statement::Defer { body, span: self.node_span(node) });
         }
 
-        if call_text.contains(".deallocate()") {
+        if self.patterns.is_deallocate(&call_text) {
             let ptr_name = call_text.split('.').next()?.trim();
             let pointer_var = ctx.get_var(ptr_name)?;
             return Some(Statement::Deallocate {
@@ -299,11 +307,11 @@ impl SwiftExtractor {
             });
         }
 
-        if call_text.contains("checkStatus") || call_text.contains("ensureOk") {
+        if self.patterns.is_status_check(&call_text) {
             return self.extract_status_check_statement(node, &call_text, ctx);
         }
 
-        if call_text.contains(".release()") {
+        if self.patterns.is_release(&call_text) {
             let opaque_name = if call_text.contains("fromOpaque(") {
                 call_text
                     .split("fromOpaque(")
@@ -599,7 +607,7 @@ impl SwiftExtractor {
     }
 
     fn is_ffi_call(&self, text: &str) -> bool {
-        text.starts_with("riff_") || text.starts_with("ffi_")
+        self.patterns.is_ffi_call(text)
     }
 
     fn find_identifier(&self, node: Node) -> Option<String> {
