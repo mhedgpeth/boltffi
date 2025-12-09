@@ -99,6 +99,22 @@ pub enum ViolationKind {
     ContractViolation {
         description: String,
     },
+
+    InconsistentFree {
+        pointer: VarId,
+    },
+
+    InconsistentRelease {
+        handle: VarId,
+    },
+
+    InconsistentAllocation {
+        pointer: VarId,
+    },
+
+    InconsistentRetain {
+        handle: VarId,
+    },
 }
 
 impl ViolationKind {
@@ -158,6 +174,18 @@ impl ViolationKind {
             }
             Self::ContractViolation { description } => {
                 format!("contract violation: {}", description)
+            }
+            Self::InconsistentFree { pointer } => {
+                format!("inconsistent free: pointer {} freed in one branch but not the other", pointer)
+            }
+            Self::InconsistentRelease { handle } => {
+                format!("inconsistent release: handle {} released in one branch but not the other", handle)
+            }
+            Self::InconsistentAllocation { pointer } => {
+                format!("inconsistent allocation: pointer {} allocated in one branch only", pointer)
+            }
+            Self::InconsistentRetain { handle } => {
+                format!("inconsistent retain: handle {} retained in one branch only", handle)
             }
         }
     }

@@ -1,8 +1,10 @@
+mod branch;
 mod buffer;
 mod memory;
 mod refcount;
 mod violation;
 
+pub use branch::BranchConsistency;
 pub use buffer::BufferBoundsCheck;
 pub use memory::{AllocFreeBalance, NoUseAfterFree, NoDoubleFree};
 pub use refcount::{RetainReleaseBalance, NoDoubleRelease};

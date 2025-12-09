@@ -1,14 +1,22 @@
 use crate::ir::{Statement, VerifyUnit, Expression, Literal, VarId};
 use crate::source::SourceSpan;
 use super::effects::{Effect, EffectTrace, Capacity};
+use super::flow::{BranchState, BranchDivergence, check_branch_consistency, merge_branch_states};
 
 pub struct EffectCollector {
     trace: EffectTrace,
     deferred: Vec<DeferredBlock>,
+    branch_state: BranchState,
+    divergences: Vec<BranchDivergence>,
 }
 
 struct DeferredBlock {
     effects: Vec<(Effect, SourceSpan)>,
+}
+
+pub struct CollectionResult {
+    pub trace: EffectTrace,
+    pub divergences: Vec<BranchDivergence>,
 }
 
 impl EffectCollector {
@@ -16,14 +24,23 @@ impl EffectCollector {
         Self {
             trace: EffectTrace::new(),
             deferred: Vec::new(),
+            branch_state: BranchState::new(),
+            divergences: Vec::new(),
         }
     }
 
     pub fn collect(unit: &VerifyUnit) -> EffectTrace {
+        Self::collect_with_flow(unit).trace
+    }
+
+    pub fn collect_with_flow(unit: &VerifyUnit) -> CollectionResult {
         let mut collector = Self::new();
         collector.visit_statements(&unit.body);
         collector.execute_all_defers();
-        collector.trace
+        CollectionResult {
+            trace: collector.trace,
+            divergences: collector.divergences,
+        }
     }
 
     fn visit_statements(&mut self, statements: &[Statement]) {
@@ -33,6 +50,7 @@ impl EffectCollector {
     fn visit_statement(&mut self, stmt: &Statement) {
         match stmt {
             Statement::Allocate { target_var, element_type, capacity, span, .. } => {
+                self.branch_state.allocate(*target_var);
                 self.trace.push(
                     Effect::Allocate {
                         pointer: *target_var,
@@ -44,6 +62,7 @@ impl EffectCollector {
             }
 
             Statement::Deallocate { pointer_var, span } => {
+                self.branch_state.free(*pointer_var);
                 self.trace.push(
                     Effect::Free { pointer: *pointer_var },
                     span.clone(),
@@ -51,6 +70,7 @@ impl EffectCollector {
             }
 
             Statement::PassRetained { object_var, opaque_var, span } => {
+                self.branch_state.retain(*opaque_var);
                 self.trace.push(
                     Effect::Retain {
                         object: *object_var,
@@ -61,6 +81,7 @@ impl EffectCollector {
             }
 
             Statement::TakeRetainedValue { opaque_var, result_var, span } => {
+                self.branch_state.release(*opaque_var);
                 self.trace.push(
                     Effect::TakeRetained {
                         opaque_handle: *opaque_var,
@@ -71,6 +92,7 @@ impl EffectCollector {
             }
 
             Statement::Release { opaque_var, span } => {
+                self.branch_state.release(*opaque_var);
                 self.trace.push(
                     Effect::Release { opaque_handle: *opaque_var },
                     span.clone(),
@@ -136,11 +158,28 @@ impl EffectCollector {
                 );
             }
 
-            Statement::IfStatement { then_branch, else_branch, .. } => {
+            Statement::IfStatement { then_branch, else_branch, span, .. } => {
+                let pre_branch = self.branch_state.clone();
+
                 self.visit_statements(then_branch);
+                let then_state = self.branch_state.clone();
+
+                self.branch_state = BranchState::from_parent(&pre_branch);
+
                 if let Some(else_stmts) = else_branch {
                     self.visit_statements(else_stmts);
                 }
+                let else_state = self.branch_state.clone();
+
+                let new_divergences = check_branch_consistency(
+                    &then_state,
+                    &else_state,
+                    &pre_branch,
+                    span,
+                );
+                self.divergences.extend(new_divergences);
+
+                self.branch_state = merge_branch_states(&then_state, &else_state);
             }
 
             Statement::Return { span, .. } => {

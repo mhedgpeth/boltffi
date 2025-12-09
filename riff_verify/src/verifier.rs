@@ -1,7 +1,8 @@
 use std::path::Path;
 use std::time::Instant;
 
-use crate::analysis::EffectCollector;
+use crate::analysis::{EffectCollector, CollectionResult};
+use crate::rules::BranchConsistency;
 use crate::contract::{ContractLoader, FfiContract};
 use crate::parse::{FfiPatterns, Language, LanguageParser, ParseError, SwiftParser};
 use crate::report::VerificationResult;
@@ -112,12 +113,15 @@ impl Verifier {
             .unwrap_or_else(|| ContractLoader::from_source_with_patterns(source, "riff", &self.patterns));
         
         let units = self.parser.parse_source(path, source)?;
+        let branch_rule = BranchConsistency;
         
         let all_violations: Vec<Violation> = units
             .iter()
             .flat_map(|unit| {
-                let trace = EffectCollector::collect(unit);
-                self.rules.check_all_with_contract(&trace, &contract)
+                let CollectionResult { trace, divergences } = EffectCollector::collect_with_flow(unit);
+                let mut violations = self.rules.check_all_with_contract(&trace, &contract);
+                violations.extend(branch_rule.check_divergences(&divergences));
+                violations
             })
             .collect();
 
@@ -126,7 +130,7 @@ impl Verifier {
         if all_violations.is_empty() {
             Ok(VerificationResult::verified(
                 units.len(),
-                self.rules.rule_count(),
+                self.rules.rule_count() + 1,
                 duration,
             ))
         } else {
@@ -206,5 +210,19 @@ public func alsoCorrect() {
 "#;
         let result = verify_swift(source);
         assert!(result.is_verified(), "Should verify both functions");
+    }
+
+    #[test]
+    fn test_verify_defer_in_branch() {
+        let source = r#"
+public func test(condition: Bool) {
+    if condition {
+        let ptr = UnsafeMutablePointer<Int32>.allocate(capacity: 10)
+        defer { ptr.deallocate() }
+    }
+}
+"#;
+        let result = verify_swift(source);
+        assert!(result.is_verified(), "Should verify: alloc+defer in same branch");
     }
 }
