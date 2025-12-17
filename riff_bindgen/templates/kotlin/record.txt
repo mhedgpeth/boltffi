@@ -1,0 +1,5 @@
+data class {{ class_name }}(
+{%- for field in fields %}
+    val {{ field.name }}: {{ field.kotlin_type }}{% if !loop.last %},{% endif %}
+{%- endfor %}
+)

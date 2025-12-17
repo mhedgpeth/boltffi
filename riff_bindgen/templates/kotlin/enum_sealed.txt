@@ -1,0 +1,9 @@
+sealed class {{ class_name }} {
+{%- for variant in variants %}
+{%- if variant.fields.is_empty() %}
+    data object {{ variant.name }} : {{ class_name }}()
+{%- else %}
+    data class {{ variant.name }}({% for field in variant.fields %}val {{ field.name }}: {{ field.kotlin_type }}{% if !loop.last %}, {% endif %}{% endfor %}) : {{ class_name }}()
+{%- endif %}
+{%- endfor %}
+}

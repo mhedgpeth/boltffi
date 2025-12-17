@@ -1,7 +1,11 @@
 mod names;
+mod templates;
 mod types;
 
+use askama::Template;
+
 pub use names::NamingConvention;
+pub use templates::{CStyleEnumTemplate, PreambleTemplate, RecordTemplate, SealedEnumTemplate};
 pub use types::TypeMapper;
 
 use crate::model::{Enumeration, Module, Record};
@@ -34,94 +38,28 @@ impl Kotlin {
         output
     }
 
-    fn render_preamble(module: &Module) -> String {
-        let package_name = NamingConvention::class_name(&module.name).to_lowercase();
-        format!(
-            "package {}\n\nimport java.nio.ByteBuffer\nimport java.nio.ByteOrder",
-            package_name
-        )
+    pub fn render_preamble(module: &Module) -> String {
+        PreambleTemplate::from_module(module)
+            .render()
+            .expect("preamble template failed")
     }
 
-    fn render_enum(enumeration: &Enumeration) -> String {
+    pub fn render_enum(enumeration: &Enumeration) -> String {
         if enumeration.is_c_style() {
-            Self::render_c_style_enum(enumeration)
+            CStyleEnumTemplate::from_enum(enumeration)
+                .render()
+                .expect("c-style enum template failed")
         } else {
-            Self::render_sealed_class_enum(enumeration)
+            SealedEnumTemplate::from_enum(enumeration)
+                .render()
+                .expect("sealed enum template failed")
         }
     }
 
-    fn render_c_style_enum(enumeration: &Enumeration) -> String {
-        let class_name = NamingConvention::class_name(&enumeration.name);
-
-        let entries: Vec<String> = enumeration
-            .variants
-            .iter()
-            .map(|variant| {
-                let entry_name = NamingConvention::enum_entry_name(&variant.name);
-                let value = variant.discriminant.unwrap_or(0);
-                format!("    {}({})", entry_name, value)
-            })
-            .collect();
-
-        format!(
-            "enum class {}(val value: Int) {{\n{};\n\n    companion object {{\n        fun fromValue(value: Int): {} = entries.first {{ it.value == value }}\n    }}\n}}",
-            class_name,
-            entries.join(",\n"),
-            class_name
-        )
-    }
-
-    fn render_sealed_class_enum(enumeration: &Enumeration) -> String {
-        let class_name = NamingConvention::class_name(&enumeration.name);
-
-        let variants: Vec<String> = enumeration
-            .variants
-            .iter()
-            .map(|variant| {
-                let variant_name = NamingConvention::class_name(&variant.name);
-                if variant.fields.is_empty() {
-                    format!("    data object {} : {}()", variant_name, class_name)
-                } else {
-                    let fields: Vec<String> = variant
-                        .fields
-                        .iter()
-                        .map(|field| {
-                            let field_name = NamingConvention::property_name(&field.name);
-                            let field_type = TypeMapper::map_type(&field.field_type);
-                            format!("val {}: {}", field_name, field_type)
-                        })
-                        .collect();
-                    format!(
-                        "    data class {}({}) : {}()",
-                        variant_name,
-                        fields.join(", "),
-                        class_name
-                    )
-                }
-            })
-            .collect();
-
-        format!(
-            "sealed class {} {{\n{}\n}}",
-            class_name,
-            variants.join("\n")
-        )
-    }
-
-    fn render_record(record: &Record) -> String {
-        let class_name = NamingConvention::class_name(&record.name);
-
-        let fields: Vec<String> = record
-            .fields
-            .iter()
-            .map(|field| {
-                let field_name = NamingConvention::property_name(&field.name);
-                let field_type = TypeMapper::map_type(&field.field_type);
-                format!("    val {}: {}", field_name, field_type)
-            })
-            .collect();
-
-        format!("data class {}(\n{}\n)", class_name, fields.join(",\n"))
+    pub fn render_record(record: &Record) -> String {
+        RecordTemplate::from_record(record)
+            .render()
+            .expect("record template failed")
     }
 }
 
@@ -154,7 +92,10 @@ mod tests {
 
     #[test]
     fn test_kotlin_naming() {
-        assert_eq!(NamingConvention::class_name("sensor_manager"), "SensorManager");
+        assert_eq!(
+            NamingConvention::class_name("sensor_manager"),
+            "SensorManager"
+        );
         assert_eq!(NamingConvention::method_name("get_reading"), "getReading");
         assert_eq!(NamingConvention::enum_entry_name("active"), "ACTIVE");
     }
@@ -202,11 +143,14 @@ mod tests {
                 "timestamp",
                 Type::Primitive(Primitive::U64),
             ))
-            .with_field(RecordField::new("value", Type::Primitive(Primitive::F64)));
+            .with_field(RecordField::new(
+                "temperature",
+                Type::Primitive(Primitive::F64),
+            ));
 
         let output = Kotlin::render_record(&reading);
         assert!(output.contains("data class SensorReading"));
         assert!(output.contains("val timestamp: ULong"));
-        assert!(output.contains("val value: Double"));
+        assert!(output.contains("val temperature: Double"));
     }
 }
