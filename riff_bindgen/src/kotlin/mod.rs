@@ -168,4 +168,18 @@ mod tests {
         assert!(output.contains("val timestamp: ULong"));
         assert!(output.contains("val temperature: Double"));
     }
+
+    #[test]
+    fn test_render_function() {
+        use crate::model::Parameter;
+
+        let function = Function::new("get_sensor_value")
+            .with_param(Parameter::new("sensor_id", Type::Primitive(Primitive::I32)))
+            .with_output(Type::Primitive(Primitive::F64));
+
+        let output = Kotlin::render_function(&function);
+        assert!(output.contains("fun getSensorValue"));
+        assert!(output.contains("sensorId: Int"));
+        assert!(output.contains(": Double"));
+    }
 }
