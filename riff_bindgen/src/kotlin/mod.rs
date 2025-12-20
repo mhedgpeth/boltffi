@@ -8,8 +8,8 @@ use askama::Template;
 pub use marshal::{ParamConversion, ReturnKind};
 pub use names::NamingConvention;
 pub use templates::{
-    ClassTemplate, CStyleEnumTemplate, FunctionTemplate, PreambleTemplate, RecordTemplate,
-    SealedEnumTemplate,
+    ClassTemplate, CStyleEnumTemplate, FunctionTemplate, NativeTemplate, PreambleTemplate,
+    RecordTemplate, SealedEnumTemplate,
 };
 pub use types::TypeMapper;
 
@@ -42,6 +42,8 @@ impl Kotlin {
             .classes
             .iter()
             .for_each(|class| sections.push(Self::render_class(class)));
+
+        sections.push(Self::render_native(module));
 
         let mut output = sections
             .into_iter()
@@ -87,6 +89,12 @@ impl Kotlin {
         ClassTemplate::from_class(class)
             .render()
             .expect("class template failed")
+    }
+
+    pub fn render_native(module: &Module) -> String {
+        NativeTemplate::from_module(module)
+            .render()
+            .expect("native template failed")
     }
 }
 

@@ -1,4 +1,69 @@
 package {{ package_name }}
 
+import com.sun.jna.Library
+import com.sun.jna.Native
+import com.sun.jna.Pointer
+import com.sun.jna.Structure
+import com.sun.jna.ptr.LongByReference
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
+
+class FfiException(val code: Int, message: String) : Exception(message)
+
+@Structure.FieldOrder("code")
+open class FfiStatus : Structure() {
+    @JvmField var code: Int = 0
+
+    class ByReference : FfiStatus(), Structure.ByReference
+    class ByValue : FfiStatus(), Structure.ByValue
+}
+
+@Structure.FieldOrder("ptr", "len", "cap")
+open class FfiString : Structure() {
+    @JvmField var ptr: Pointer? = null
+    @JvmField var len: Long = 0
+    @JvmField var cap: Long = 0
+
+    class ByReference : FfiString(), Structure.ByReference
+    class ByValue : FfiString(), Structure.ByValue
+
+    fun toKotlinString(): String {
+        val p = ptr ?: return ""
+        if (len == 0L) return ""
+        return p.getString(0, "UTF-8")
+    }
+}
+
+@Structure.FieldOrder("ptr", "len", "cap")
+open class FfiBytes : Structure() {
+    @JvmField var ptr: Pointer? = null
+    @JvmField var len: Long = 0
+    @JvmField var cap: Long = 0
+
+    class ByReference : FfiBytes(), Structure.ByReference
+    class ByValue : FfiBytes(), Structure.ByValue
+
+    fun toByteArray(): ByteArray {
+        val p = ptr ?: return byteArrayOf()
+        if (len == 0L) return byteArrayOf()
+        return p.getByteArray(0, len.toInt())
+    }
+}
+
+private fun checkStatus(status: FfiStatus) {
+    if (status.code != 0) {
+        val message = Native.{{ prefix }}_last_error_message()?.toKotlinString() ?: "FFI error"
+        Native.{{ prefix }}_clear_last_error()
+        throw FfiException(status.code, message)
+    }
+}
+
+private fun lastErrorMessage(): String? {
+    val result = FfiString.ByReference()
+    val status = Native.{{ prefix }}_last_error_message(result)
+    if (status.code != 0) return null
+    val message = result.toKotlinString()
+    Native.{{ prefix }}_free_string(result)
+    Native.{{ prefix }}_clear_last_error()
+    return message
+}

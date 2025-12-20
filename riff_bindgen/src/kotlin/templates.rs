@@ -10,12 +10,14 @@ use super::{NamingConvention, TypeMapper};
 #[template(path = "kotlin/preamble.txt", escape = "none")]
 pub struct PreambleTemplate {
     pub package_name: String,
+    pub prefix: String,
 }
 
 impl PreambleTemplate {
     pub fn from_module(module: &Module) -> Self {
         Self {
             package_name: NamingConvention::class_name(&module.name).to_lowercase(),
+            prefix: naming::ffi_prefix().to_string(),
         }
     }
 }
@@ -277,6 +279,148 @@ impl ClassTemplate {
         match &method.output {
             Some(_) => format!("return Native.{}({})", ffi_name, args),
             None => format!("Native.{}({})", ffi_name, args),
+        }
+    }
+}
+
+#[derive(Template)]
+#[template(path = "kotlin/native.txt", escape = "none")]
+pub struct NativeTemplate {
+    pub lib_name: String,
+    pub prefix: String,
+    pub functions: Vec<NativeFunctionView>,
+    pub classes: Vec<NativeClassView>,
+}
+
+pub struct NativeFunctionView {
+    pub ffi_name: String,
+    pub params: Vec<NativeParamView>,
+    pub has_out_param: bool,
+    pub out_type: String,
+    pub return_jni_type: String,
+}
+
+pub struct NativeParamView {
+    pub name: String,
+    pub jni_type: String,
+}
+
+pub struct NativeClassView {
+    pub ffi_new: String,
+    pub ffi_free: String,
+    pub ctor_params: Vec<NativeParamView>,
+    pub methods: Vec<NativeMethodView>,
+}
+
+pub struct NativeMethodView {
+    pub ffi_name: String,
+    pub params: Vec<NativeParamView>,
+    pub has_out_param: bool,
+    pub out_type: String,
+    pub return_jni_type: String,
+}
+
+impl NativeTemplate {
+    pub fn from_module(module: &Module) -> Self {
+        let prefix = naming::ffi_prefix().to_string();
+
+        let functions: Vec<NativeFunctionView> = module
+            .functions
+            .iter()
+            .map(|func| {
+                let ffi_name = naming::function_ffi_name(&func.name);
+                let (has_out_param, out_type, return_jni_type) =
+                    Self::analyze_return(&func.output);
+
+                NativeFunctionView {
+                    ffi_name,
+                    params: func
+                        .inputs
+                        .iter()
+                        .map(|p| NativeParamView {
+                            name: NamingConvention::param_name(&p.name),
+                            jni_type: TypeMapper::jni_type(&p.param_type),
+                        })
+                        .collect(),
+                    has_out_param,
+                    out_type,
+                    return_jni_type,
+                }
+            })
+            .collect();
+
+        let classes: Vec<NativeClassView> = module
+            .classes
+            .iter()
+            .map(|class| {
+                let ffi_prefix = naming::class_ffi_prefix(&class.name);
+
+                let ctor_params: Vec<NativeParamView> = class
+                    .constructors
+                    .first()
+                    .map(|ctor| {
+                        ctor.inputs
+                            .iter()
+                            .map(|p| NativeParamView {
+                                name: NamingConvention::param_name(&p.name),
+                                jni_type: TypeMapper::jni_type(&p.param_type),
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
+
+                let methods: Vec<NativeMethodView> = class
+                    .methods
+                    .iter()
+                    .map(|method| {
+                        let method_ffi = naming::method_ffi_name(&class.name, &method.name);
+                        let (has_out_param, out_type, return_jni_type) =
+                            Self::analyze_return(&method.output);
+
+                        NativeMethodView {
+                            ffi_name: method_ffi,
+                            params: method
+                                .inputs
+                                .iter()
+                                .map(|p| NativeParamView {
+                                    name: NamingConvention::param_name(&p.name),
+                                    jni_type: TypeMapper::jni_type(&p.param_type),
+                                })
+                                .collect(),
+                            has_out_param,
+                            out_type,
+                            return_jni_type,
+                        }
+                    })
+                    .collect();
+
+                NativeClassView {
+                    ffi_new: format!("{}_new", ffi_prefix),
+                    ffi_free: format!("{}_free", ffi_prefix),
+                    ctor_params,
+                    methods,
+                }
+            })
+            .collect();
+
+        Self {
+            lib_name: module.name.clone(),
+            prefix,
+            functions,
+            classes,
+        }
+    }
+
+    fn analyze_return(output: &Option<Type>) -> (bool, String, String) {
+        match output {
+            None => (false, String::new(), "FfiStatus".to_string()),
+            Some(ty) => match ty {
+                Type::Primitive(_) => (false, String::new(), TypeMapper::jni_type(ty)),
+                Type::String => (true, "FfiString.ByReference".to_string(), "FfiStatus".to_string()),
+                Type::Bytes => (true, "FfiBytes.ByReference".to_string(), "FfiStatus".to_string()),
+                Type::Vec(_) => (true, "LongByReference".to_string(), "FfiStatus".to_string()),
+                _ => (false, String::new(), TypeMapper::jni_type(ty)),
+            },
         }
     }
 }
