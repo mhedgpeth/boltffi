@@ -20,6 +20,13 @@ impl PreambleTemplate {
             prefix: naming::ffi_prefix().to_string(),
         }
     }
+
+    pub fn with_package(package_name: &str) -> Self {
+        Self {
+            package_name: package_name.to_string(),
+            prefix: naming::ffi_prefix().to_string(),
+        }
+    }
 }
 
 #[derive(Template)]
@@ -142,7 +149,7 @@ pub struct ParamView {
 }
 
 impl FunctionTemplate {
-    pub fn from_function(function: &Function) -> Self {
+    pub fn from_function(function: &Function, _module: &Module) -> Self {
         let ffi_name = format!("{}_{}", naming::ffi_prefix(), function.name);
         let return_kind = function
             .output

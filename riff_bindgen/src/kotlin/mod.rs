@@ -1,3 +1,4 @@
+mod jni;
 mod marshal;
 mod names;
 mod templates;
@@ -5,7 +6,8 @@ mod types;
 
 use askama::Template;
 
-pub use marshal::{ParamConversion, ReturnKind};
+pub use jni::JniGenerator;
+pub use marshal::{JniParamInfo, JniReturnKind, ParamConversion, ReturnKind};
 pub use names::NamingConvention;
 pub use templates::{
     CallbackTraitTemplate, ClassTemplate, CStyleEnumTemplate, FunctionTemplate, NativeTemplate,
@@ -19,9 +21,13 @@ pub struct Kotlin;
 
 impl Kotlin {
     pub fn render_module(module: &Module) -> String {
+        Self::render_module_with_package(module, &module.name)
+    }
+
+    pub fn render_module_with_package(module: &Module, package_name: &str) -> String {
         let mut sections = Vec::new();
 
-        sections.push(Self::render_preamble(module));
+        sections.push(Self::render_preamble_with_package(package_name));
 
         module
             .enums
@@ -36,7 +42,8 @@ impl Kotlin {
         module
             .functions
             .iter()
-            .for_each(|function| sections.push(Self::render_function(function)));
+            .filter(|f| Self::is_supported_function(f))
+            .for_each(|function| sections.push(Self::render_function(function, module)));
 
         module
             .classes
@@ -66,6 +73,12 @@ impl Kotlin {
             .expect("preamble template failed")
     }
 
+    pub fn render_preamble_with_package(package_name: &str) -> String {
+        PreambleTemplate::with_package(package_name)
+            .render()
+            .expect("preamble template failed")
+    }
+
     pub fn render_enum(enumeration: &Enumeration) -> String {
         if enumeration.is_c_style() {
             CStyleEnumTemplate::from_enum(enumeration)
@@ -84,8 +97,8 @@ impl Kotlin {
             .expect("record template failed")
     }
 
-    pub fn render_function(function: &Function) -> String {
-        FunctionTemplate::from_function(function)
+    pub fn render_function(function: &Function, module: &Module) -> String {
+        FunctionTemplate::from_function(function, module)
             .render()
             .expect("function template failed")
     }
@@ -106,6 +119,23 @@ impl Kotlin {
         CallbackTraitTemplate::from_trait(callback_trait, module)
             .render()
             .expect("callback trait template failed")
+    }
+
+    fn is_supported_function(func: &Function) -> bool {
+        use crate::model::Type;
+
+        if func.is_async {
+            return false;
+        }
+
+        // Vec<Record> needs struct layout work
+        if let Some(Type::Vec(inner)) = &func.output {
+            if !matches!(inner.as_ref(), Type::Primitive(_)) {
+                return false;
+            }
+        }
+
+        true
     }
 }
 
@@ -209,7 +239,8 @@ mod tests {
             .with_param(Parameter::new("sensor_id", Type::Primitive(Primitive::I32)))
             .with_output(Type::Primitive(Primitive::F64));
 
-        let output = Kotlin::render_function(&function);
+        let module = Module::new("test");
+        let output = Kotlin::render_function(&function, &module);
         assert!(output.contains("fun getSensorValue"));
         assert!(output.contains("sensorId: Int"));
         assert!(output.contains(": Double"));
@@ -237,7 +268,8 @@ mod tests {
             .with_output(Type::String)
             .make_async();
 
-        let output = Kotlin::render_function(&function);
+        let module = Module::new("test");
+        let output = Kotlin::render_function(&function, &module);
         assert!(output.contains("suspend fun fetchData"));
         assert!(output.contains("suspendCancellableCoroutine"));
         assert!(output.contains("FfiCallback"));
