@@ -167,27 +167,38 @@ pub struct ReaderFieldView {
 
 impl RecordReaderTemplate {
     pub fn from_record(record: &Record) -> Self {
-        use super::layout::ByteBufferHelpers;
+        use super::layout::KotlinBufferRead;
+        use crate::model::Type;
         use heck::ToShoutySnakeCase;
 
         let offsets = record.field_offsets();
         let fields = record
             .fields
             .iter()
-            .zip(offsets.iter())
-            .map(|(field, &offset)| ReaderFieldView {
-                name: NamingConvention::property_name(&field.name),
-                const_name: field.name.to_shouty_snake_case(),
-                offset,
-                getter: ByteBufferHelpers::getter(&field.field_type).to_string(),
-                conversion: ByteBufferHelpers::conversion(&field.field_type).to_string(),
+            .zip(offsets)
+            .map(|(field, offset)| {
+                let (getter, conversion) = match &field.field_type {
+                    Type::Primitive(primitive) => (
+                        primitive.buffer_getter().to_string(),
+                        primitive.buffer_conversion().to_string(),
+                    ),
+                    _ => ("getLong".to_string(), String::new()),
+                };
+
+                ReaderFieldView {
+                    name: NamingConvention::property_name(&field.name),
+                    const_name: field.name.to_shouty_snake_case(),
+                    offset,
+                    getter,
+                    conversion,
+                }
             })
             .collect();
 
         Self {
             reader_name: format!("{}Reader", NamingConvention::class_name(&record.name)),
             class_name: NamingConvention::class_name(&record.name),
-            struct_size: record.struct_size(),
+            struct_size: record.struct_size().as_usize(),
             fields,
         }
     }

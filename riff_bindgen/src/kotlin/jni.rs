@@ -188,13 +188,14 @@ impl JniGlueTemplate {
     }
 
     fn record_struct_size(inner: &Type, module: &Module) -> usize {
-        if let Type::Record(name) = inner {
-            module.records.iter()
-                .find(|r| &r.name == name)
-                .map(|r| r.struct_size())
-                .unwrap_or(0)
-        } else {
-            0
+        match inner {
+            Type::Record(name) => module
+                .records
+                .iter()
+                .find(|record| &record.name == name)
+                .map(|record| record.struct_size().as_usize())
+                .unwrap_or(0),
+            _ => 0,
         }
     }
 

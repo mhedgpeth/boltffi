@@ -167,29 +167,39 @@ impl Type {
         }
     }
 
-    pub fn c_layout(&self) -> (usize, usize) {
+}
+
+use super::layout::{CLayout, Layout};
+
+impl CLayout for Type {
+    fn c_layout(&self) -> Layout {
         match self {
-            Self::Primitive(p) => p.c_layout(),
-            Self::String | Self::Bytes | Self::Vec(_) | Self::Slice(_) | Self::MutSlice(_) => (24, 8),
-            Self::Object(_) | Self::BoxedTrait(_) | Self::Callback(_) => (8, 8),
-            Self::Record(_) | Self::Enum(_) => (8, 8),
+            Self::Primitive(primitive) => primitive.c_layout(),
+            Self::String | Self::Bytes | Self::Vec(_) | Self::Slice(_) | Self::MutSlice(_) => {
+                Layout::new(24, 8)
+            }
+            Self::Object(_) | Self::BoxedTrait(_) | Self::Callback(_) => Layout::new(8, 8),
+            Self::Record(_) | Self::Enum(_) => Layout::new(8, 8),
             Self::Option(inner) => {
-                let (inner_size, inner_align) = inner.c_layout();
-                (inner_size + inner_align, inner_align)
+                let inner_layout = inner.c_layout();
+                Layout::new(
+                    inner_layout.size.as_usize() + inner_layout.alignment.as_usize(),
+                    inner_layout.alignment.as_usize(),
+                )
             }
             Self::Result { ok, .. } => ok.c_layout(),
-            Self::Void => (0, 1),
+            Self::Void => Layout::new(0, 1),
         }
     }
 }
 
-impl Primitive {
-    pub fn c_layout(self) -> (usize, usize) {
+impl CLayout for Primitive {
+    fn c_layout(&self) -> Layout {
         match self {
-            Self::Bool | Self::I8 | Self::U8 => (1, 1),
-            Self::I16 | Self::U16 => (2, 2),
-            Self::I32 | Self::U32 | Self::F32 => (4, 4),
-            Self::I64 | Self::U64 | Self::F64 | Self::Usize | Self::Isize => (8, 8),
+            Self::Bool | Self::I8 | Self::U8 => Layout::new(1, 1),
+            Self::I16 | Self::U16 => Layout::new(2, 2),
+            Self::I32 | Self::U32 | Self::F32 => Layout::new(4, 4),
+            Self::I64 | Self::U64 | Self::F64 | Self::Usize | Self::Isize => Layout::new(8, 8),
         }
     }
 }

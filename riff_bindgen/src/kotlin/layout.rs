@@ -1,25 +1,25 @@
-use crate::model::{Primitive, Type};
+use crate::model::Primitive;
 
-pub struct ByteBufferHelpers;
+pub trait KotlinBufferRead {
+    fn buffer_getter(&self) -> &'static str;
+    fn buffer_conversion(&self) -> &'static str;
+}
 
-impl ByteBufferHelpers {
-    pub fn getter(ty: &Type) -> &'static str {
-        match ty {
-            Type::Primitive(Primitive::I8) | Type::Primitive(Primitive::U8) => "get",
-            Type::Primitive(Primitive::I16) | Type::Primitive(Primitive::U16) => "getShort",
-            Type::Primitive(Primitive::I32) | Type::Primitive(Primitive::U32) => "getInt",
-            Type::Primitive(Primitive::I64) | Type::Primitive(Primitive::U64) 
-                | Type::Primitive(Primitive::Usize) | Type::Primitive(Primitive::Isize) => "getLong",
-            Type::Primitive(Primitive::F32) => "getFloat",
-            Type::Primitive(Primitive::F64) => "getDouble",
-            Type::Primitive(Primitive::Bool) => "get",
-            _ => "getLong",
+impl KotlinBufferRead for Primitive {
+    fn buffer_getter(&self) -> &'static str {
+        match self {
+            Self::Bool | Self::I8 | Self::U8 => "get",
+            Self::I16 | Self::U16 => "getShort",
+            Self::I32 | Self::U32 => "getInt",
+            Self::I64 | Self::U64 | Self::Usize | Self::Isize => "getLong",
+            Self::F32 => "getFloat",
+            Self::F64 => "getDouble",
         }
     }
 
-    pub fn conversion(ty: &Type) -> &'static str {
-        match ty {
-            Type::Primitive(Primitive::Bool) => " != 0.toByte()",
+    fn buffer_conversion(&self) -> &'static str {
+        match self {
+            Self::Bool => " != 0.toByte()",
             _ => "",
         }
     }
