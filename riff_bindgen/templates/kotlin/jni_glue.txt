@@ -6,7 +6,7 @@
 #include "{{ module_name }}.h"
 
 {%- for func in functions %}
-{%- if func.is_vec_record %}
+{%- if func.is_data_enum_return %}
 
 JNIEXPORT jobject JNICALL {{ func.jni_name }}(JNIEnv *env, jclass cls{{ func.jni_params }}) {
 {%- for param in func.params %}
@@ -21,6 +21,43 @@ JNIEXPORT jobject JNICALL {{ func.jni_name }}(JNIEnv *env, jclass cls{{ func.jni
     void* _{{ param.name }}_ptr = (*env)->GetDirectBufferAddress(env, {{ param.name }});
     jlong _{{ param.name }}_cap = (*env)->GetDirectBufferCapacity(env, {{ param.name }});
     uintptr_t _{{ param.name }}_len = (uintptr_t)(_{{ param.name }}_cap / (jlong){{ param.record_struct_size }});
+{%- endif %}
+{%- if param.is_data_enum() %}
+    void* _{{ param.name }}_ptr = (*env)->GetDirectBufferAddress(env, {{ param.name }});
+{%- endif %}
+{%- endfor %}
+    {{ func.data_enum_return_name }} _enum_result = {{ func.ffi_name }}({% for param in func.params %}{{ param.ffi_arg() }}{% if !loop.last %}, {% endif %}{% endfor %});
+{%- for param in func.params %}
+{%- if param.is_primitive_array() %}
+    (*env)->ReleasePrimitiveArrayCritical(env, {{ param.name }}, _{{ param.name }}_ptr, {{ param.array_release_mode() }});
+{%- endif %}
+{%- if param.is_string %}
+    if ({{ param.name }}) (*env)->ReleaseStringUTFChars(env, {{ param.name }}, _{{ param.name }}_c);
+{%- endif %}
+{%- endfor %}
+    void* _buf = malloc({{ func.data_enum_return_size }});
+    if (!_buf) return NULL;
+    memcpy(_buf, &_enum_result, {{ func.data_enum_return_size }});
+    return (*env)->NewDirectByteBuffer(env, _buf, (jlong){{ func.data_enum_return_size }});
+}
+{%- else if func.is_vec_record %}
+
+JNIEXPORT jobject JNICALL {{ func.jni_name }}(JNIEnv *env, jclass cls{{ func.jni_params }}) {
+{%- for param in func.params %}
+{%- if param.is_string %}
+    const char* _{{ param.name }}_c = {{ param.name }} ? (*env)->GetStringUTFChars(env, {{ param.name }}, NULL) : NULL;
+{%- endif %}
+{%- if param.is_primitive_array() %}
+    uintptr_t _{{ param.name }}_len = (uintptr_t)(*env)->GetArrayLength(env, {{ param.name }});
+    {{ param.array_c_type() }}* _{{ param.name }}_ptr = ({{ param.array_c_type() }}*)(*env)->GetPrimitiveArrayCritical(env, {{ param.name }}, NULL);
+{%- endif %}
+{%- if param.is_record_buffer() %}
+    void* _{{ param.name }}_ptr = (*env)->GetDirectBufferAddress(env, {{ param.name }});
+    jlong _{{ param.name }}_cap = (*env)->GetDirectBufferCapacity(env, {{ param.name }});
+    uintptr_t _{{ param.name }}_len = (uintptr_t)(_{{ param.name }}_cap / (jlong){{ param.record_struct_size }});
+{%- endif %}
+{%- if param.is_data_enum() %}
+    void* _{{ param.name }}_ptr = (*env)->GetDirectBufferAddress(env, {{ param.name }});
 {%- endif %}
 {%- endfor %}
     uintptr_t _len = {{ func.vec_len_ffi }}({% for param in func.params %}{{ param.ffi_arg() }}{% if !loop.last %}, {% endif %}{% endfor %});
@@ -55,6 +92,9 @@ JNIEXPORT {{ func.vec_jni_array_type }} JNICALL {{ func.jni_name }}(JNIEnv *env,
     jlong _{{ param.name }}_cap = (*env)->GetDirectBufferCapacity(env, {{ param.name }});
     uintptr_t _{{ param.name }}_len = (uintptr_t)(_{{ param.name }}_cap / (jlong){{ param.record_struct_size }});
 {%- endif %}
+{%- if param.is_data_enum() %}
+    void* _{{ param.name }}_ptr = (*env)->GetDirectBufferAddress(env, {{ param.name }});
+{%- endif %}
 {%- endfor %}
     jlong _len = (jlong){{ func.vec_len_ffi }}({% for param in func.params %}{{ param.ffi_arg() }}{% if !loop.last %}, {% endif %}{% endfor %});
     {{ func.vec_jni_array_type }} _result = (*env)->{{ func.vec_new_array_fn }}(env, (jsize)_len);
@@ -88,6 +128,9 @@ JNIEXPORT {{ func.jni_return }} JNICALL {{ func.jni_name }}(JNIEnv *env, jclass 
     void* _{{ param.name }}_ptr = (*env)->GetDirectBufferAddress(env, {{ param.name }});
     jlong _{{ param.name }}_cap = (*env)->GetDirectBufferCapacity(env, {{ param.name }});
     uintptr_t _{{ param.name }}_len = (uintptr_t)(_{{ param.name }}_cap / (jlong){{ param.record_struct_size }});
+{%- endif %}
+{%- if param.is_data_enum() %}
+    void* _{{ param.name }}_ptr = (*env)->GetDirectBufferAddress(env, {{ param.name }});
 {%- endif %}
 {%- endfor %}
 {%- if func.return_kind.is_void() %}

@@ -227,28 +227,49 @@ pub enum JniReturnKind {
     Primitive { jni_type: String },
     String { ffi_name: String },
     Vec { len_fn: String, copy_fn: String },
-    Enum { ffi_name: String },
+    CStyleEnum,
+    DataEnum { enum_name: String, struct_size: usize },
 }
 
 impl JniReturnKind {
-    pub fn from_type(ty: Option<&Type>, func_name: &str) -> Self {
-        use riff_ffi_rules::naming;
+    pub fn from_type(ty: Option<&Type>, _func_name: &str) -> Self {
         match ty {
             None | Some(Type::Void) => Self::Void,
-            Some(Type::Primitive(p)) => Self::Primitive {
-                jni_type: super::TypeMapper::c_jni_type(&Type::Primitive(*p)),
+            Some(Type::Primitive(primitive)) => Self::Primitive {
+                jni_type: super::TypeMapper::c_jni_type(&Type::Primitive(*primitive)),
             },
             Some(Type::String) => Self::String {
-                ffi_name: naming::function_ffi_name(func_name),
+                ffi_name: riff_ffi_rules::naming::function_ffi_name(_func_name),
             },
             Some(Type::Vec(_)) => Self::Vec {
-                len_fn: naming::function_ffi_vec_len(func_name),
-                copy_fn: naming::function_ffi_vec_copy_into(func_name),
+                len_fn: riff_ffi_rules::naming::function_ffi_vec_len(_func_name),
+                copy_fn: riff_ffi_rules::naming::function_ffi_vec_copy_into(_func_name),
             },
-            Some(Type::Enum(_)) => Self::Enum {
-                ffi_name: naming::function_ffi_name(func_name),
-            },
+            Some(Type::Enum(_)) => Self::CStyleEnum,
             _ => Self::Void,
+        }
+    }
+
+    pub fn from_type_with_module(
+        ty: Option<&Type>,
+        func_name: &str,
+        module: &crate::model::Module,
+    ) -> Self {
+        match ty {
+            Some(Type::Enum(enum_name)) => {
+                let enumeration = module.enums.iter().find(|e| &e.name == enum_name);
+                match enumeration {
+                    Some(e) if e.is_data_enum() => {
+                        let layout = crate::model::DataEnumLayout::from_enum(e);
+                        Self::DataEnum {
+                            enum_name: super::NamingConvention::class_name(enum_name),
+                            struct_size: layout.map(|l| l.struct_size().as_usize()).unwrap_or(0),
+                        }
+                    }
+                    _ => Self::CStyleEnum,
+                }
+            }
+            _ => Self::from_type(ty, func_name),
         }
     }
 
@@ -264,13 +285,36 @@ impl JniReturnKind {
         matches!(self, Self::Vec { .. })
     }
 
+    pub fn is_c_style_enum(&self) -> bool {
+        matches!(self, Self::CStyleEnum)
+    }
+
+    pub fn is_data_enum(&self) -> bool {
+        matches!(self, Self::DataEnum { .. })
+    }
+
     pub fn jni_return_type(&self) -> &str {
         match self {
             Self::Void => "void",
             Self::Primitive { jni_type } => jni_type,
             Self::String { .. } => "jstring",
             Self::Vec { .. } => "jlong",
-            Self::Enum { .. } => "jint",
+            Self::CStyleEnum => "jint",
+            Self::DataEnum { .. } => "jobject",
+        }
+    }
+
+    pub fn data_enum_struct_size(&self) -> usize {
+        match self {
+            Self::DataEnum { struct_size, .. } => *struct_size,
+            _ => 0,
+        }
+    }
+
+    pub fn data_enum_name(&self) -> Option<&str> {
+        match self {
+            Self::DataEnum { enum_name, .. } => Some(enum_name),
+            _ => None,
         }
     }
 }
@@ -286,6 +330,8 @@ pub struct JniParamInfo {
     pub record_name: Option<String>,
     pub record_struct_size: usize,
     pub record_is_mutable: bool,
+    pub data_enum_name: Option<String>,
+    pub data_enum_struct_size: usize,
 }
 
 impl JniParamInfo {
@@ -308,6 +354,11 @@ impl JniParamInfo {
             _ => (None, false),
         };
 
+        let data_enum_name = match ty {
+            Type::Enum(enum_name) => Some(enum_name.clone()),
+            _ => None,
+        };
+
         Self {
             name: name.to_string(),
             jni_type: super::TypeMapper::c_jni_type(ty),
@@ -318,6 +369,8 @@ impl JniParamInfo {
             record_name,
             record_struct_size: 0,
             record_is_mutable,
+            data_enum_name,
+            data_enum_struct_size: 0,
         }
     }
 
@@ -331,6 +384,9 @@ impl JniParamInfo {
                 "(const uint8_t*)_{}_c, {} ? strlen(_{}_c) : 0",
                 self.name, self.name, self.name
             )
+        } else if let Some(enum_name) = &self.data_enum_name {
+            let c_name = super::NamingConvention::class_name(enum_name);
+            format!("*({}*)_{}_ptr", c_name, self.name)
         } else if let Some(record_name) = &self.record_name {
             let c_name = super::NamingConvention::class_name(record_name);
             let ptr_type = if self.record_is_mutable {
@@ -368,6 +424,17 @@ impl JniParamInfo {
 
     pub fn is_record_buffer(&self) -> bool {
         self.record_name.is_some()
+    }
+
+    pub fn is_data_enum(&self) -> bool {
+        self.data_enum_name.is_some()
+    }
+
+    pub fn data_enum_c_type(&self) -> String {
+        self.data_enum_name
+            .as_ref()
+            .map(|name| super::NamingConvention::class_name(name))
+            .unwrap_or_default()
     }
 
     pub fn array_c_type(&self) -> &'static str {

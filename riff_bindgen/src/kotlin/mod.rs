@@ -199,6 +199,7 @@ impl Kotlin {
             None => true,
             Some(Type::Primitive(_)) => true,
             Some(Type::String) => true,
+            Some(Type::Enum(_)) => true,
             Some(Type::Vec(inner)) => match inner.as_ref() {
                 Type::Primitive(_) => true,
                 Type::Record(record_name) => Self::is_record_blittable(record_name, module),
@@ -208,7 +209,7 @@ impl Kotlin {
         };
 
         let supported_inputs = func.inputs.iter().all(|param| match &param.param_type {
-            Type::Primitive(_) | Type::String => true,
+            Type::Primitive(_) | Type::String | Type::Enum(_) => true,
             Type::Vec(inner) | Type::Slice(inner) => match inner.as_ref() {
                 Type::Primitive(_) => true,
                 Type::Record(record_name) => Self::is_record_blittable(record_name, module),

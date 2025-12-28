@@ -87,6 +87,9 @@ pub struct JniFunctionView {
     pub params: Vec<JniParamInfo>,
     pub is_vec: bool,
     pub is_vec_record: bool,
+    pub is_data_enum_return: bool,
+    pub data_enum_return_name: String,
+    pub data_enum_return_size: usize,
     pub vec_len_ffi: String,
     pub vec_copy_ffi: String,
     pub vec_c_type: String,
@@ -163,6 +166,7 @@ impl JniGlueTemplate {
             None => true,
             Some(Type::Primitive(_)) => true,
             Some(Type::String) => true,
+            Some(Type::Enum(_)) => true,
             Some(Type::Vec(inner)) => match inner.as_ref() {
                 Type::Primitive(_) => true,
                 Type::Record(record_name) => Self::is_record_blittable(record_name, module),
@@ -172,7 +176,7 @@ impl JniGlueTemplate {
         };
 
         let supported_inputs = func.inputs.iter().all(|param| match &param.param_type {
-            Type::Primitive(_) | Type::String => true,
+            Type::Primitive(_) | Type::String | Type::Enum(_) => true,
             Type::Vec(inner) | Type::Slice(inner) => match inner.as_ref() {
                 Type::Primitive(_) => true,
                 Type::Record(record_name) => Self::is_record_blittable(record_name, module),
@@ -217,7 +221,8 @@ impl JniGlueTemplate {
         let ffi_name = format!("{}_{}", prefix, func.name);
         let jni_name = format!("Java_{}_Native_{}", jni_prefix, ffi_name.replace('_', "_1"));
 
-        let return_kind = JniReturnKind::from_type(func.output.as_ref(), &func.name);
+        let return_kind =
+            JniReturnKind::from_type_with_module(func.output.as_ref(), &func.name, module);
         let mut params: Vec<JniParamInfo> = func
             .inputs
             .iter()
@@ -225,18 +230,29 @@ impl JniGlueTemplate {
             .collect();
 
         for param in params.iter_mut() {
-            let Some(record_name) = &param.record_name else {
-                continue;
-            };
+            if let Some(record_name) = &param.record_name {
+                param.record_struct_size = module
+                    .records
+                    .iter()
+                    .find(|record| &record.name == record_name)
+                    .map(|record| record.struct_size().as_usize())
+                    .unwrap_or(0);
+            }
 
-            let struct_size = module
-                .records
-                .iter()
-                .find(|record| &record.name == record_name)
-                .map(|record| record.struct_size().as_usize())
-                .unwrap_or(0);
-
-            param.record_struct_size = struct_size;
+            if let Some(enum_name) = &param.data_enum_name {
+                let enumeration = module.enums.iter().find(|e| &e.name == enum_name);
+                if let Some(e) = enumeration {
+                    if e.is_data_enum() {
+                        param.data_enum_struct_size =
+                            crate::model::DataEnumLayout::from_enum(e)
+                                .map(|l| l.struct_size().as_usize())
+                                .unwrap_or(0);
+                        param.jni_type = "jobject".to_string();
+                    } else {
+                        param.data_enum_name = None;
+                    }
+                }
+            }
         }
 
         let jni_return = return_kind.jni_return_type().to_string();
@@ -248,10 +264,16 @@ impl JniGlueTemplate {
             jni_name,
             jni_return,
             jni_params,
-            return_kind,
+            return_kind: return_kind.clone(),
             params,
             is_vec: vec_return.is_primitive(),
             is_vec_record: vec_return.is_record(),
+            is_data_enum_return: return_kind.is_data_enum(),
+            data_enum_return_name: return_kind
+                .data_enum_name()
+                .unwrap_or_default()
+                .to_string(),
+            data_enum_return_size: return_kind.data_enum_struct_size(),
             vec_len_ffi: Self::extract_len_ffi(&vec_return),
             vec_copy_ffi: Self::extract_copy_ffi(&vec_return),
             vec_c_type: Self::extract_c_type(&vec_return),
