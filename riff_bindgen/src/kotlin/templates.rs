@@ -5,7 +5,7 @@ use riff_ffi_rules::naming;
 use crate::model::{Class, DataEnumLayout, Enumeration, Function, Module, Record, Type};
 
 use super::layout::{KotlinBufferRead, KotlinBufferWrite};
-use super::marshal::{ParamConversion, ReturnKind};
+use super::marshal::{OptionView, ParamConversion, ReturnKind};
 use super::{NamingConvention, TypeMapper};
 
 #[derive(Template)]
@@ -393,6 +393,7 @@ pub struct FunctionTemplate {
     pub copy_fn: Option<String>,
     pub reader_name: Option<String>,
     pub is_async: bool,
+    pub option: Option<OptionView>,
 }
 
 pub struct ParamView {
@@ -470,6 +471,11 @@ impl FunctionTemplate {
         let copy_fn = return_kind.copy_fn().map(String::from);
         let reader_name = return_kind.reader_name().map(String::from);
 
+        let option = function.output.as_ref().and_then(|ty| match ty {
+            Type::Option(inner) => Some(OptionView::from_inner(inner, _module)),
+            _ => None,
+        });
+
         Self {
             func_name: NamingConvention::method_name(&function.name),
             ffi_name,
@@ -485,6 +491,7 @@ impl FunctionTemplate {
             copy_fn,
             reader_name,
             is_async: function.is_async,
+            option,
         }
     }
 }
@@ -790,6 +797,10 @@ impl NativeTemplate {
                 Type::Primitive(_) => (false, String::new(), TypeMapper::jni_type(ty)),
                 Type::String => (false, String::new(), "String?".to_string()),
                 Type::Bytes => (false, String::new(), "ByteArray?".to_string()),
+                Type::Option(inner) => {
+                    let view = OptionView::from_inner(inner, module);
+                    (false, String::new(), view.kotlin_native_type)
+                }
                 Type::Vec(inner) => match inner.as_ref() {
                     Type::Primitive(_) => (false, String::new(), TypeMapper::jni_type(ty)),
                     Type::Record(_) => (false, String::new(), "ByteBuffer".to_string()),

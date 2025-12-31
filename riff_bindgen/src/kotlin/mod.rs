@@ -205,6 +205,7 @@ impl Kotlin {
                 Type::Record(record_name) => Self::is_record_blittable(record_name, module),
                 _ => false,
             },
+            Some(Type::Option(inner)) => Self::is_supported_option_inner(inner, module),
             _ => false,
         };
 
@@ -219,6 +220,20 @@ impl Kotlin {
         });
 
         supported_output && supported_inputs
+    }
+
+    fn is_supported_option_inner(inner: &Type, module: &Module) -> bool {
+        match inner {
+            Type::Primitive(_) | Type::String => true,
+            Type::Record(name) => Self::is_record_blittable(name, module),
+            Type::Enum(name) => module
+                .enums
+                .iter()
+                .find(|e| &e.name == name)
+                .map(|e| e.is_data_enum())
+                .unwrap_or(false),
+            _ => false,
+        }
     }
 
     fn is_record_blittable(record_name: &str, module: &Module) -> bool {

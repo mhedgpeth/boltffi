@@ -3,6 +3,29 @@ fun {{ func_name }}({% for param in params %}{{ param.name }}: {{ param.kotlin_t
     return Native.{{ ffi_name }}({% for param in params %}{{ param.conversion }}{% if !loop.last %}, {% endif %}{% endfor %})
 {%- else if return_kind.is_string() %}
     return Native.{{ ffi_name }}({% for param in params %}{{ param.conversion }}{% if !loop.last %}, {% endif %}{% endfor %}) ?: throw FfiException(-1, "Null string returned")
+{%- else if let Some(opt) = option %}
+{%- if opt.strategy.is_packed() %}
+    val packed = Native.{{ ffi_name }}({% for param in params %}{{ param.conversion }}{% if !loop.last %}, {% endif %}{% endfor %})
+    return if ((packed shr 32) != 0L) packed.toInt() else null
+{%- else if opt.strategy.is_boxed() %}
+    return Native.{{ ffi_name }}({% for param in params %}{{ param.conversion }}{% if !loop.last %}, {% endif %}{% endfor %})
+{%- else if opt.strategy.is_nullable_string() %}
+    return Native.{{ ffi_name }}({% for param in params %}{{ param.conversion }}{% if !loop.last %}, {% endif %}{% endfor %})
+{%- else if opt.strategy.is_nullable_buffer() %}
+{%- if let Some(reader) = opt.reader_name %}
+    val buf = Native.{{ ffi_name }}({% for param in params %}{{ param.conversion }}{% if !loop.last %}, {% endif %}{% endfor %}) ?: return null
+    return useNativeBuffer(buf) { buffer ->
+        buffer.order(ByteOrder.nativeOrder())
+        {{ reader }}.read(buffer, 0)
+    }
+{%- else if let Some(codec) = opt.codec_name %}
+    val buf = Native.{{ ffi_name }}({% for param in params %}{{ param.conversion }}{% if !loop.last %}, {% endif %}{% endfor %}) ?: return null
+    return useNativeBuffer(buf) { buffer ->
+        buffer.order(ByteOrder.nativeOrder())
+        {{ codec }}.read(buffer)
+    }
+{%- endif %}
+{%- endif %}
 {%- else if return_kind.is_enum() %}
 {%- if enum_is_data %}
     val buf = Native.{{ ffi_name }}({% for param in params %}{{ param.conversion }}{% if !loop.last %}, {% endif %}{% endfor %})

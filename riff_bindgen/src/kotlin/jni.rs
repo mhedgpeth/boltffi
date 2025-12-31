@@ -1,7 +1,7 @@
 use askama::Template;
 use riff_ffi_rules::naming;
 
-use super::marshal::{JniParamInfo, JniReturnKind};
+use super::marshal::{JniParamInfo, JniReturnKind, OptionView};
 use crate::model::{Class, Function, Method, Module, Type};
 
 #[derive(Template)]
@@ -96,6 +96,7 @@ pub struct JniFunctionView {
     pub vec_jni_array_type: String,
     pub vec_new_array_fn: String,
     pub vec_struct_size: usize,
+    pub option: Option<OptionView>,
 }
 
 pub struct JniClassView {
@@ -172,6 +173,7 @@ impl JniGlueTemplate {
                 Type::Record(record_name) => Self::is_record_blittable(record_name, module),
                 _ => false,
             },
+            Some(Type::Option(inner)) => Self::is_supported_option_inner(inner, module),
             _ => false,
         };
 
@@ -186,6 +188,20 @@ impl JniGlueTemplate {
         });
 
         supported_output && supported_inputs
+    }
+
+    fn is_supported_option_inner(inner: &Type, module: &Module) -> bool {
+        match inner {
+            Type::Primitive(_) | Type::String => true,
+            Type::Record(name) => Self::is_record_blittable(name, module),
+            Type::Enum(name) => module
+                .enums
+                .iter()
+                .find(|e| &e.name == name)
+                .map(|e| e.is_data_enum())
+                .unwrap_or(false),
+            _ => false,
+        }
     }
 
     fn is_record_blittable(record_name: &str, module: &Module) -> bool {
@@ -246,7 +262,7 @@ impl JniGlueTemplate {
             jni_name,
             jni_return,
             jni_params,
-            return_kind,
+            return_kind: return_kind.clone(),
             params,
             is_vec: vec_return.is_primitive(),
             is_vec_record: vec_return.is_record(),
@@ -259,6 +275,7 @@ impl JniGlueTemplate {
             vec_jni_array_type: Self::extract_jni_array_type(&vec_return),
             vec_new_array_fn: Self::extract_new_array_fn(&vec_return),
             vec_struct_size: Self::extract_struct_size(&vec_return),
+            option: return_kind.option_view().cloned(),
         }
     }
 
