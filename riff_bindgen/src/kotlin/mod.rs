@@ -206,7 +206,7 @@ impl Kotlin {
                 _ => false,
             },
             Some(Type::Option(inner)) => Self::is_supported_option_inner(inner, module),
-            Some(Type::Result { ok, .. }) => Self::is_supported_result_ok(ok),
+            Some(Type::Result { ok, .. }) => Self::is_supported_result_ok(ok, module),
             _ => false,
         };
 
@@ -237,8 +237,19 @@ impl Kotlin {
         }
     }
 
-    fn is_supported_result_ok(ok: &Type) -> bool {
-        matches!(ok, Type::Primitive(_) | Type::String | Type::Void)
+    fn is_supported_result_ok(ok: &Type, module: &Module) -> bool {
+        match ok {
+            Type::Primitive(_) | Type::String | Type::Void => true,
+            Type::Record(name) => Self::is_record_blittable(name, module),
+            Type::Enum(name) => module.enums.iter().any(|e| &e.name == name),
+            Type::Vec(inner) => match inner.as_ref() {
+                Type::Primitive(_) => true,
+                Type::Record(name) => Self::is_record_blittable(name, module),
+                _ => false,
+            },
+            Type::Option(inner) => Self::is_supported_option_inner(inner, module),
+            _ => false,
+        }
     }
 
     fn is_record_blittable(record_name: &str, module: &Module) -> bool {

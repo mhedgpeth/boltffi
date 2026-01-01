@@ -481,7 +481,9 @@ impl FunctionTemplate {
         });
 
         let result = function.output.as_ref().and_then(|ty| match ty {
-            Type::Result { ok, err } => Some(ResultView::from_result(ok, err, _module)),
+            Type::Result { ok, err } => {
+                Some(ResultView::from_result(ok, err, _module, &function.name))
+            }
             _ => None,
         });
 

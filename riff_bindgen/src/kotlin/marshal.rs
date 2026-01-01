@@ -85,6 +85,34 @@ impl OptionStrategy {
             _ => 0,
         }
     }
+
+    pub fn from_type(inner: &Type, module: &Module) -> Self {
+        match inner {
+            Type::Primitive(p) => Self::from_primitive(*p),
+            Type::String => Self::NullableString,
+            Type::Record(name) => Self::NullableRecord {
+                name: name.clone(),
+                struct_size: module
+                    .records
+                    .iter()
+                    .find(|r| &r.name == name)
+                    .map(|r| r.struct_size().as_usize())
+                    .unwrap_or(0),
+            },
+            Type::Enum(name) => Self::NullableDataEnum {
+                name: name.clone(),
+                struct_size: module
+                    .enums
+                    .iter()
+                    .find(|e| &e.name == name)
+                    .filter(|e| e.is_data_enum())
+                    .and_then(|e| DataEnumLayout::from_enum(e))
+                    .map(|l| l.struct_size().as_usize())
+                    .unwrap_or(0),
+            },
+            _ => Self::PackedLong,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -183,38 +211,241 @@ impl OptionView {
 }
 
 #[derive(Debug, Clone)]
+pub enum ResultOkKind {
+    Void,
+    Primitive { c_type: String, jni_type: String },
+    String,
+    Record { name: String, struct_size: usize },
+    Enum { name: String },
+    DataEnum { name: String, struct_size: usize },
+    VecPrimitive { primitive: Primitive, len_fn: String, copy_fn: String },
+    VecRecord { name: String, struct_size: usize, len_fn: String, copy_fn: String },
+    Option(Box<OptionStrategy>),
+}
+
+#[derive(Debug, Clone)]
 pub struct ResultView {
     pub ok_type: String,
-    pub ok_c_type: String,
-    pub ok_jni_type: String,
-    pub throws: bool,
+    pub ok_kind: ResultOkKind,
 }
 
 impl ResultView {
-    pub fn from_result(ok: &Type, _err: &Type, _module: &Module) -> Self {
-        Self {
-            ok_type: TypeMapper::map_type(ok),
-            ok_c_type: Self::resolve_c_type(ok),
-            ok_jni_type: TypeMapper::c_jni_type(ok),
-            throws: true,
-        }
+    pub fn from_result(ok: &Type, _err: &Type, module: &Module, func_name: &str) -> Self {
+        let ok_type = TypeMapper::map_type(ok);
+        let ok_kind = Self::resolve_ok_kind(ok, module, func_name);
+        Self { ok_type, ok_kind }
     }
 
-    fn resolve_c_type(ok: &Type) -> String {
+    fn resolve_ok_kind(ok: &Type, module: &Module, func_name: &str) -> ResultOkKind {
         match ok {
-            Type::Primitive(p) => p.c_type_name().to_string(),
-            Type::String => "FfiString".to_string(),
-            Type::Void => "void".to_string(),
-            _ => "void".to_string(),
+            Type::Void => ResultOkKind::Void,
+            Type::Primitive(p) => ResultOkKind::Primitive {
+                c_type: p.c_type_name().to_string(),
+                jni_type: TypeMapper::c_jni_type(ok),
+            },
+            Type::String => ResultOkKind::String,
+            Type::Record(name) => {
+                let struct_size = module
+                    .records
+                    .iter()
+                    .find(|r| &r.name == name)
+                    .map(|r| r.struct_size().as_usize())
+                    .unwrap_or(0);
+                ResultOkKind::Record {
+                    name: NamingConvention::class_name(name),
+                    struct_size,
+                }
+            }
+            Type::Enum(name) => {
+                let is_data_enum = module
+                    .enums
+                    .iter()
+                    .find(|e| &e.name == name)
+                    .map(|e| e.is_data_enum())
+                    .unwrap_or(false);
+                if is_data_enum {
+                    let struct_size = module
+                        .enums
+                        .iter()
+                        .find(|e| &e.name == name)
+                        .and_then(|e| DataEnumLayout::from_enum(e))
+                        .map(|l| l.struct_size().as_usize())
+                        .unwrap_or(0);
+                    ResultOkKind::DataEnum {
+                        name: NamingConvention::class_name(name),
+                        struct_size,
+                    }
+                } else {
+                    ResultOkKind::Enum {
+                        name: NamingConvention::class_name(name),
+                    }
+                }
+            }
+            Type::Vec(inner) => match inner.as_ref() {
+                Type::Primitive(p) => ResultOkKind::VecPrimitive {
+                    primitive: *p,
+                    len_fn: riff_ffi_rules::naming::function_ffi_vec_len(func_name),
+                    copy_fn: riff_ffi_rules::naming::function_ffi_vec_copy_into(func_name),
+                },
+                Type::Record(name) => {
+                    let struct_size = module
+                        .records
+                        .iter()
+                        .find(|r| &r.name == name)
+                        .map(|r| r.struct_size().as_usize())
+                        .unwrap_or(0);
+                    ResultOkKind::VecRecord {
+                        name: NamingConvention::class_name(name),
+                        struct_size,
+                        len_fn: riff_ffi_rules::naming::function_ffi_vec_len(func_name),
+                        copy_fn: riff_ffi_rules::naming::function_ffi_vec_copy_into(func_name),
+                    }
+                }
+                _ => ResultOkKind::Void,
+            },
+            Type::Option(inner) => {
+                let strategy = OptionStrategy::from_type(inner, module);
+                ResultOkKind::Option(Box::new(strategy))
+            }
+            _ => ResultOkKind::Void,
         }
     }
 
     pub fn is_void(&self) -> bool {
-        self.ok_type == "Unit" || self.ok_c_type == "void"
+        matches!(self.ok_kind, ResultOkKind::Void)
+    }
+
+    pub fn is_primitive(&self) -> bool {
+        matches!(self.ok_kind, ResultOkKind::Primitive { .. })
     }
 
     pub fn is_string(&self) -> bool {
-        self.ok_c_type == "FfiString"
+        matches!(self.ok_kind, ResultOkKind::String)
+    }
+
+    pub fn is_record(&self) -> bool {
+        matches!(self.ok_kind, ResultOkKind::Record { .. })
+    }
+
+    pub fn is_enum(&self) -> bool {
+        matches!(self.ok_kind, ResultOkKind::Enum { .. })
+    }
+
+    pub fn is_data_enum(&self) -> bool {
+        matches!(self.ok_kind, ResultOkKind::DataEnum { .. })
+    }
+
+    pub fn is_vec_primitive(&self) -> bool {
+        matches!(self.ok_kind, ResultOkKind::VecPrimitive { .. })
+    }
+
+    pub fn is_vec_record(&self) -> bool {
+        matches!(self.ok_kind, ResultOkKind::VecRecord { .. })
+    }
+
+    pub fn is_option(&self) -> bool {
+        matches!(self.ok_kind, ResultOkKind::Option(_))
+    }
+
+    pub fn primitive_c_type(&self) -> &str {
+        match &self.ok_kind {
+            ResultOkKind::Primitive { c_type, .. } => c_type,
+            _ => "",
+        }
+    }
+
+    pub fn primitive_jni_type(&self) -> &str {
+        match &self.ok_kind {
+            ResultOkKind::Primitive { jni_type, .. } => jni_type,
+            _ => "",
+        }
+    }
+
+    pub fn record_name(&self) -> &str {
+        match &self.ok_kind {
+            ResultOkKind::Record { name, .. } => name,
+            _ => "",
+        }
+    }
+
+    pub fn record_struct_size(&self) -> usize {
+        match &self.ok_kind {
+            ResultOkKind::Record { struct_size, .. } => *struct_size,
+            _ => 0,
+        }
+    }
+
+    pub fn enum_name(&self) -> &str {
+        match &self.ok_kind {
+            ResultOkKind::Enum { name } | ResultOkKind::DataEnum { name, .. } => name,
+            _ => "",
+        }
+    }
+
+    pub fn data_enum_struct_size(&self) -> usize {
+        match &self.ok_kind {
+            ResultOkKind::DataEnum { struct_size, .. } => *struct_size,
+            _ => 0,
+        }
+    }
+
+    pub fn vec_primitive(&self) -> Option<Primitive> {
+        match &self.ok_kind {
+            ResultOkKind::VecPrimitive { primitive, .. } => Some(*primitive),
+            _ => None,
+        }
+    }
+
+    pub fn vec_len_fn(&self) -> &str {
+        match &self.ok_kind {
+            ResultOkKind::VecPrimitive { len_fn, .. } | ResultOkKind::VecRecord { len_fn, .. } => {
+                len_fn
+            }
+            _ => "",
+        }
+    }
+
+    pub fn vec_copy_fn(&self) -> &str {
+        match &self.ok_kind {
+            ResultOkKind::VecPrimitive { copy_fn, .. }
+            | ResultOkKind::VecRecord { copy_fn, .. } => copy_fn,
+            _ => "",
+        }
+    }
+
+    pub fn vec_record_name(&self) -> &str {
+        match &self.ok_kind {
+            ResultOkKind::VecRecord { name, .. } => name,
+            _ => "",
+        }
+    }
+
+    pub fn vec_record_struct_size(&self) -> usize {
+        match &self.ok_kind {
+            ResultOkKind::VecRecord { struct_size, .. } => *struct_size,
+            _ => 0,
+        }
+    }
+
+    pub fn option_strategy(&self) -> Option<&OptionStrategy> {
+        match &self.ok_kind {
+            ResultOkKind::Option(s) => Some(s),
+            _ => None,
+        }
+    }
+
+    pub fn jni_return_type(&self) -> &str {
+        match &self.ok_kind {
+            ResultOkKind::Void => "void",
+            ResultOkKind::Primitive { jni_type, .. } => jni_type,
+            ResultOkKind::String => "jstring",
+            ResultOkKind::Record { .. } => "jobject",
+            ResultOkKind::Enum { .. } => "jint",
+            ResultOkKind::DataEnum { .. } => "jobject",
+            ResultOkKind::VecPrimitive { primitive, .. } => primitive.jni_array_type(),
+            ResultOkKind::VecRecord { .. } => "jobject",
+            ResultOkKind::Option(s) => s.jni_return_type(),
+        }
     }
 }
 
@@ -478,7 +709,7 @@ impl JniReturnKind {
         match ty {
             Some(Type::Option(inner)) => Self::Option(OptionView::from_inner(inner, module)),
             Some(Type::Result { ok, err }) => {
-                Self::Result(ResultView::from_result(ok, err, module))
+                Self::Result(ResultView::from_result(ok, err, module, func_name))
             }
             Some(Type::Enum(enum_name)) => {
                 module
@@ -537,7 +768,7 @@ impl JniReturnKind {
             Self::CStyleEnum => "jint",
             Self::DataEnum { .. } => "jobject",
             Self::Option(view) => view.strategy.jni_return_type(),
-            Self::Result(view) => &view.ok_jni_type,
+            Self::Result(view) => view.jni_return_type(),
         }
     }
 
