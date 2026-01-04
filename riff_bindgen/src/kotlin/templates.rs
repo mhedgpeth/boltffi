@@ -36,6 +36,7 @@ impl PreambleTemplate {
 pub struct CStyleEnumTemplate {
     pub class_name: String,
     pub variants: Vec<EnumVariantView>,
+    pub is_error: bool,
 }
 
 pub struct EnumVariantView {
@@ -58,6 +59,7 @@ impl CStyleEnumTemplate {
         Self {
             class_name: NamingConvention::class_name(&enumeration.name),
             variants,
+            is_error: enumeration.is_error,
         }
     }
 }
@@ -67,6 +69,7 @@ impl CStyleEnumTemplate {
 pub struct SealedEnumTemplate {
     pub class_name: String,
     pub variants: Vec<SealedVariantView>,
+    pub is_error: bool,
 }
 
 pub struct SealedVariantView {
@@ -235,6 +238,7 @@ impl SealedEnumTemplate {
         Self {
             class_name: NamingConvention::class_name(&enumeration.name),
             variants,
+            is_error: enumeration.is_error,
         }
     }
 }

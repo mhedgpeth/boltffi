@@ -1,4 +1,4 @@
-sealed class {{ class_name }} {
+sealed class {{ class_name }}{% if is_error %} : Exception(){% endif %} {
 {%- for variant in variants %}
 {%- if variant.fields.is_empty() %}
     data object {{ variant.name }} : {{ class_name }}()

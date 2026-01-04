@@ -37,11 +37,7 @@ fun {{ func_name }}({% for param in params %}{{ param.name }}: {{ param.kotlin_t
 {%- endif %}
     } catch (e: RiffException) {
 {%- if res.has_structured_error() %}
-{%- if res.err_is_data_enum() %}
-        throw {{ res.err_exception_name() }}({{ res.err_codec_name() }}.read(e.errorBuffer))
-{%- else %}
-        throw {{ res.err_exception_name() }}({{ res.err_enum_name() }}.fromValue(e.errorBuffer.getInt(0)))
-{%- endif %}
+        throw {{ res.err_codec_name() }}.read(e.errorBuffer)
 {%- else %}
         throw FfiException(-1, e.message ?: "Unknown error")
 {%- endif %}

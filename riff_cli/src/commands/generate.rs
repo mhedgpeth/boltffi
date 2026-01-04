@@ -17,15 +17,29 @@ pub struct GenerateOptions {
     pub output: Option<PathBuf>,
 }
 
-pub fn run_generate(config: &Config, options: GenerateOptions) -> Result<()> {
+pub fn run_generate(config: &Config, target: GenerateTarget) -> Result<()> {
+    match target {
+        GenerateTarget::Swift => generate_swift(config, None),
+        GenerateTarget::Kotlin => generate_kotlin(config, None),
+        GenerateTarget::Header => generate_header(config, None),
+        GenerateTarget::All => {
+            generate_swift(config, None)?;
+            generate_kotlin(config, None)?;
+            generate_header(config, None)?;
+            Ok(())
+        }
+    }
+}
+
+pub fn run_generate_with_output(config: &Config, options: GenerateOptions) -> Result<()> {
     match options.target {
         GenerateTarget::Swift => generate_swift(config, options.output),
         GenerateTarget::Kotlin => generate_kotlin(config, options.output),
         GenerateTarget::Header => generate_header(config, options.output),
         GenerateTarget::All => {
-            generate_swift(config, None)?;
-            generate_kotlin(config, None)?;
-            generate_header(config, None)?;
+            generate_swift(config, options.output.clone())?;
+            generate_kotlin(config, options.output.clone())?;
+            generate_header(config, options.output)?;
             Ok(())
         }
     }

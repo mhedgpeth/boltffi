@@ -11,7 +11,7 @@ use std::path::PathBuf;
 
 use commands::build::{BuildCommandOptions, BuildPlatform};
 use commands::check::CheckOptions;
-use commands::generate::{GenerateOptions, GenerateTarget};
+use commands::generate::{GenerateOptions, GenerateTarget, run_generate_with_output};
 use commands::init::InitOptions;
 use commands::pack::{PackOptions, PackTarget};
 use commands::verify::VerifyOptions;
@@ -71,6 +71,9 @@ enum Commands {
 
         #[arg(long)]
         version: Option<String>,
+
+        #[arg(long, default_value = "true")]
+        regenerate: bool,
     },
 
     Release {
@@ -153,7 +156,7 @@ fn execute_command(command: Commands) -> Result<()> {
                     .unwrap_or(GenerateTarget::All),
                 output,
             };
-            run_generate(&config, options)
+            run_generate_with_output(&config, options)
         }
 
         Commands::Build { platform, release } => {
@@ -176,6 +179,7 @@ fn execute_command(command: Commands) -> Result<()> {
             target,
             release,
             version,
+            regenerate,
         } => {
             let config = load_config()?;
             let options = PackOptions {
@@ -187,6 +191,7 @@ fn execute_command(command: Commands) -> Result<()> {
                 },
                 release,
                 version,
+                regenerate,
             };
             run_pack(&config, options)
         }
@@ -252,11 +257,7 @@ fn run_release(config: &Config, platform: Option<BuildPlatformArg>) -> Result<()
     println!();
 
     println!("[3/4] Generating bindings...");
-    let generate_options = GenerateOptions {
-        target: GenerateTarget::All,
-        output: None,
-    };
-    run_generate(config, generate_options)?;
+    run_generate(config, GenerateTarget::All)?;
     println!();
 
     println!("[4/4] Packaging...");
@@ -267,6 +268,7 @@ fn run_release(config: &Config, platform: Option<BuildPlatformArg>) -> Result<()
                 target: PackTarget::Ios,
                 release: true,
                 version: None,
+                regenerate: false,
             };
             run_pack(config, pack_options)?;
         }
@@ -275,6 +277,7 @@ fn run_release(config: &Config, platform: Option<BuildPlatformArg>) -> Result<()
                 target: PackTarget::Android,
                 release: true,
                 version: None,
+                regenerate: false,
             };
             run_pack(config, pack_options)?;
         }

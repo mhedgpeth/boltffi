@@ -2,6 +2,7 @@ use std::path::PathBuf;
 
 use riff_verify::{Reporter, Verifier};
 
+use crate::commands::generate::{GenerateTarget, run_generate};
 use crate::config::Config;
 use crate::error::{CliError, Result};
 use crate::pack::{AndroidPackager, SpmPackageGenerator, XcframeworkBuilder};
@@ -18,6 +19,7 @@ pub struct PackOptions {
     pub target: PackTarget,
     pub release: bool,
     pub version: Option<String>,
+    pub regenerate: bool,
 }
 
 pub fn run_pack(config: &Config, options: PackOptions) -> Result<()> {
@@ -28,6 +30,10 @@ pub fn run_pack(config: &Config, options: PackOptions) -> Result<()> {
         return Err(CliError::NoLibrariesFound {
             platform: "any".to_string(),
         });
+    }
+
+    if options.regenerate {
+        run_generate(config, GenerateTarget::All)?;
     }
 
     match options.target {

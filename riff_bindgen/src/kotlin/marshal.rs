@@ -250,20 +250,15 @@ impl ResultView {
     fn resolve_err_kind(err: &Type, module: &Module) -> ResultErrKind {
         match err {
             Type::Enum(name) => {
-                let is_data_enum = module
-                    .enums
-                    .iter()
-                    .find(|e| &e.name == name)
-                    .map(|e| e.is_data_enum())
+                let enum_def = module.enums.iter().find(|e| &e.name == name);
+                let is_data_or_error = enum_def
+                    .map(|e| e.is_data_enum() || e.is_error)
                     .unwrap_or(false);
-                if is_data_enum {
-                    let struct_size = module
-                        .enums
-                        .iter()
-                        .find(|e| &e.name == name)
+                if is_data_or_error {
+                    let struct_size = enum_def
                         .and_then(|e| DataEnumLayout::from_enum(e))
                         .map(|l| l.struct_size().as_usize())
-                        .unwrap_or(0);
+                        .unwrap_or(4);
                     ResultErrKind::DataEnum {
                         name: NamingConvention::class_name(name),
                         struct_size,
@@ -514,16 +509,16 @@ impl ResultView {
 
     pub fn err_exception_name(&self) -> String {
         match &self.err_kind {
-            ResultErrKind::Enum { name } | ResultErrKind::DataEnum { name, .. } => {
-                format!("{}Exception", name)
-            }
+            ResultErrKind::Enum { name } | ResultErrKind::DataEnum { name, .. } => name.clone(),
             _ => "FfiException".to_string(),
         }
     }
 
     pub fn err_codec_name(&self) -> String {
         match &self.err_kind {
-            ResultErrKind::DataEnum { name, .. } => format!("{}Codec", name),
+            ResultErrKind::Enum { name } | ResultErrKind::DataEnum { name, .. } => {
+                format!("{}Codec", name)
+            }
             _ => String::new(),
         }
     }
