@@ -283,12 +283,50 @@ public func {{ func_name }}({% for param in params %}{% if param.is_mut_slice %}
     if writtenCount < arr.count { arr.removeSubrange(writtenCount..<arr.count) }
     return arr
 {%- endif %}
-{%- else if return_kind.is_option() %}
-{%- if let Some(inner) = return_kind.inner_type() %}
-    var outValue: {{ inner }} = 0
+{%- else if return_kind.is_option_vec() %}
+{%- if let Some(is_some_fn) = return_kind.option_vec_is_some_fn() %}
+    let isSome = {{ is_some_fn }}({{ ffi_args }})
+    if isSome == 0 { return nil }
 {%- endif %}
+{%- if let Some(len_fn) = return_kind.option_vec_len_fn() %}
+    let len = {{ len_fn }}({{ ffi_args }})
+{%- endif %}
+{%- if return_kind.option_vec_is_struct() %}
+{%- if let Some(inner) = return_kind.inner_type() %}
+    let ptr = UnsafeMutablePointer<{{ inner }}>.allocate(capacity: Int(len))
+{%- endif %}
+    defer { ptr.deallocate() }
+    var written: UInt = 0
+{%- if let Some(copy_fn) = return_kind.option_vec_copy_fn() %}
+    let status = {{ copy_fn }}({{ ffi_args }}{% if !ffi_args.is_empty() %}, {% endif %}ptr, len, &written)
+{%- endif %}
+    ensureOk(status)
+    return Array(UnsafeBufferPointer(start: ptr, count: Int(written)))
+{%- else %}
+{%- if let Some(inner) = return_kind.inner_type() %}
+    var arr = [{{ inner }}](repeating: 0, count: Int(len))
+{%- endif %}
+    var written: UInt = 0
+{%- if let Some(copy_fn) = return_kind.option_vec_copy_fn() %}
+    let status = {{ copy_fn }}({{ ffi_args }}{% if !ffi_args.is_empty() %}, {% endif %}&arr, len, &written)
+{%- endif %}
+    ensureOk(status)
+    let writtenCount = min(Int(written), arr.count)
+    if writtenCount < arr.count { arr.removeSubrange(writtenCount..<arr.count) }
+    return arr
+{%- endif %}
+{%- else if return_kind.is_option_scalar() %}
+{%- if return_kind.is_option_string() %}
+    var outValue = FfiString()
+    let isSome = {{ ffi_name }}({{ ffi_args }}{% if !ffi_args.is_empty() %}, {% endif %}&outValue)
+    if isSome == 0 { return nil }
+    defer { {{ prefix }}_free_string(outValue) }
+    return stringFromFfi(outValue)
+{%- else if let Some(inner) = return_kind.inner_type() %}
+    var outValue: {{ inner }} = .init()
     let isSome = {{ ffi_name }}({{ ffi_args }}{% if !ffi_args.is_empty() %}, {% endif %}&outValue)
     return isSome != 0 ? outValue : nil
+{%- endif %}
 {%- else if return_kind.is_enum() %}
 {%- if let Some(name) = return_kind.type_name() %}
     return {{ name }}(fromC: {{ ffi_name }}({{ ffi_args }}))

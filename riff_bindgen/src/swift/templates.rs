@@ -172,7 +172,7 @@ impl FunctionTemplate {
             .unwrap_or_default();
 
         let return_kind =
-            super::marshal::ReturnKind::from_function(function.output.as_ref(), &function.name);
+            super::marshal::ReturnKind::from_function(function.output.as_ref(), &function.name, module);
 
         let structured_error = Self::extract_structured_error(&function.output, module);
         let result_ok_ffi_type = Self::extract_result_ok_ffi_type(&function.output, module);
