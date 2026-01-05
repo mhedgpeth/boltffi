@@ -1,7 +1,7 @@
 use askama::Template;
 use riff_ffi_rules::naming;
 
-use super::marshal::{JniParamInfo, JniReturnKind, OptionView, ResultView};
+use super::marshal::{JniParamInfo, JniReturnKind, OptionAbiKotlin, OptionView, ResultView};
 use crate::model::{Class, Function, Method, Module, Type};
 
 #[derive(Template)]
@@ -16,6 +16,12 @@ pub struct JniGlueTemplate {
 }
 
 enum VecReturnKind {
+    None,
+    Primitive(PrimitiveVecInfo),
+    Record(RecordVecInfo),
+}
+
+enum OptionVecReturnKind {
     None,
     Primitive(PrimitiveVecInfo),
     Record(RecordVecInfo),
@@ -79,6 +85,45 @@ impl VecReturnKind {
     }
 }
 
+impl OptionVecReturnKind {
+    fn from_output(output: &Option<Type>, func_name: &str, module: &Module) -> Self {
+        let Some(Type::Option(inner)) = output else {
+            return Self::None;
+        };
+        let Type::Vec(inner) = inner.as_ref() else {
+            return Self::None;
+        };
+
+        let len_ffi = naming::function_ffi_vec_len(func_name);
+        let copy_ffi = naming::function_ffi_vec_copy_into(func_name);
+
+        match inner.as_ref() {
+            Type::Primitive(primitive) => Self::Primitive(PrimitiveVecInfo {
+                len_ffi,
+                copy_ffi,
+                c_type: primitive.c_type_name().to_string(),
+                jni_array_type: primitive.jni_array_type().to_string(),
+                new_array_fn: primitive.jni_new_array_fn().to_string(),
+            }),
+            Type::Record(record_name) => {
+                let struct_size = module
+                    .records
+                    .iter()
+                    .find(|record| &record.name == record_name)
+                    .map(|record| record.struct_size().as_usize())
+                    .unwrap_or(0);
+
+                Self::Record(RecordVecInfo {
+                    len_ffi,
+                    copy_ffi,
+                    struct_size,
+                })
+            }
+            _ => Self::None,
+        }
+    }
+}
+
 pub struct JniFunctionView {
     pub ffi_name: String,
     pub jni_name: String,
@@ -97,6 +142,12 @@ pub struct JniFunctionView {
     pub vec_jni_array_type: String,
     pub vec_new_array_fn: String,
     pub vec_struct_size: usize,
+    pub option_vec_len_ffi: String,
+    pub option_vec_copy_ffi: String,
+    pub option_vec_c_type: String,
+    pub option_vec_jni_array_type: String,
+    pub option_vec_new_array_fn: String,
+    pub option_vec_struct_size: usize,
     pub option: Option<OptionView>,
     pub result: Option<ResultView>,
 }
@@ -276,6 +327,7 @@ impl JniGlueTemplate {
         let jni_return = return_kind.jni_return_type().to_string();
         let jni_params = Self::format_jni_params(&params);
         let vec_return = VecReturnKind::from_output(&func.output, &func.name, module);
+        let option_vec_return = OptionVecReturnKind::from_output(&func.output, &func.name, module);
         let is_data_enum_return = return_kind.is_data_enum();
         let data_enum_return_name = return_kind
             .data_enum_name()
@@ -301,6 +353,12 @@ impl JniGlueTemplate {
             vec_jni_array_type: Self::extract_jni_array_type(&vec_return),
             vec_new_array_fn: Self::extract_new_array_fn(&vec_return),
             vec_struct_size: Self::extract_struct_size(&vec_return),
+            option_vec_len_ffi: Self::extract_option_vec_len_ffi(&option_vec_return),
+            option_vec_copy_ffi: Self::extract_option_vec_copy_ffi(&option_vec_return),
+            option_vec_c_type: Self::extract_option_vec_c_type(&option_vec_return),
+            option_vec_jni_array_type: Self::extract_option_vec_jni_array_type(&option_vec_return),
+            option_vec_new_array_fn: Self::extract_option_vec_new_array_fn(&option_vec_return),
+            option_vec_struct_size: Self::extract_option_vec_struct_size(&option_vec_return),
             option: return_kind.option_view().cloned(),
             result: Self::extract_result_view(&func.output, module, &func.name),
         }
@@ -374,6 +432,50 @@ impl JniGlueTemplate {
     fn extract_struct_size(vec_return: &VecReturnKind) -> usize {
         match vec_return {
             VecReturnKind::Record(info) => info.struct_size,
+            _ => 0,
+        }
+    }
+
+    fn extract_option_vec_len_ffi(vec_return: &OptionVecReturnKind) -> String {
+        match vec_return {
+            OptionVecReturnKind::Primitive(info) => info.len_ffi.clone(),
+            OptionVecReturnKind::Record(info) => info.len_ffi.clone(),
+            OptionVecReturnKind::None => String::new(),
+        }
+    }
+
+    fn extract_option_vec_copy_ffi(vec_return: &OptionVecReturnKind) -> String {
+        match vec_return {
+            OptionVecReturnKind::Primitive(info) => info.copy_ffi.clone(),
+            OptionVecReturnKind::Record(info) => info.copy_ffi.clone(),
+            OptionVecReturnKind::None => String::new(),
+        }
+    }
+
+    fn extract_option_vec_c_type(vec_return: &OptionVecReturnKind) -> String {
+        match vec_return {
+            OptionVecReturnKind::Primitive(info) => info.c_type.clone(),
+            _ => String::new(),
+        }
+    }
+
+    fn extract_option_vec_jni_array_type(vec_return: &OptionVecReturnKind) -> String {
+        match vec_return {
+            OptionVecReturnKind::Primitive(info) => info.jni_array_type.clone(),
+            _ => String::new(),
+        }
+    }
+
+    fn extract_option_vec_new_array_fn(vec_return: &OptionVecReturnKind) -> String {
+        match vec_return {
+            OptionVecReturnKind::Primitive(info) => info.new_array_fn.clone(),
+            _ => String::new(),
+        }
+    }
+
+    fn extract_option_vec_struct_size(vec_return: &OptionVecReturnKind) -> usize {
+        match vec_return {
+            OptionVecReturnKind::Record(info) => info.struct_size,
             _ => 0,
         }
     }

@@ -5,7 +5,7 @@ use riff_ffi_rules::naming;
 use crate::model::{Class, DataEnumLayout, Enumeration, Function, Module, Record, Type};
 
 use super::layout::{KotlinBufferRead, KotlinBufferWrite};
-use super::marshal::{OptionView, ParamConversion, ResultView, ReturnKind};
+use super::marshal::{OptionAbiKotlin, OptionView, ParamConversion, ResultView, ReturnKind};
 use super::{NamingConvention, TypeMapper};
 
 #[derive(Template)]
@@ -638,10 +638,7 @@ impl ClassTemplate {
                 format!("return {}", converted)
             }
             Some(_) => format!("return Native.{}({})", ffi_name, args),
-            None => format!(
-                "val status = Native.{}({})\n        checkStatus(status)",
-                ffi_name, args
-            ),
+            None => format!("Native.{}({})", ffi_name, args),
         }
     }
 }

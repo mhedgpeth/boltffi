@@ -1,123 +1,85 @@
 use super::{NamingConvention, TypeMapper};
-use crate::model::{DataEnumLayout, Module, Primitive, Type};
+use crate::model::{DataEnumLayout, Module, OptionAbi, Primitive, Type};
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum OptionStrategy {
-    PackedLong,
-    BoxedLong,
-    BoxedDouble,
-    NullableString,
-    NullableRecord { name: String, struct_size: usize },
-    NullableDataEnum { name: String, struct_size: usize },
+pub trait OptionAbiKotlin {
+    fn optional_vec_list_suffix(&self) -> &'static str;
+    fn jni_return_type(&self) -> &'static str;
+    fn box_class(&self) -> &'static str;
+    fn box_signature(&self) -> &'static str;
+    fn box_jni_type(&self) -> &'static str;
 }
 
-impl OptionStrategy {
-    pub fn from_primitive(primitive: Primitive) -> Self {
-        match primitive {
-            Primitive::Bool
-            | Primitive::I8
-            | Primitive::U8
-            | Primitive::I16
-            | Primitive::U16
-            | Primitive::I32
-            | Primitive::U32
-            | Primitive::F32 => Self::PackedLong,
-            Primitive::I64 | Primitive::U64 | Primitive::Isize | Primitive::Usize => {
-                Self::BoxedLong
-            }
-            Primitive::F64 => Self::BoxedDouble,
-        }
-    }
-
-    pub fn jni_return_type(&self) -> &'static str {
+impl OptionAbiKotlin for OptionAbi {
+    fn optional_vec_list_suffix(&self) -> &'static str {
         match self {
-            Self::PackedLong => "jlong",
-            Self::BoxedLong | Self::BoxedDouble => "jobject",
-            Self::NullableString => "jstring",
-            Self::NullableRecord { .. } | Self::NullableDataEnum { .. } => "jobject",
-        }
-    }
-
-    pub fn box_class(&self) -> &'static str {
-        match self {
-            Self::BoxedLong => "java/lang/Long",
-            Self::BoxedDouble => "java/lang/Double",
+            Self::VecPrimitive {
+                primitive: Primitive::U8,
+            } => "?.map { it.toUByte() }",
+            Self::VecPrimitive {
+                primitive: Primitive::U16,
+            } => "?.map { it.toUShort() }",
+            Self::VecPrimitive {
+                primitive: Primitive::U32,
+            } => "?.map { it.toUInt() }",
+            Self::VecPrimitive {
+                primitive: Primitive::U64,
+            } => "?.map { it.toULong() }",
+            Self::VecPrimitive { .. } => "?.toList()",
             _ => "",
         }
     }
 
-    pub fn box_signature(&self) -> &'static str {
+    fn jni_return_type(&self) -> &'static str {
         match self {
-            Self::BoxedLong => "(J)Ljava/lang/Long;",
-            Self::BoxedDouble => "(D)Ljava/lang/Double;",
+            Self::Packed { .. } => "jlong",
+            Self::Primitive { .. } => "jobject",
+            Self::String => "jstring",
+            Self::Record { .. } | Self::DataEnum { .. } | Self::VecRecord { .. } => "jobject",
+            Self::Enum => "jint",
+            Self::VecPrimitive { primitive } => primitive.jni_array_type(),
+        }
+    }
+
+    fn box_class(&self) -> &'static str {
+        match self {
+            Self::Primitive {
+                primitive: Primitive::I64 | Primitive::U64 | Primitive::Isize | Primitive::Usize,
+            } => "java/lang/Long",
+            Self::Primitive {
+                primitive: Primitive::F64,
+            } => "java/lang/Double",
             _ => "",
         }
     }
 
-    pub fn box_jni_type(&self) -> &'static str {
+    fn box_signature(&self) -> &'static str {
         match self {
-            Self::BoxedLong => "jlong",
-            Self::BoxedDouble => "jdouble",
+            Self::Primitive {
+                primitive: Primitive::I64 | Primitive::U64 | Primitive::Isize | Primitive::Usize,
+            } => "(J)Ljava/lang/Long;",
+            Self::Primitive {
+                primitive: Primitive::F64,
+            } => "(D)Ljava/lang/Double;",
             _ => "",
         }
     }
 
-    pub fn is_packed(&self) -> bool {
-        matches!(self, Self::PackedLong)
-    }
-
-    pub fn is_boxed(&self) -> bool {
-        matches!(self, Self::BoxedLong | Self::BoxedDouble)
-    }
-
-    pub fn is_nullable_string(&self) -> bool {
-        matches!(self, Self::NullableString)
-    }
-
-    pub fn is_nullable_buffer(&self) -> bool {
-        matches!(self, Self::NullableRecord { .. } | Self::NullableDataEnum { .. })
-    }
-
-    pub fn struct_size(&self) -> usize {
+    fn box_jni_type(&self) -> &'static str {
         match self {
-            Self::NullableRecord { struct_size, .. }
-            | Self::NullableDataEnum { struct_size, .. } => *struct_size,
-            _ => 0,
-        }
-    }
-
-    pub fn from_type(inner: &Type, module: &Module) -> Self {
-        match inner {
-            Type::Primitive(p) => Self::from_primitive(*p),
-            Type::String => Self::NullableString,
-            Type::Record(name) => Self::NullableRecord {
-                name: name.clone(),
-                struct_size: module
-                    .records
-                    .iter()
-                    .find(|r| &r.name == name)
-                    .map(|r| r.struct_size().as_usize())
-                    .unwrap_or(0),
-            },
-            Type::Enum(name) => Self::NullableDataEnum {
-                name: name.clone(),
-                struct_size: module
-                    .enums
-                    .iter()
-                    .find(|e| &e.name == name)
-                    .filter(|e| e.is_data_enum())
-                    .and_then(|e| DataEnumLayout::from_enum(e))
-                    .map(|l| l.struct_size().as_usize())
-                    .unwrap_or(0),
-            },
-            _ => Self::PackedLong,
+            Self::Primitive {
+                primitive: Primitive::I64 | Primitive::U64 | Primitive::Isize | Primitive::Usize,
+            } => "jlong",
+            Self::Primitive {
+                primitive: Primitive::F64,
+            } => "jdouble",
+            _ => "",
         }
     }
 }
 
 #[derive(Debug, Clone)]
 pub struct OptionView {
-    pub strategy: OptionStrategy,
+    pub strategy: OptionAbi,
     pub c_out_type: String,
     pub kotlin_native_type: String,
     pub reader_name: Option<String>,
@@ -126,11 +88,15 @@ pub struct OptionView {
 
 impl OptionView {
     pub fn from_inner(inner: &Type, module: &Module) -> Self {
-        let strategy = Self::resolve_strategy(inner, module);
+        let strategy = OptionAbi::from_type(
+            inner,
+            |name| module.struct_size(name),
+            |name| module.is_data_enum(name),
+        );
         let c_out_type = Self::resolve_c_out_type(inner);
         let kotlin_native_type = Self::resolve_kotlin_native_type(&strategy, inner);
-        let reader_name = Self::resolve_reader_name(&strategy);
-        let codec_name = Self::resolve_codec_name(&strategy);
+        let reader_name = Self::resolve_reader_name(inner);
+        let codec_name = Self::resolve_codec_name(inner);
 
         Self {
             strategy,
@@ -141,70 +107,42 @@ impl OptionView {
         }
     }
 
-    fn resolve_strategy(inner: &Type, module: &Module) -> OptionStrategy {
-        match inner {
-            Type::Primitive(p) => OptionStrategy::from_primitive(*p),
-            Type::String => OptionStrategy::NullableString,
-            Type::Record(name) => OptionStrategy::NullableRecord {
-                name: name.clone(),
-                struct_size: module
-                    .records
-                    .iter()
-                    .find(|r| &r.name == name)
-                    .map(|r| r.struct_size().as_usize())
-                    .unwrap_or(0),
-            },
-            Type::Enum(name) => OptionStrategy::NullableDataEnum {
-                name: name.clone(),
-                struct_size: module
-                    .enums
-                    .iter()
-                    .find(|e| &e.name == name)
-                    .filter(|e| e.is_data_enum())
-                    .and_then(|e| DataEnumLayout::from_enum(e))
-                    .map(|l| l.struct_size().as_usize())
-                    .unwrap_or(0),
-            },
-            _ => OptionStrategy::PackedLong,
-        }
-    }
-
     fn resolve_c_out_type(inner: &Type) -> String {
         match inner {
             Type::Primitive(p) => p.c_type_name().to_string(),
             Type::String => "FfiString".to_string(),
             Type::Record(name) | Type::Enum(name) => NamingConvention::class_name(name),
+            Type::Vec(_) => "void".to_string(),
             _ => "void".to_string(),
         }
     }
 
-    fn resolve_kotlin_native_type(strategy: &OptionStrategy, inner: &Type) -> String {
-        match strategy {
-            OptionStrategy::PackedLong => "Long".to_string(),
-            OptionStrategy::BoxedLong | OptionStrategy::BoxedDouble => {
-                format!("{}?", TypeMapper::map_type(inner))
-            }
-            OptionStrategy::NullableString => "String?".to_string(),
-            OptionStrategy::NullableRecord { .. } | OptionStrategy::NullableDataEnum { .. } => {
-                "ByteBuffer?".to_string()
-            }
+    fn resolve_kotlin_native_type(abi: &OptionAbi, inner: &Type) -> String {
+        match abi {
+            OptionAbi::Packed { .. } => "Long".to_string(),
+            OptionAbi::Primitive { .. } => format!("{}?", TypeMapper::map_type(inner)),
+            OptionAbi::String => "String?".to_string(),
+            OptionAbi::Record { .. } | OptionAbi::DataEnum { .. } => "ByteBuffer?".to_string(),
+            OptionAbi::Enum => "Int".to_string(),
+            OptionAbi::VecPrimitive { .. } => format!("{}?", TypeMapper::jni_type(inner)),
+            OptionAbi::VecRecord { .. } => "ByteBuffer?".to_string(),
         }
     }
 
-    fn resolve_reader_name(strategy: &OptionStrategy) -> Option<String> {
-        match strategy {
-            OptionStrategy::NullableRecord { name, .. } => {
-                Some(format!("{}Reader", NamingConvention::class_name(name)))
-            }
+    fn resolve_reader_name(inner: &Type) -> Option<String> {
+        match inner {
+            Type::Record(name) => Some(format!("{}Reader", NamingConvention::class_name(name))),
+            Type::Vec(vec_inner) => match vec_inner.as_ref() {
+                Type::Record(name) => Some(format!("{}Reader", NamingConvention::class_name(name))),
+                _ => None,
+            },
             _ => None,
         }
     }
 
-    fn resolve_codec_name(strategy: &OptionStrategy) -> Option<String> {
-        match strategy {
-            OptionStrategy::NullableDataEnum { name, .. } => {
-                Some(format!("{}Codec", NamingConvention::class_name(name)))
-            }
+    fn resolve_codec_name(inner: &Type) -> Option<String> {
+        match inner {
+            Type::Enum(name) => Some(format!("{}Codec", NamingConvention::class_name(name))),
             _ => None,
         }
     }
@@ -220,7 +158,7 @@ pub enum ResultOkKind {
     DataEnum { name: String, struct_size: usize },
     VecPrimitive { primitive: Primitive, len_fn: String, copy_fn: String },
     VecRecord { name: String, struct_size: usize, len_fn: String, copy_fn: String },
-    Option(Box<OptionStrategy>),
+    Option(Box<OptionAbi>),
 }
 
 #[derive(Debug, Clone)]
@@ -341,8 +279,12 @@ impl ResultView {
                 _ => ResultOkKind::Void,
             },
             Type::Option(inner) => {
-                let strategy = OptionStrategy::from_type(inner, module);
-                ResultOkKind::Option(Box::new(strategy))
+                let abi = OptionAbi::from_type(
+                    inner,
+                    |name| module.struct_size(name),
+                    |name| module.is_data_enum(name),
+                );
+                ResultOkKind::Option(Box::new(abi))
             }
             _ => ResultOkKind::Void,
         }
@@ -464,9 +406,9 @@ impl ResultView {
         }
     }
 
-    pub fn option_strategy(&self) -> Option<&OptionStrategy> {
+    pub fn option_abi(&self) -> Option<&OptionAbi> {
         match &self.ok_kind {
-            ResultOkKind::Option(s) => Some(s),
+            ResultOkKind::Option(abi) => Some(abi),
             _ => None,
         }
     }
@@ -486,7 +428,7 @@ impl ResultView {
     }
 
     pub fn has_structured_error(&self) -> bool {
-        true
+        matches!(self.err_kind, ResultErrKind::DataEnum { .. })
     }
 
     pub fn err_is_data_enum(&self) -> bool {
