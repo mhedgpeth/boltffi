@@ -561,6 +561,16 @@ impl AsyncFunctionTemplate {
                 "Native.{}(future) ?: throw FfiException(-1, \"Null string\")",
                 naming::function_ffi_complete(&function.name)
             ),
+            Some(Type::Vec(inner)) => {
+                let call = format!(
+                    "Native.{}(future) ?: throw FfiException(-1, \"Null array\")",
+                    naming::function_ffi_complete(&function.name)
+                );
+                match inner.as_ref() {
+                    Type::Primitive(p) => Self::vec_primitive_conversion(&call, p),
+                    _ => call,
+                }
+            }
             Some(Type::Void) | None => format!(
                 "Native.{}(future)",
                 naming::function_ffi_complete(&function.name)
@@ -581,6 +591,18 @@ impl AsyncFunctionTemplate {
             params,
             return_type,
             complete_expr,
+        }
+    }
+
+    fn vec_primitive_conversion(call: &str, primitive: &crate::model::Primitive) -> String {
+        use crate::model::Primitive;
+        match primitive {
+            Primitive::U8 => format!("({}).asUByteArray().toList()", call),
+            Primitive::U16 => format!("({}).map {{ it.toUShort() }}", call),
+            Primitive::U32 => format!("({}).asUIntArray().toList()", call),
+            Primitive::U64 => format!("({}).asULongArray().toList()", call),
+            Primitive::Usize => format!("({}).asULongArray().toList()", call),
+            _ => format!("({}).toList()", call),
         }
     }
 }

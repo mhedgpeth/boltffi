@@ -76,6 +76,24 @@ impl Primitive {
         }
     }
 
+    pub fn ffi_buf_type(self) -> &'static str {
+        match self {
+            Self::Bool => "FfiBuf_bool",
+            Self::I8 => "FfiBuf_i8",
+            Self::U8 => "FfiBuf_u8",
+            Self::I16 => "FfiBuf_i16",
+            Self::U16 => "FfiBuf_u16",
+            Self::I32 => "FfiBuf_i32",
+            Self::U32 => "FfiBuf_u32",
+            Self::I64 => "FfiBuf_i64",
+            Self::U64 => "FfiBuf_u64",
+            Self::F32 => "FfiBuf_f32",
+            Self::F64 => "FfiBuf_f64",
+            Self::Usize => "FfiBuf_usize",
+            Self::Isize => "FfiBuf_isize",
+        }
+    }
+
     pub fn default_value(self) -> &'static str {
         match self {
             Self::Bool => "false",
@@ -131,6 +149,30 @@ impl Primitive {
             Self::I64 | Self::U64 | Self::Isize | Self::Usize => "NewLongArray",
             Self::F32 => "NewFloatArray",
             Self::F64 => "NewDoubleArray",
+        }
+    }
+
+    pub fn jni_set_array_fn(self) -> &'static str {
+        match self {
+            Self::Bool => "SetBooleanArrayRegion",
+            Self::I8 | Self::U8 => "SetByteArrayRegion",
+            Self::I16 | Self::U16 => "SetShortArrayRegion",
+            Self::I32 | Self::U32 => "SetIntArrayRegion",
+            Self::I64 | Self::U64 | Self::Isize | Self::Usize => "SetLongArrayRegion",
+            Self::F32 => "SetFloatArrayRegion",
+            Self::F64 => "SetDoubleArrayRegion",
+        }
+    }
+
+    pub fn jni_element_type(self) -> &'static str {
+        match self {
+            Self::Bool => "jboolean",
+            Self::I8 | Self::U8 => "jbyte",
+            Self::I16 | Self::U16 => "jshort",
+            Self::I32 | Self::U32 => "jint",
+            Self::I64 | Self::U64 | Self::Isize | Self::Usize => "jlong",
+            Self::F32 => "jfloat",
+            Self::F64 => "jdouble",
         }
     }
 }

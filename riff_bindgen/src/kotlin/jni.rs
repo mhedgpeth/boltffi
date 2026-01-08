@@ -34,6 +34,13 @@ pub struct JniAsyncFunctionView {
     pub jni_complete_c_type: String,
     pub complete_is_void: bool,
     pub complete_is_string: bool,
+    pub complete_is_vec: bool,
+    pub vec_buf_type: String,
+    pub vec_free_fn: String,
+    pub vec_jni_array_type: String,
+    pub vec_new_array_fn: String,
+    pub vec_set_array_fn: String,
+    pub vec_jni_element_type: String,
     pub params: Vec<JniParamInfo>,
 }
 
@@ -303,6 +310,7 @@ impl JniGlueTemplate {
             Some(Type::Primitive(_)) => true,
             Some(Type::String) => true,
             Some(Type::Void) => true,
+            Some(Type::Vec(inner)) => matches!(inner.as_ref(), Type::Primitive(_)),
             _ => false,
         };
 
@@ -337,6 +345,35 @@ impl JniGlueTemplate {
             )
         };
 
+        let vec_primitive = func.output.as_ref().and_then(|t| match t {
+            Type::Vec(inner) => match inner.as_ref() {
+                Type::Primitive(p) => Some(*p),
+                _ => None,
+            },
+            _ => None,
+        });
+
+        let complete_is_vec = vec_primitive.is_some();
+        let (
+            vec_buf_type,
+            vec_free_fn,
+            vec_jni_array_type,
+            vec_new_array_fn,
+            vec_set_array_fn,
+            vec_jni_element_type,
+        ) = vec_primitive
+            .map(|p| {
+                (
+                    p.ffi_buf_type().to_string(),
+                    format!("{}_free_{}", naming::ffi_prefix(), p.ffi_buf_type()),
+                    p.jni_array_type().to_string(),
+                    p.jni_new_array_fn().to_string(),
+                    p.jni_set_array_fn().to_string(),
+                    p.jni_element_type().to_string(),
+                )
+            })
+            .unwrap_or_default();
+
         let (jni_complete_return, jni_complete_c_type, complete_is_void, complete_is_string) =
             match &func.output {
                 None | Some(Type::Void) => ("void".to_string(), "void".to_string(), true, false),
@@ -347,6 +384,10 @@ impl JniGlueTemplate {
                     false,
                     false,
                 ),
+                Some(Type::Vec(inner)) => match inner.as_ref() {
+                    Type::Primitive(p) => (p.jni_array_type().to_string(), p.ffi_buf_type().to_string(), false, false),
+                    _ => ("jlong".to_string(), "int64_t".to_string(), false, false),
+                },
                 _ => ("jlong".to_string(), "int64_t".to_string(), false, false),
             };
 
@@ -366,6 +407,13 @@ impl JniGlueTemplate {
             jni_complete_c_type,
             complete_is_void,
             complete_is_string,
+            complete_is_vec,
+            vec_buf_type,
+            vec_free_fn,
+            vec_jni_array_type,
+            vec_new_array_fn,
+            vec_set_array_fn,
+            vec_jni_element_type,
             params,
         }
     }

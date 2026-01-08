@@ -1096,6 +1096,16 @@ JNIEXPORT {{ func.jni_complete_return }} JNICALL {{ func.jni_complete_name }}(JN
     free(_tmp);
     {{ prefix }}_free_string(_out);
     return _result;
+{%- else if func.complete_is_vec %}
+    FfiStatus _status;
+    {{ func.vec_buf_type }} _buf = {{ func.ffi_complete }}((RustFutureHandle)future, &_status);
+    if (_status.code != 0 || _buf.ptr == NULL) return NULL;
+    {{ func.vec_jni_array_type }} _result = (*env)->{{ func.vec_new_array_fn }}(env, (jsize)_buf.len);
+    if (_result) {
+        (*env)->{{ func.vec_set_array_fn }}(env, _result, 0, (jsize)_buf.len, (const {{ func.vec_jni_element_type }}*)_buf.ptr);
+    }
+    {{ func.vec_free_fn }}(_buf);
+    return _result;
 {%- else %}
     FfiStatus _status;
     {{ func.jni_complete_c_type }} _result = {{ func.ffi_complete }}((RustFutureHandle)future, &_status);

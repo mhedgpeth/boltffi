@@ -275,6 +275,7 @@ impl Kotlin {
             Some(Type::Primitive(_)) => true,
             Some(Type::String) => true,
             Some(Type::Void) => true,
+            Some(Type::Vec(inner)) => matches!(inner.as_ref(), Type::Primitive(_)),
             _ => false,
         };
 
