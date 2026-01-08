@@ -513,6 +513,79 @@ impl FunctionTemplate {
 }
 
 #[derive(Template)]
+#[template(path = "kotlin/function_async.txt", escape = "none")]
+pub struct AsyncFunctionTemplate {
+    pub func_name: String,
+    pub ffi_name: String,
+    pub ffi_poll: String,
+    pub ffi_complete: String,
+    pub ffi_free: String,
+    pub ffi_cancel: String,
+    pub params: Vec<ParamView>,
+    pub return_type: Option<String>,
+    pub complete_expr: String,
+}
+
+impl AsyncFunctionTemplate {
+    pub fn from_function(function: &Function, _module: &Module) -> Self {
+        let ffi_name = naming::function_ffi_name(&function.name);
+
+        let params: Vec<ParamView> = function
+            .inputs
+            .iter()
+            .map(|param| {
+                let param_name = NamingConvention::param_name(&param.name);
+                let conversion = ParamConversion::to_ffi(&param_name, &param.param_type);
+                ParamView {
+                    name: param_name,
+                    kotlin_type: TypeMapper::map_type(&param.param_type),
+                    conversion,
+                }
+            })
+            .collect();
+
+        let return_type = function.output.as_ref().map(TypeMapper::map_type);
+
+        let complete_expr = match &function.output {
+            Some(Type::Primitive(p)) => {
+                let call = format!("Native.{}(future)", naming::function_ffi_complete(&function.name));
+                match p {
+                    crate::model::Primitive::U8 => format!("{}.toUByte()", call),
+                    crate::model::Primitive::U16 => format!("{}.toUShort()", call),
+                    crate::model::Primitive::U32 => format!("{}.toUInt()", call),
+                    crate::model::Primitive::U64 => format!("{}.toULong()", call),
+                    _ => call,
+                }
+            }
+            Some(Type::String) => format!(
+                "Native.{}(future) ?: throw FfiException(-1, \"Null string\")",
+                naming::function_ffi_complete(&function.name)
+            ),
+            Some(Type::Void) | None => format!(
+                "Native.{}(future)",
+                naming::function_ffi_complete(&function.name)
+            ),
+            _ => format!(
+                "Native.{}(future)",
+                naming::function_ffi_complete(&function.name)
+            ),
+        };
+
+        Self {
+            func_name: NamingConvention::method_name(&function.name),
+            ffi_name,
+            ffi_poll: naming::function_ffi_poll(&function.name),
+            ffi_complete: naming::function_ffi_complete(&function.name),
+            ffi_free: naming::function_ffi_free(&function.name),
+            ffi_cancel: naming::function_ffi_cancel(&function.name),
+            params,
+            return_type,
+            complete_expr,
+        }
+    }
+}
+
+#[derive(Template)]
 #[template(path = "kotlin/class.txt", escape = "none")]
 pub struct ClassTemplate {
     pub class_name: String,
@@ -658,6 +731,11 @@ pub struct NativeFunctionView {
     pub has_out_param: bool,
     pub out_type: String,
     pub return_jni_type: String,
+    pub is_async: bool,
+    pub ffi_poll: String,
+    pub ffi_complete: String,
+    pub ffi_cancel: String,
+    pub ffi_free: String,
 }
 
 pub struct NativeParamView {
@@ -693,7 +771,7 @@ impl NativeTemplate {
                     Self::analyze_return(&func.output, module);
 
                 NativeFunctionView {
-                    ffi_name,
+                    ffi_name: ffi_name.clone(),
                     params: func
                         .inputs
                         .iter()
@@ -722,6 +800,11 @@ impl NativeTemplate {
                     has_out_param,
                     out_type,
                     return_jni_type,
+                    is_async: func.is_async,
+                    ffi_poll: naming::function_ffi_poll(&func.name),
+                    ffi_complete: naming::function_ffi_complete(&func.name),
+                    ffi_cancel: naming::function_ffi_cancel(&func.name),
+                    ffi_free: naming::function_ffi_free(&func.name),
                 }
             })
             .collect();

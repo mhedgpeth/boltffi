@@ -2,7 +2,14 @@ package {{ package_name }}
 
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
+import kotlin.coroutines.Continuation
+import kotlin.coroutines.resume
+import kotlin.coroutines.resumeWithException
+import kotlinx.coroutines.CancellableContinuation
+import kotlinx.coroutines.suspendCancellableCoroutine
 
 class FfiException(val code: Int, message: String) : Exception(message)
 
@@ -17,5 +24,58 @@ private inline fun <T> useNativeBuffer(buffer: ByteBuffer, block: (ByteBuffer) -
         block(buffer)
     } finally {
         Native.{{ prefix }}_free_native_buffer(buffer)
+    }
+}
+
+private const val RIFF_FUTURE_POLL_READY: Byte = 0
+private const val RIFF_FUTURE_POLL_WAKE: Byte = 1
+
+internal class RiffHandleMap<T: Any> {
+    private val map = ConcurrentHashMap<Long, T>()
+    private val counter = AtomicLong(1)
+
+    fun insert(obj: T): Long {
+        val handle = counter.getAndAdd(2)
+        map[handle] = obj
+        return handle
+    }
+
+    fun remove(handle: Long): T =
+        map.remove(handle) ?: throw IllegalStateException("RiffHandleMap: invalid handle $handle")
+
+    fun get(handle: Long): T =
+        map[handle] ?: throw IllegalStateException("RiffHandleMap: invalid handle $handle")
+}
+
+private val riffContinuationMap = RiffHandleMap<CancellableContinuation<Byte>>()
+
+@JvmStatic
+internal fun riffFutureContinuationCallback(handle: Long, pollResult: Byte) {
+    try {
+        riffContinuationMap.remove(handle).resume(pollResult)
+    } catch (e: Exception) {
+        // Handle already consumed or invalid - ignore
+    }
+}
+
+internal suspend inline fun <T> riffCallAsync(
+    crossinline createFuture: () -> Long,
+    crossinline poll: (Long, Long) -> Unit,
+    crossinline complete: (Long) -> T,
+    crossinline free: (Long) -> Unit,
+    crossinline cancel: (Long) -> Unit
+): T {
+    val rustFuture = createFuture()
+    try {
+        var pollResult: Byte
+        do {
+            pollResult = suspendCancellableCoroutine { continuation ->
+                continuation.invokeOnCancellation { cancel(rustFuture) }
+                poll(rustFuture, riffContinuationMap.insert(continuation))
+            }
+        } while (pollResult != RIFF_FUTURE_POLL_READY)
+        return complete(rustFuture)
+    } finally {
+        free(rustFuture)
     }
 }

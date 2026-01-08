@@ -11,9 +11,9 @@ pub use jni::JniGenerator;
 pub use marshal::{JniParamInfo, JniReturnKind, ParamConversion, ReturnKind};
 pub use names::NamingConvention;
 pub use templates::{
-    CStyleEnumTemplate, ClassTemplate, DataEnumCodecTemplate, FunctionTemplate, NativeTemplate,
-    PreambleTemplate, RecordReaderTemplate, RecordTemplate, RecordWriterTemplate,
-    SealedEnumTemplate,
+    AsyncFunctionTemplate, CStyleEnumTemplate, ClassTemplate, DataEnumCodecTemplate,
+    FunctionTemplate, NativeTemplate, PreambleTemplate, RecordReaderTemplate, RecordTemplate,
+    RecordWriterTemplate, SealedEnumTemplate,
 };
 pub use types::TypeMapper;
 
@@ -123,9 +123,15 @@ impl Kotlin {
     }
 
     pub fn render_function(function: &Function, module: &Module) -> String {
-        FunctionTemplate::from_function(function, module)
-            .render()
-            .expect("function template failed")
+        if function.is_async {
+            AsyncFunctionTemplate::from_function(function, module)
+                .render()
+                .expect("async function template failed")
+        } else {
+            FunctionTemplate::from_function(function, module)
+                .render()
+                .expect("function template failed")
+        }
     }
 
     pub fn render_class(class: &Class) -> String {
@@ -192,7 +198,7 @@ impl Kotlin {
 
     fn is_supported_function(func: &Function, module: &Module) -> bool {
         if func.is_async {
-            return false;
+            return Self::is_supported_async_function(func);
         }
 
         let supported_output = match &func.output {
@@ -263,6 +269,22 @@ impl Kotlin {
             .unwrap_or(false)
     }
 
+    fn is_supported_async_function(func: &Function) -> bool {
+        let supported_output = match &func.output {
+            None => true,
+            Some(Type::Primitive(_)) => true,
+            Some(Type::String) => true,
+            Some(Type::Void) => true,
+            _ => false,
+        };
+
+        let supported_inputs = func
+            .inputs
+            .iter()
+            .all(|param| matches!(&param.param_type, Type::Primitive(_) | Type::String));
+
+        supported_output && supported_inputs
+    }
 }
 
 #[cfg(test)]
