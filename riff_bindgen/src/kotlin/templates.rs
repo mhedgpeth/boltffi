@@ -793,6 +793,7 @@ pub struct NativeFunctionView {
     pub ffi_complete: String,
     pub ffi_cancel: String,
     pub ffi_free: String,
+    pub complete_return_jni_type: String,
 }
 
 pub struct NativeParamView {
@@ -856,12 +857,13 @@ impl NativeTemplate {
                         .collect(),
                     has_out_param,
                     out_type,
-                    return_jni_type,
+                    return_jni_type: return_jni_type.clone(),
                     is_async: func.is_async,
                     ffi_poll: naming::function_ffi_poll(&func.name),
                     ffi_complete: naming::function_ffi_complete(&func.name),
                     ffi_cancel: naming::function_ffi_cancel(&func.name),
                     ffi_free: naming::function_ffi_free(&func.name),
+                    complete_return_jni_type: Self::async_complete_return_type(&func.output, &return_jni_type),
                 }
             })
             .collect();
@@ -996,6 +998,16 @@ impl NativeTemplate {
                 }
             }
             _ => (false, String::new(), TypeMapper::jni_type(ok)),
+        }
+    }
+
+    fn async_complete_return_type(output: &Option<Type>, base_type: &str) -> String {
+        match output {
+            Some(Type::Vec(inner)) => match inner.as_ref() {
+                Type::Primitive(_) => format!("{}?", base_type),
+                _ => base_type.to_string(),
+            },
+            _ => base_type.to_string(),
         }
     }
 }
