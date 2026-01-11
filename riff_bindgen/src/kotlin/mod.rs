@@ -6,20 +6,23 @@ mod primitives;
 mod templates;
 mod types;
 
+use std::collections::HashSet;
+
 use askama::Template;
 
 pub use jni::JniGenerator;
 pub use marshal::{JniParamInfo, JniReturnKind, ParamConversion, ReturnKind};
 pub use names::NamingConvention;
 pub use templates::{
-    AsyncFunctionTemplate, CStyleEnumTemplate, CallbackTraitTemplate, ClassTemplate,
-    DataEnumCodecTemplate, FunctionTemplate, NativeTemplate, PreambleTemplate,
+    AsyncFunctionTemplate, ClosureInterfaceTemplate, CStyleEnumTemplate, CallbackTraitTemplate,
+    ClassTemplate, DataEnumCodecTemplate, FunctionTemplate, NativeTemplate, PreambleTemplate,
     RecordReaderTemplate, RecordTemplate, RecordWriterTemplate, SealedEnumTemplate,
 };
 pub use types::TypeMapper;
 
 use crate::model::{
-    CallbackTrait, Class, Enumeration, Function, Module, Record, ReturnType, Type,
+    CallbackTrait, Class, ClosureSignature, Enumeration, Function, Module, Record, ReturnType,
+    Type,
 };
 
 pub struct Kotlin;
@@ -56,6 +59,10 @@ impl Kotlin {
                 sections.push(Self::render_record_writer(record));
             }
         });
+
+        Self::collect_unique_closures(module)
+            .iter()
+            .for_each(|sig| sections.push(Self::render_closure_interface(sig)));
 
         module
             .functions
@@ -131,6 +138,42 @@ impl Kotlin {
         RecordWriterTemplate::from_record(record)
             .render()
             .expect("record writer template failed")
+    }
+
+    pub fn render_closure_interface(sig: &ClosureSignature) -> String {
+        ClosureInterfaceTemplate::from_signature(sig, "")
+            .render()
+            .expect("closure interface template failed")
+    }
+
+    fn collect_unique_closures(module: &Module) -> Vec<ClosureSignature> {
+        let mut seen: HashSet<String> = HashSet::new();
+        let mut closures = Vec::new();
+
+        let mut extract = |ty: &Type| {
+            if let Type::Closure(sig) = ty {
+                let id = sig.signature_id();
+                if seen.insert(id) {
+                    closures.push(sig.clone());
+                }
+            }
+        };
+
+        for func in &module.functions {
+            for param in &func.inputs {
+                extract(&param.param_type);
+            }
+        }
+
+        for class in &module.classes {
+            for method in &class.methods {
+                for param in &method.inputs {
+                    extract(&param.param_type);
+                }
+            }
+        }
+
+        closures
     }
 
     pub fn render_function(function: &Function, module: &Module) -> String {
@@ -213,7 +256,7 @@ impl Kotlin {
             .collect()
     }
 
-    fn find_async_return_records(module: &Module) -> std::collections::HashSet<&str> {
+    fn find_async_return_records(module: &Module) -> HashSet<&str> {
         module
             .functions
             .iter()
@@ -259,7 +302,7 @@ impl Kotlin {
         };
 
         let supported_inputs = func.inputs.iter().all(|param| match &param.param_type {
-            Type::Primitive(_) | Type::String | Type::Enum(_) => true,
+            Type::Primitive(_) | Type::String | Type::Enum(_) | Type::Closure(_) => true,
             Type::Record(name) => Self::is_record_blittable(name, module),
             Type::Vec(inner) | Type::Slice(inner) => match inner.as_ref() {
                 Type::Primitive(_) => true,

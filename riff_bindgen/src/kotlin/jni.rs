@@ -7,8 +7,8 @@ use super::marshal::{JniParamInfo, JniReturnKind, OptionView, ResultView};
 use super::primitives;
 use super::{NamingConvention, TypeMapper};
 use crate::model::{
-    CallbackTrait, Class, DataEnumLayout, Function, Method, Module, ReturnType, TraitMethod,
-    TraitMethodParam, Type,
+    CallbackTrait, Class, ClosureSignature, DataEnumLayout, Function, Method, Module, Primitive,
+    ReturnType, TraitMethod, TraitMethodParam, Type,
 };
 
 #[derive(Template)]
@@ -26,6 +26,23 @@ pub struct JniGlueTemplate {
     pub classes: Vec<JniClassView>,
     pub callback_traits: Vec<JniCallbackTraitView>,
     pub async_callback_invokers: Vec<AsyncCallbackInvoker>,
+    pub closure_trampolines: Vec<ClosureTrampolineView>,
+}
+
+pub struct ClosureTrampolineView {
+    pub trampoline_name: String,
+    pub signature_id: String,
+    pub c_params: String,
+    pub jni_signature: String,
+    pub jni_call_args: String,
+    pub invoke_method_name: String,
+    pub record_params: Vec<ClosureRecordParam>,
+}
+
+pub struct ClosureRecordParam {
+    pub index: usize,
+    pub c_type: String,
+    pub size: String,
 }
 
 pub struct AsyncCallbackInvoker {
@@ -367,6 +384,8 @@ impl JniGlueTemplate {
 
         let async_callback_invokers = Self::collect_async_invokers(&callback_traits, &jni_prefix);
 
+        let closure_trampolines = Self::collect_closure_trampolines(module, &package_path);
+
         let has_async = !async_functions.is_empty()
             || classes.iter().any(|c| !c.async_methods.is_empty())
             || !callback_traits.is_empty();
@@ -386,6 +405,7 @@ impl JniGlueTemplate {
             classes,
             callback_traits,
             async_callback_invokers,
+            closure_trampolines,
         }
     }
 
@@ -928,7 +948,7 @@ impl JniGlueTemplate {
         let supported_inputs = method
             .inputs
             .iter()
-            .all(|p| matches!(&p.param_type, Type::Primitive(_)));
+            .all(|p| matches!(&p.param_type, Type::Primitive(_) | Type::Closure(_)));
 
         supported_output && supported_inputs
     }
@@ -1130,11 +1150,15 @@ impl JniGlueTemplate {
             .constructors
             .iter()
             .map(|ctor| {
-                let ffi_name = format!("{}_new", ffi_prefix);
+                let ffi_name = if ctor.is_default() {
+                    format!("{}_new", ffi_prefix)
+                } else {
+                    naming::method_ffi_name(&class.name, &ctor.name)
+                };
                 let jni_name = format!(
-                    "Java_{}_Native_{}_1new",
+                    "Java_{}_Native_{}",
                     jni_prefix,
-                    ffi_prefix.replace('_', "_1")
+                    ffi_name.replace('_', "_1")
                 );
                 let params: Vec<JniParamInfo> = ctor
                     .inputs
@@ -1392,4 +1416,143 @@ impl JniGlueTemplate {
             params,
         }
     }
+
+    fn collect_closure_trampolines(module: &Module, package_path: &str) -> Vec<ClosureTrampolineView> {
+        let mut seen = HashSet::new();
+        let mut trampolines = Vec::new();
+
+        let process_closure = |ty: &Type, seen: &mut HashSet<String>, trampolines: &mut Vec<ClosureTrampolineView>| {
+            if let Type::Closure(sig) = ty {
+                let id = sig.signature_id();
+                if seen.insert(id.clone()) {
+                    trampolines.push(Self::build_trampoline_view(sig, package_path));
+                }
+            }
+        };
+
+        for func in &module.functions {
+            for param in &func.inputs {
+                process_closure(&param.param_type, &mut seen, &mut trampolines);
+            }
+        }
+
+        for class in &module.classes {
+            for method in &class.methods {
+                for param in &method.inputs {
+                    process_closure(&param.param_type, &mut seen, &mut trampolines);
+                }
+            }
+        }
+
+        trampolines
+    }
+
+    fn build_trampoline_view(sig: &ClosureSignature, package_path: &str) -> ClosureTrampolineView {
+        let signature_id = sig.signature_id();
+        let trampoline_name = format!("trampoline_{}", signature_id);
+        let invoke_method_name = "invoke";
+
+        let c_params: Vec<String> = sig
+            .params
+            .iter()
+            .enumerate()
+            .map(|(i, ty)| format!("{} p{}", Self::closure_param_c_type(ty), i))
+            .collect();
+        let c_params_str = if c_params.is_empty() {
+            String::new()
+        } else {
+            format!(", {}", c_params.join(", "))
+        };
+
+        let jni_signature = Self::build_closure_jni_signature(sig);
+
+        let jni_call_args: Vec<String> = sig
+            .params
+            .iter()
+            .enumerate()
+            .map(|(i, ty)| Self::closure_param_to_jni(ty, i))
+            .collect();
+        let jni_call_args_str = jni_call_args.join(", ");
+
+        let record_params: Vec<ClosureRecordParam> = sig
+            .params
+            .iter()
+            .enumerate()
+            .filter_map(|(i, ty)| {
+                if let Type::Record(name) = ty {
+                    Some(ClosureRecordParam {
+                        index: i,
+                        c_type: NamingConvention::class_name(name),
+                        size: format!("sizeof({})", NamingConvention::class_name(name)),
+                    })
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        ClosureTrampolineView {
+            trampoline_name,
+            signature_id,
+            c_params: c_params_str,
+            jni_signature,
+            jni_call_args: jni_call_args_str,
+            invoke_method_name: invoke_method_name.to_string(),
+            record_params,
+        }
+    }
+
+    fn closure_param_c_type(ty: &Type) -> String {
+        match ty {
+            Type::Primitive(p) => p.c_type_name().to_string(),
+            Type::Record(name) => NamingConvention::class_name(name),
+            Type::String => "const uint8_t*, uintptr_t".to_string(),
+            _ => "void*".to_string(),
+        }
+    }
+
+    fn closure_param_to_jni(ty: &Type, index: usize) -> String {
+        match ty {
+            Type::Primitive(Primitive::Bool) => format!("(jboolean)p{}", index),
+            Type::Primitive(Primitive::I8) => format!("(jbyte)p{}", index),
+            Type::Primitive(Primitive::I16) => format!("(jshort)p{}", index),
+            Type::Primitive(Primitive::I32) => format!("(jint)p{}", index),
+            Type::Primitive(Primitive::I64) => format!("(jlong)p{}", index),
+            Type::Primitive(Primitive::U8) => format!("(jbyte)p{}", index),
+            Type::Primitive(Primitive::U16) => format!("(jshort)p{}", index),
+            Type::Primitive(Primitive::U32) => format!("(jint)p{}", index),
+            Type::Primitive(Primitive::U64) => format!("(jlong)p{}", index),
+            Type::Primitive(Primitive::F32) => format!("(jfloat)p{}", index),
+            Type::Primitive(Primitive::F64) => format!("(jdouble)p{}", index),
+            Type::Record(_) => format!("buf_p{}", index),
+            _ => format!("(jlong)p{}", index),
+        }
+    }
+
+    fn build_closure_jni_signature(sig: &ClosureSignature) -> String {
+        let params: String = sig
+            .params
+            .iter()
+            .map(|ty| Self::type_to_jni_sig(ty))
+            .collect();
+        let ret = Self::type_to_jni_sig(&sig.returns);
+        format!("({}){}", params, ret)
+    }
+
+    fn type_to_jni_sig(ty: &Type) -> String {
+        match ty {
+            Type::Void => "V".to_string(),
+            Type::Primitive(Primitive::Bool) => "Z".to_string(),
+            Type::Primitive(Primitive::I8) | Type::Primitive(Primitive::U8) => "B".to_string(),
+            Type::Primitive(Primitive::I16) | Type::Primitive(Primitive::U16) => "S".to_string(),
+            Type::Primitive(Primitive::I32) | Type::Primitive(Primitive::U32) => "I".to_string(),
+            Type::Primitive(Primitive::I64) | Type::Primitive(Primitive::U64) => "J".to_string(),
+            Type::Primitive(Primitive::F32) => "F".to_string(),
+            Type::Primitive(Primitive::F64) => "D".to_string(),
+            Type::String => "Ljava/lang/String;".to_string(),
+            Type::Record(_) => "Ljava/nio/ByteBuffer;".to_string(),
+            _ => "Ljava/lang/Object;".to_string(),
+        }
+    }
+
 }

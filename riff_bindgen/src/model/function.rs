@@ -70,18 +70,18 @@ impl Function {
     pub fn has_callbacks(&self) -> bool {
         self.inputs
             .iter()
-            .any(|p| matches!(p.param_type, Type::Callback(_)))
+            .any(|p| matches!(p.param_type, Type::Closure(_)))
     }
 
     pub fn callback_params(&self) -> impl Iterator<Item = &Parameter> {
         self.inputs
             .iter()
-            .filter(|p| matches!(p.param_type, Type::Callback(_)))
+            .filter(|p| matches!(p.param_type, Type::Closure(_)))
     }
 
     pub fn non_callback_params(&self) -> impl Iterator<Item = &Parameter> {
         self.inputs
             .iter()
-            .filter(|p| !matches!(p.param_type, Type::Callback(_)))
+            .filter(|p| !matches!(p.param_type, Type::Closure(_)))
     }
 }

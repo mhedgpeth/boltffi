@@ -112,7 +112,10 @@ pub enum SwiftType {
     Record(String),
     Object(String),
     BoxedTrait(String),
-    Callback(Box<SwiftType>),
+    Closure {
+        params: Vec<SwiftType>,
+        returns: Box<SwiftType>,
+    },
 }
 
 impl SwiftType {
@@ -139,7 +142,10 @@ impl SwiftType {
             Type::Record(name) => Self::Record(name.clone()),
             Type::Object(name) => Self::Object(name.clone()),
             Type::BoxedTrait(name) => Self::BoxedTrait(name.clone()),
-            Type::Callback(inner) => Self::Callback(Box::new(Self::from_model(inner))),
+            Type::Closure(sig) => Self::Closure {
+                params: sig.params.iter().map(|p| Self::from_model(p)).collect(),
+                returns: Box::new(Self::from_model(&sig.returns)),
+            },
         }
     }
 
@@ -156,7 +162,19 @@ impl SwiftType {
                 NamingConvention::class_name(name)
             }
             Self::BoxedTrait(name) => format!("{}Protocol", NamingConvention::class_name(name)),
-            Self::Callback(inner) => format!("({}) -> Void", inner.swift_type()),
+            Self::Closure { params, returns } => {
+                let params_str = params
+                    .iter()
+                    .map(|p| p.swift_type())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let ret = if matches!(returns.as_ref(), SwiftType::Void) {
+                    "Void".to_string()
+                } else {
+                    returns.swift_type()
+                };
+                format!("({}) -> {}", params_str, ret)
+            }
         }
     }
 
@@ -172,7 +190,10 @@ impl SwiftType {
             Self::Enum(_) => "0".into(),
             Self::Record(name) => format!("{}()", NamingConvention::class_name(name)),
             Self::Object(_) | Self::BoxedTrait(_) => "nil".into(),
-            Self::Callback(_) => "{ _ in }".into(),
+            Self::Closure { params, .. } => {
+                let underscores = (0..params.len()).map(|_| "_").collect::<Vec<_>>().join(", ");
+                format!("{{ {} in }}", underscores)
+            }
         }
     }
 
@@ -547,7 +568,7 @@ impl ParamConversion {
             wrapper_post,
             ffi_args,
             is_mutable,
-            is_escaping: matches!(swift_ty, SwiftType::Callback(_)),
+            is_escaping: matches!(swift_ty, SwiftType::Closure { .. }),
         }
     }
 

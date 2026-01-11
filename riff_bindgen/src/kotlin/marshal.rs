@@ -1,6 +1,6 @@
 use super::primitives;
 use super::{NamingConvention, TypeMapper};
-use crate::model::{DataEnumLayout, Module, OptionInfo, Primitive, ReturnType, Type};
+use crate::model::{ClosureSignature, DataEnumLayout, Module, OptionInfo, Primitive, ReturnType, Type};
 
 #[derive(Debug, Clone)]
 pub struct OptionView {
@@ -593,8 +593,8 @@ impl ReturnKind {
                 "BoxedTrait return type '{}' not yet supported in Kotlin bindings",
                 name
             ),
-            Type::Callback(_) => {
-                panic!("Callback return type not yet supported in Kotlin bindings")
+            Type::Closure(_) => {
+                panic!("Closure return type not yet supported in Kotlin bindings")
             }
         }
     }
@@ -732,8 +732,63 @@ impl ParamConversion {
                 Type::Primitive(Primitive::Bool) => format!("{}.toBooleanArray()", param_name),
                 _ => param_name.to_string(),
             },
+            Type::Closure(sig) => Self::closure_wrapper(param_name, sig),
             _ => param_name.to_string(),
         }
+    }
+
+    fn closure_wrapper(param_name: &str, sig: &ClosureSignature) -> String {
+        let has_record_params = sig.params.iter().any(|ty| matches!(ty, Type::Record(_)));
+        if !has_record_params {
+            return param_name.to_string();
+        }
+
+        let wrapper_params: Vec<String> = sig
+            .params
+            .iter()
+            .enumerate()
+            .map(|(i, ty)| {
+                if matches!(ty, Type::Record(_)) {
+                    format!("buf{}", i)
+                } else {
+                    format!("p{}", i)
+                }
+            })
+            .collect();
+
+        let setup_lines: Vec<String> = sig
+            .params
+            .iter()
+            .enumerate()
+            .filter_map(|(i, ty)| {
+                if matches!(ty, Type::Record(_)) {
+                    Some(format!("buf{}.order(java.nio.ByteOrder.nativeOrder()); ", i))
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        let inner_args: Vec<String> = sig
+            .params
+            .iter()
+            .enumerate()
+            .map(|(i, ty)| {
+                if let Type::Record(name) = ty {
+                    format!("{}Reader.read(buf{}, 0)", NamingConvention::class_name(name), i)
+                } else {
+                    format!("p{}", i)
+                }
+            })
+            .collect();
+
+        format!(
+            "{{ {} -> {}{}({}) }}",
+            wrapper_params.join(", "),
+            setup_lines.join(""),
+            param_name,
+            inner_args.join(", ")
+        )
     }
 }
 
@@ -909,6 +964,15 @@ pub struct JniParamInfo {
     pub record_is_mutable: bool,
     pub data_enum_name: Option<String>,
     pub data_enum_struct_size: usize,
+    pub closure_info: Option<ClosureParamInfo>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ClosureParamInfo {
+    pub trampoline_name: String,
+    pub signature_id: String,
+    pub param_types: Vec<Type>,
+    pub return_type: Type,
 }
 
 impl JniParamInfo {
@@ -924,6 +988,16 @@ impl JniParamInfo {
             _ => (None, false),
         };
 
+        let closure_info = match ty {
+            Type::Closure(sig) => Some(ClosureParamInfo {
+                trampoline_name: format!("trampoline_{}", sig.signature_id()),
+                signature_id: sig.signature_id(),
+                param_types: sig.params.clone(),
+                return_type: (*sig.returns).clone(),
+            }),
+            _ => None,
+        };
+
         Self {
             name: name.to_string(),
             jni_type: TypeMapper::c_jni_type(ty),
@@ -936,6 +1010,7 @@ impl JniParamInfo {
             record_is_mutable,
             data_enum_name: None,
             data_enum_struct_size: 0,
+            closure_info,
         }
     }
 
@@ -950,6 +1025,16 @@ impl JniParamInfo {
 
         let jni_type = Self::compute_jni_type(ty, &enum_info);
 
+        let closure_info = match ty {
+            Type::Closure(sig) => Some(ClosureParamInfo {
+                trampoline_name: format!("trampoline_{}", sig.signature_id()),
+                signature_id: sig.signature_id(),
+                param_types: sig.params.clone(),
+                return_type: (*sig.returns).clone(),
+            }),
+            _ => None,
+        };
+
         Self {
             name: name.to_string(),
             jni_type,
@@ -962,6 +1047,7 @@ impl JniParamInfo {
             record_is_mutable: record_info.is_mutable,
             data_enum_name: enum_info.name,
             data_enum_struct_size: enum_info.struct_size,
+            closure_info,
         }
     }
 
@@ -1070,9 +1156,18 @@ impl JniParamInfo {
             )
         } else if self.is_handle {
             format!("(void*){}", self.name)
+        } else if let Some(closure) = &self.closure_info {
+            format!(
+                "{}, (void*)_{}_ref",
+                closure.trampoline_name, self.name
+            )
         } else {
             self.name.clone()
         }
+    }
+
+    pub fn is_closure(&self) -> bool {
+        self.closure_info.is_some()
     }
 
     pub fn is_primitive_array(&self) -> bool {

@@ -74,7 +74,7 @@ impl ParamInfo {
         let is_slice = matches!(ty, Type::Slice(_));
         let is_mut_slice = matches!(ty, Type::MutSlice(_));
         let is_vec = matches!(ty, Type::Vec(_));
-        let is_callback = matches!(ty, Type::Callback(_));
+        let is_callback = matches!(ty, Type::Closure(_));
         let is_enum = matches!(ty, Type::Enum(_));
         let is_boxed_trait = matches!(ty, Type::BoxedTrait(_));
         let is_escaping = is_callback;
@@ -138,7 +138,7 @@ pub struct CallbackInfo {
 
 impl CallbackInfo {
     pub fn from_param(name: &str, ty: &Type, func_name_pascal: &str, index: usize) -> Option<Self> {
-        let Type::Callback(inner) = ty else {
+        let Type::Closure(sig) = ty else {
             return None;
         };
 
@@ -149,10 +149,24 @@ impl CallbackInfo {
             String::new()
         };
 
+        let params_swift = sig
+            .params
+            .iter()
+            .map(|p| TypeMapper::map_type(p))
+            .collect::<Vec<_>>()
+            .join(", ");
+
+        let params_ffi = sig
+            .params
+            .iter()
+            .map(|p| TypeMapper::ffi_type(p))
+            .collect::<Vec<_>>()
+            .join(", ");
+
         Some(Self {
             param_name: param_name.clone(),
-            swift_type: TypeMapper::map_type(inner),
-            ffi_arg_type: TypeMapper::ffi_type(inner),
+            swift_type: params_swift,
+            ffi_arg_type: params_ffi,
             context_type: format!("{}CallbackFn{}", func_name_pascal, suffix),
             box_type: format!("{}CallbackBox{}", func_name_pascal, suffix),
             box_name: format!("{}Box{}", param_name, suffix),
@@ -190,7 +204,7 @@ impl ParamsInfo {
             }
             params.push(info);
 
-            if matches!(ty, Type::Callback(_)) {
+            if matches!(ty, Type::Closure(_)) {
                 if let Some(cb) =
                     CallbackInfo::from_param(name, ty, func_name_pascal, callback_index)
                 {

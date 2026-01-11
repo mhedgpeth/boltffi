@@ -54,6 +54,36 @@ static void riff_jni_continuation_callback(uint64_t handle, int8_t poll_result) 
 }
 {%- endif %}
 
+{%- for trampoline in closure_trampolines %}
+static jmethodID g_{{ trampoline.signature_id }}_invoke = NULL;
+
+static void {{ trampoline.trampoline_name }}(void* user_data{{ trampoline.c_params }}) {
+    JNIEnv* env;
+    int attached = 0;
+    jint get_env_result = (*g_jvm)->GetEnv(g_jvm, (void**)&env, JNI_VERSION_1_6);
+    if (get_env_result == JNI_EDETACHED) {
+        if ((*g_jvm)->AttachCurrentThread(g_jvm, (void**)&env, NULL) != JNI_OK) {
+            return;
+        }
+        attached = 1;
+    } else if (get_env_result != JNI_OK) {
+        return;
+    }
+    jobject callback = (jobject)user_data;
+{%- for rp in trampoline.record_params %}
+    jobject buf_p{{ rp.index }} = (*env)->NewDirectByteBuffer(env, (void*)&p{{ rp.index }}, {{ rp.size }});
+{%- endfor %}
+    if (g_{{ trampoline.signature_id }}_invoke == NULL) {
+        jclass cls = (*env)->GetObjectClass(env, callback);
+        g_{{ trampoline.signature_id }}_invoke = (*env)->GetMethodID(env, cls, "{{ trampoline.invoke_method_name }}", "{{ trampoline.jni_signature }}");
+    }
+    (*env)->CallVoidMethod(env, callback, g_{{ trampoline.signature_id }}_invoke{% if !trampoline.jni_call_args.is_empty() %}, {{ trampoline.jni_call_args }}{% endif %});
+    if (attached) {
+        (*g_jvm)->DetachCurrentThread(g_jvm);
+    }
+}
+{%- endfor %}
+
 {%- for func in functions %}
 {%- if func.is_data_enum_return %}
 
@@ -1044,6 +1074,9 @@ JNIEXPORT {{ method.jni_return }} JNICALL {{ method.jni_name }}(JNIEnv *env, jcl
 {%- if param.is_string %}
     const char* _{{ param.name }}_c = {{ param.name }} ? (*env)->GetStringUTFChars(env, {{ param.name }}, NULL) : NULL;
 {%- endif %}
+{%- if param.is_closure() %}
+    jobject _{{ param.name }}_ref = (*env)->NewGlobalRef(env, (jobject){{ param.name }});
+{%- endif %}
 {%- endfor %}
 {%- if method.return_kind.is_void() %}
     {{ method.ffi_name }}((void*)handle{% for param in method.params %}, {{ param.ffi_arg() }}{% endfor %});
@@ -1051,12 +1084,18 @@ JNIEXPORT {{ method.jni_return }} JNICALL {{ method.jni_name }}(JNIEnv *env, jcl
 {%- if param.is_string %}
     if ({{ param.name }}) (*env)->ReleaseStringUTFChars(env, {{ param.name }}, _{{ param.name }}_c);
 {%- endif %}
+{%- if param.is_closure() %}
+    (*env)->DeleteGlobalRef(env, _{{ param.name }}_ref);
+{%- endif %}
 {%- endfor %}
 {%- else %}
     {{ method.jni_return }} _result = {{ method.ffi_name }}((void*)handle{% for param in method.params %}, {{ param.ffi_arg() }}{% endfor %});
 {%- for param in method.params %}
 {%- if param.is_string %}
     if ({{ param.name }}) (*env)->ReleaseStringUTFChars(env, {{ param.name }}, _{{ param.name }}_c);
+{%- endif %}
+{%- if param.is_closure() %}
+    (*env)->DeleteGlobalRef(env, _{{ param.name }}_ref);
 {%- endif %}
 {%- endfor %}
     return _result;

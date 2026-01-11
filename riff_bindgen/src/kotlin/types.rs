@@ -16,7 +16,20 @@ impl TypeMapper {
             Type::Vec(inner) => format!("List<{}>", Self::map_type(inner)),
             Type::Option(inner) => format!("{}?", Self::map_type(inner)),
             Type::Result { ok, .. } => Self::map_type(ok),
-            Type::Callback(inner) => format!("({}) -> Unit", Self::map_type(inner)),
+            Type::Closure(sig) => {
+                let params = sig
+                    .params
+                    .iter()
+                    .map(|p| Self::map_type(p))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let ret = if sig.returns.is_void() {
+                    "Unit".to_string()
+                } else {
+                    Self::map_type(&sig.returns)
+                };
+                format!("({}) -> {}", params, ret)
+            }
             Type::Object(name) => NamingConvention::class_name(name),
             Type::Record(name) => NamingConvention::class_name(name),
             Type::Enum(name) => NamingConvention::class_name(name),
@@ -57,7 +70,7 @@ impl TypeMapper {
             },
             Type::Option(inner) => format!("{}?", Self::jni_type(inner)),
             Type::Result { ok, .. } => Self::jni_type(ok),
-            Type::Callback(_) => "Long".into(),
+            Type::Closure(sig) => format!("{}Callback", sig.signature_id()),
             Type::Void => "Unit".into(),
         }
     }
@@ -81,7 +94,7 @@ impl TypeMapper {
             },
             Type::Option(inner) => Self::c_jni_type(inner),
             Type::Result { ok, .. } => Self::c_jni_type(ok),
-            Type::Callback(_) => "jlong".into(),
+            Type::Closure(_) => "jobject".into(),
             Type::Void => "void".into(),
         }
     }
@@ -103,7 +116,7 @@ impl TypeMapper {
             Type::Record(name) => panic!("no default value for record type '{}'", name),
             Type::Enum(name) => panic!("no default value for enum type '{}'", name),
             Type::BoxedTrait(name) => panic!("no default value for trait type '{}'", name),
-            Type::Callback(_) => panic!("no default value for callback type"),
+            Type::Closure(_) => panic!("no default value for closure type"),
         }
     }
 

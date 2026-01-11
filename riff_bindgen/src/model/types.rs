@@ -192,6 +192,72 @@ impl Primitive {
             Self::F64 => "jdoubleArray",
         }
     }
+
+    pub fn type_id(self) -> &'static str {
+        match self {
+            Self::Bool => "Bool",
+            Self::I8 => "I8",
+            Self::U8 => "U8",
+            Self::I16 => "I16",
+            Self::U16 => "U16",
+            Self::I32 => "I32",
+            Self::U32 => "U32",
+            Self::I64 => "I64",
+            Self::U64 => "U64",
+            Self::F32 => "F32",
+            Self::F64 => "F64",
+            Self::Isize => "Isize",
+            Self::Usize => "Usize",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ClosureSignature {
+    pub params: Vec<Type>,
+    pub returns: Box<Type>,
+}
+
+impl ClosureSignature {
+    pub fn new(params: Vec<Type>, returns: Type) -> Self {
+        Self {
+            params,
+            returns: Box::new(returns),
+        }
+    }
+
+    pub fn void_return(params: Vec<Type>) -> Self {
+        Self::new(params, Type::Void)
+    }
+
+    pub fn single_param(param: Type) -> Self {
+        Self::void_return(vec![param])
+    }
+
+    pub fn is_void_return(&self) -> bool {
+        self.returns.is_void()
+    }
+
+    pub fn signature_id(&self) -> String {
+        let params_id = self
+            .params
+            .iter()
+            .map(|p| p.type_id())
+            .collect::<Vec<_>>()
+            .join("_");
+        let ret_id = self.returns.type_id();
+        if self.is_void_return() {
+            if params_id.is_empty() {
+                "Void".to_string()
+            } else {
+                params_id
+            }
+        } else if params_id.is_empty() {
+            format!("To{}", ret_id)
+        } else {
+            format!("{}To{}", params_id, ret_id)
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -204,7 +270,7 @@ pub enum Type {
     Vec(Box<Type>),
     Option(Box<Type>),
     Result { ok: Box<Type>, err: Box<Type> },
-    Callback(Box<Type>),
+    Closure(ClosureSignature),
     Object(String),
     Record(String),
     Enum(String),
@@ -308,6 +374,25 @@ impl Type {
             _ => None,
         }
     }
+
+    pub fn type_id(&self) -> String {
+        match self {
+            Self::Void => "Void".into(),
+            Self::Primitive(p) => p.type_id().into(),
+            Self::String => "String".into(),
+            Self::Bytes => "Bytes".into(),
+            Self::Vec(inner) => format!("Vec{}", inner.type_id()),
+            Self::Option(inner) => format!("Opt{}", inner.type_id()),
+            Self::Slice(inner) => format!("Slice{}", inner.type_id()),
+            Self::MutSlice(inner) => format!("MutSlice{}", inner.type_id()),
+            Self::Result { ok, .. } => format!("Result{}", ok.type_id()),
+            Self::Record(name) => heck::AsUpperCamelCase(name).to_string(),
+            Self::Enum(name) => heck::AsUpperCamelCase(name).to_string(),
+            Self::Object(name) => heck::AsUpperCamelCase(name).to_string(),
+            Self::BoxedTrait(name) => heck::AsUpperCamelCase(name).to_string(),
+            Self::Closure(sig) => format!("Fn{}", sig.signature_id()),
+        }
+    }
 }
 
 use super::layout::{CLayout, Layout};
@@ -319,7 +404,7 @@ impl CLayout for Type {
             Self::String | Self::Bytes | Self::Vec(_) | Self::Slice(_) | Self::MutSlice(_) => {
                 Layout::new(24, 8)
             }
-            Self::Object(_) | Self::BoxedTrait(_) | Self::Callback(_) => Layout::new(8, 8),
+            Self::Object(_) | Self::BoxedTrait(_) | Self::Closure(_) => Layout::new(8, 8),
             Self::Record(_) | Self::Enum(_) => Layout::new(8, 8),
             Self::Option(inner) => {
                 let inner_layout = inner.c_layout();
