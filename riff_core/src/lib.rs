@@ -6,6 +6,7 @@ pub mod safety;
 pub mod status;
 pub mod subscription;
 pub mod types;
+pub mod wire;
 
 pub use handle::HandleBox;
 pub use pending::{CancellationToken, PendingHandle};
