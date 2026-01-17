@@ -5,9 +5,9 @@ use syn::ItemFn;
 
 use crate::params::{FfiParams, transform_params, transform_params_async};
 use crate::returns::{
-    OptionReturnAbi, ReturnKind, classify_return,
-    classify_async_return_abi, get_async_ffi_return_type, get_async_rust_return_type,
-    get_async_complete_conversion, get_async_default_ffi_value,
+    OptionReturnAbi, ReturnKind, classify_async_return_abi, classify_return,
+    get_async_complete_conversion, get_async_default_ffi_value, get_async_ffi_return_type,
+    get_async_rust_return_type,
 };
 use crate::safety;
 

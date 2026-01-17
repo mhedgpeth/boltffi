@@ -1,6 +1,8 @@
 use std::path::PathBuf;
 
-use riff_bindgen::{CHeaderGenerator, FactoryStyle, JniGenerator, Kotlin, KotlinOptions, Swift, scan_crate};
+use riff_bindgen::{
+    CHeaderGenerator, FactoryStyle, JniGenerator, Kotlin, KotlinOptions, Swift, scan_crate,
+};
 
 use crate::config::{Config, FactoryStyle as ConfigFactoryStyle};
 use crate::error::{CliError, Result};

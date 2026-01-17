@@ -1,7 +1,8 @@
 use std::path::{Path, PathBuf};
 
 use crate::config::{
-    AndroidConfig, Config, ErrorStyle, FactoryStyle, IosConfig, KotlinConfig, PackConfig, PackageConfig, SwiftConfig,
+    AndroidConfig, Config, ErrorStyle, FactoryStyle, IosConfig, KotlinConfig, PackConfig,
+    PackageConfig, SwiftConfig,
 };
 use crate::error::Result;
 

@@ -63,7 +63,7 @@ impl Kotlin {
         sections.push(Self::render_preamble_with_package(package_name, module));
 
         module.enums.iter().for_each(|enumeration| {
-            sections.push(Self::render_enum(enumeration));
+            sections.push(Self::render_enum_with_module(enumeration, module));
             if enumeration.is_data_enum() || enumeration.is_error {
                 sections.push(Self::render_data_enum_codec(enumeration));
             }
@@ -130,12 +130,16 @@ impl Kotlin {
     }
 
     pub fn render_enum(enumeration: &Enumeration) -> String {
+        Self::render_enum_with_module(enumeration, &Module::new(""))
+    }
+
+    pub fn render_enum_with_module(enumeration: &Enumeration, module: &Module) -> String {
         if enumeration.is_c_style() && !enumeration.is_error {
             CStyleEnumTemplate::from_enum(enumeration)
                 .render()
                 .expect("c-style enum template failed")
         } else {
-            SealedEnumTemplate::from_enum(enumeration)
+            SealedEnumTemplate::from_enum_with_module(enumeration, module)
                 .render()
                 .expect("sealed enum template failed")
         }
@@ -311,7 +315,9 @@ impl Kotlin {
         if func.is_async {
             return Self::is_supported_async_function(func, module);
         }
-
+        if func.wire_encoded {
+            return true;
+        }
         let supported_output = match &func.returns {
             ReturnType::Void => true,
             ReturnType::Fallible { ok, .. } => Self::is_supported_result_ok(ok, module),

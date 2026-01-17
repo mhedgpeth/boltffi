@@ -39,7 +39,11 @@ pub fn extract_vec_inner(ty: &Type) -> Option<syn::Type> {
 
 fn is_string_like_type(ty: &Type) -> bool {
     match ty {
-        Type::Path(path) => path.path.segments.last().is_some_and(|s| s.ident == "String"),
+        Type::Path(path) => path
+            .path
+            .segments
+            .last()
+            .is_some_and(|s| s.ident == "String"),
         Type::Reference(reference) => match reference.elem.as_ref() {
             Type::Path(path) => path.path.segments.last().is_some_and(|s| s.ident == "str"),
             _ => false,
@@ -92,11 +96,18 @@ pub fn classify_return(output: &ReturnType) -> ReturnKind {
                 {
                     let ok_str = quote!(#ok_ty).to_string().replace(' ', "");
                     if ok_str == "String" || ok_str == "std::string::String" {
-                        return ReturnKind::ResultString { err: err_ty.clone() };
+                        return ReturnKind::ResultString {
+                            err: err_ty.clone(),
+                        };
                     } else if ok_str == "()" {
-                        return ReturnKind::ResultUnit { err: err_ty.clone() };
+                        return ReturnKind::ResultUnit {
+                            err: err_ty.clone(),
+                        };
                     } else {
-                        return ReturnKind::ResultPrimitive { ok: ok_ty.clone(), err: err_ty.clone() };
+                        return ReturnKind::ResultPrimitive {
+                            ok: ok_ty.clone(),
+                            err: err_ty.clone(),
+                        };
                     }
                 }
                 if segment.ident == "Option"

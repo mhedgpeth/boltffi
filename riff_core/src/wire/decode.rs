@@ -51,7 +51,8 @@ impl WireDecode for bool {
 impl WireDecode for isize {
     #[inline]
     fn decode_from(buf: &[u8]) -> DecodeResult<Self> {
-        let bytes: [u8; 8] = buf.get(..8)
+        let bytes: [u8; 8] = buf
+            .get(..8)
             .ok_or(DecodeError::BufferTooSmall)?
             .try_into()
             .map_err(|_| DecodeError::BufferTooSmall)?;
@@ -63,7 +64,8 @@ impl WireDecode for isize {
 impl WireDecode for usize {
     #[inline]
     fn decode_from(buf: &[u8]) -> DecodeResult<Self> {
-        let bytes: [u8; 8] = buf.get(..8)
+        let bytes: [u8; 8] = buf
+            .get(..8)
             .ok_or(DecodeError::BufferTooSmall)?
             .try_into()
             .map_err(|_| DecodeError::BufferTooSmall)?;
@@ -76,7 +78,10 @@ impl WireDecode for String {
     #[inline]
     fn decode_from(buf: &[u8]) -> DecodeResult<Self> {
         let len = u32::from_le_bytes(
-            buf.get(..4).ok_or(DecodeError::BufferTooSmall)?.try_into().unwrap()
+            buf.get(..4)
+                .ok_or(DecodeError::BufferTooSmall)?
+                .try_into()
+                .unwrap(),
         ) as usize;
         let total_size = 4 + len;
         let string_bytes = buf.get(4..total_size).ok_or(DecodeError::BufferTooSmall)?;
@@ -169,7 +174,8 @@ impl FixedSizeWireDecode for isize {
 
     #[inline]
     fn decode_fixed(buf: &[u8]) -> Result<Self, DecodeError> {
-        let bytes: [u8; 8] = buf.get(..8)
+        let bytes: [u8; 8] = buf
+            .get(..8)
             .ok_or(DecodeError::BufferTooSmall)?
             .try_into()
             .map_err(|_| DecodeError::BufferTooSmall)?;
@@ -182,7 +188,8 @@ impl FixedSizeWireDecode for usize {
 
     #[inline]
     fn decode_fixed(buf: &[u8]) -> Result<Self, DecodeError> {
-        let bytes: [u8; 8] = buf.get(..8)
+        let bytes: [u8; 8] = buf
+            .get(..8)
             .ok_or(DecodeError::BufferTooSmall)?
             .try_into()
             .map_err(|_| DecodeError::BufferTooSmall)?;
@@ -192,7 +199,8 @@ impl FixedSizeWireDecode for usize {
 
 impl<T: WireDecode> WireDecode for Vec<T> {
     fn decode_from(buf: &[u8]) -> DecodeResult<Self> {
-        let count_bytes: [u8; 4] = buf.get(..VEC_COUNT_SIZE)
+        let count_bytes: [u8; 4] = buf
+            .get(..VEC_COUNT_SIZE)
             .ok_or(DecodeError::BufferTooSmall)?
             .try_into()
             .map_err(|_| DecodeError::BufferTooSmall)?;
@@ -206,20 +214,16 @@ impl<T: WireDecode> WireDecode for Vec<T> {
             let element_size = core::mem::size_of::<T>();
             let data_size = count * element_size;
             let total_size = VEC_COUNT_SIZE + data_size;
-            
+
             if buf.len() < total_size {
                 return Err(DecodeError::BufferTooSmall);
             }
-            
+
             let mut result = Vec::with_capacity(count);
             let src_ptr = buf[VEC_COUNT_SIZE..].as_ptr();
             unsafe {
                 result.set_len(count);
-                core::ptr::copy_nonoverlapping(
-                    src_ptr,
-                    result.as_mut_ptr() as *mut u8,
-                    data_size,
-                );
+                core::ptr::copy_nonoverlapping(src_ptr, result.as_mut_ptr() as *mut u8, data_size);
             }
             return Ok((result, total_size));
         }
@@ -314,11 +318,8 @@ mod tests {
     fn roundtrip_complex() {
         let mut buf = [0u8; 128];
 
-        let original: Vec<Option<String>> = vec![
-            Some("hello".to_string()),
-            None,
-            Some("world".to_string()),
-        ];
+        let original: Vec<Option<String>> =
+            vec![Some("hello".to_string()), None, Some("world".to_string())];
 
         let written = original.encode_to(&mut buf);
         let (decoded, size) = Vec::<Option<String>>::decode_from(&buf).unwrap();

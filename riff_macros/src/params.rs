@@ -1,7 +1,10 @@
 use quote::quote;
 use syn::{FnArg, Pat};
 
-use crate::util::{ParamTransform, classify_param_transform, is_primitive_vec_inner, len_ident, ptr_ident, extract_option_param_inner};
+use crate::util::{
+    ParamTransform, classify_param_transform, extract_option_param_inner, is_primitive_vec_inner,
+    len_ident, ptr_ident,
+};
 
 pub struct FfiParams {
     pub ffi_params: Vec<proc_macro2::TokenStream>,

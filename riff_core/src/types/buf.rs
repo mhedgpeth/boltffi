@@ -1,5 +1,5 @@
-use core::mem::ManuallyDrop;
 use crate::wire::{WireBuffer, WireEncode};
+use core::mem::ManuallyDrop;
 
 #[repr(C)]
 pub struct FfiBuf<T> {

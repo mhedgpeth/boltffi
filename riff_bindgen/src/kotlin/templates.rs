@@ -164,6 +164,7 @@ pub struct SealedEnumTemplate {
 
 pub struct SealedVariantView {
     pub name: String,
+    pub tag: usize,
     pub is_tuple: bool,
     pub fields: Vec<SealedFieldView>,
 }
@@ -173,6 +174,9 @@ pub struct SealedFieldView {
     pub index: usize,
     pub kotlin_type: String,
     pub is_tuple: bool,
+    pub wire_decode_inline: String,
+    pub wire_size_expr: String,
+    pub wire_encode: String,
 }
 
 #[derive(Template)]
@@ -291,16 +295,22 @@ impl DataEnumCodecTemplate {
 
 impl SealedEnumTemplate {
     pub fn from_enum(enumeration: &Enumeration) -> Self {
+        Self::from_enum_with_module(enumeration, &Module::new(""))
+    }
+
+    pub fn from_enum_with_module(enumeration: &Enumeration, module: &Module) -> Self {
         let variants = enumeration
             .variants
             .iter()
-            .map(|variant| {
+            .enumerate()
+            .map(|(tag, variant)| {
                 let is_tuple = variant.fields.iter().any(|f| {
                     f.name.starts_with('_')
                         && f.name.chars().nth(1).map_or(false, |c| c.is_ascii_digit())
                 });
                 SealedVariantView {
                     name: NamingConvention::class_name(&variant.name),
+                    tag,
                     is_tuple,
                     fields: variant
                         .fields
@@ -313,11 +323,20 @@ impl SealedEnumTemplate {
                                     .chars()
                                     .nth(1)
                                     .map_or(false, |c| c.is_ascii_digit());
+                            let name = if field_is_tuple {
+                                format!("value{}", i)
+                            } else {
+                                NamingConvention::property_name(&field.name)
+                            };
+                            let encoder = super::wire::encode_type(&field.field_type, &name, module);
                             SealedFieldView {
-                                name: NamingConvention::property_name(&field.name),
+                                name: name.clone(),
                                 index: i,
                                 kotlin_type: TypeMapper::map_type(&field.field_type),
                                 is_tuple: field_is_tuple,
+                                wire_decode_inline: Self::make_decode_inline(&field.field_type, module),
+                                wire_size_expr: encoder.size_expr,
+                                wire_encode: encoder.encode_expr,
                             }
                         })
                         .collect(),
@@ -329,6 +348,19 @@ impl SealedEnumTemplate {
             class_name: NamingConvention::class_name(&enumeration.name),
             variants,
             is_error: enumeration.is_error,
+        }
+    }
+
+    fn make_decode_inline(ty: &Type, module: &Module) -> String {
+        let codec = super::wire::decode_type(ty, module);
+        let reader = codec.reader_expr.replace("OFFSET", "pos");
+        match &codec.size_kind {
+            super::wire::SizeKind::Fixed(size) => {
+                format!("run {{ val v = {}; pos += {}; v }}", reader, size)
+            }
+            super::wire::SizeKind::Variable => {
+                format!("run {{ val (v, s) = {}; pos += s; v }}", reader)
+            }
         }
     }
 }

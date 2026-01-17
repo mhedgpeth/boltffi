@@ -3,7 +3,7 @@ use quote::quote;
 use riff_ffi_rules::naming;
 use syn::{FnArg, ReturnType, Type};
 
-use crate::params::{transform_method_params, transform_method_params_async, FfiParams};
+use crate::params::{FfiParams, transform_method_params, transform_method_params_async};
 use crate::returns::{
     classify_async_return_abi, get_async_complete_conversion, get_async_default_ffi_value,
     get_async_ffi_return_type, get_async_rust_return_type,

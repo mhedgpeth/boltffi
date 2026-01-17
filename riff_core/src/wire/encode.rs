@@ -1,8 +1,18 @@
 use crate::wire::constants::*;
 
 pub trait WireSize {
-    fn is_fixed_size() -> bool where Self: Sized { false }
-    fn fixed_size() -> Option<usize> where Self: Sized { None }
+    fn is_fixed_size() -> bool
+    where
+        Self: Sized,
+    {
+        false
+    }
+    fn fixed_size() -> Option<usize>
+    where
+        Self: Sized,
+    {
+        None
+    }
     fn wire_size(&self) -> usize;
 }
 
@@ -40,13 +50,19 @@ impl_wire_primitive!(i8, i16, i32, i64, u8, u16, u32, u64, f32, f64);
 
 impl WireSize for bool {
     #[inline]
-    fn is_fixed_size() -> bool { true }
+    fn is_fixed_size() -> bool {
+        true
+    }
 
     #[inline]
-    fn fixed_size() -> Option<usize> { Some(1) }
+    fn fixed_size() -> Option<usize> {
+        Some(1)
+    }
 
     #[inline]
-    fn wire_size(&self) -> usize { 1 }
+    fn wire_size(&self) -> usize {
+        1
+    }
 }
 
 impl WireEncode for bool {
@@ -59,13 +75,19 @@ impl WireEncode for bool {
 
 impl WireSize for isize {
     #[inline]
-    fn is_fixed_size() -> bool { true }
+    fn is_fixed_size() -> bool {
+        true
+    }
 
     #[inline]
-    fn fixed_size() -> Option<usize> { Some(8) }
+    fn fixed_size() -> Option<usize> {
+        Some(8)
+    }
 
     #[inline]
-    fn wire_size(&self) -> usize { 8 }
+    fn wire_size(&self) -> usize {
+        8
+    }
 }
 
 impl WireEncode for isize {
@@ -80,13 +102,19 @@ impl WireEncode for isize {
 
 impl WireSize for usize {
     #[inline]
-    fn is_fixed_size() -> bool { true }
+    fn is_fixed_size() -> bool {
+        true
+    }
 
     #[inline]
-    fn fixed_size() -> Option<usize> { Some(8) }
+    fn fixed_size() -> Option<usize> {
+        Some(8)
+    }
 
     #[inline]
-    fn wire_size(&self) -> usize { 8 }
+    fn wire_size(&self) -> usize {
+        8
+    }
 }
 
 impl WireEncode for usize {
@@ -118,10 +146,14 @@ impl WireEncode for str {
 
 impl WireSize for String {
     #[inline]
-    fn is_fixed_size() -> bool { false }
+    fn is_fixed_size() -> bool {
+        false
+    }
 
     #[inline]
-    fn fixed_size() -> Option<usize> { None }
+    fn fixed_size() -> Option<usize> {
+        None
+    }
 
     #[inline]
     fn wire_size(&self) -> usize {
@@ -138,10 +170,14 @@ impl WireEncode for String {
 
 impl<T: WireSize> WireSize for Option<T> {
     #[inline]
-    fn is_fixed_size() -> bool { false }
+    fn is_fixed_size() -> bool {
+        false
+    }
 
     #[inline]
-    fn fixed_size() -> Option<usize> { None }
+    fn fixed_size() -> Option<usize> {
+        None
+    }
 
     #[inline]
     fn wire_size(&self) -> usize {
@@ -170,10 +206,14 @@ impl<T: WireEncode> WireEncode for Option<T> {
 
 impl<T: WireSize> WireSize for Vec<T> {
     #[inline]
-    fn is_fixed_size() -> bool { false }
+    fn is_fixed_size() -> bool {
+        false
+    }
 
     #[inline]
-    fn fixed_size() -> Option<usize> { None }
+    fn fixed_size() -> Option<usize> {
+        None
+    }
 
     #[inline]
     fn wire_size(&self) -> usize {
@@ -214,10 +254,14 @@ impl<T: WireEncode> WireEncode for [T] {
 
 impl<T: WireSize, E: WireSize> WireSize for Result<T, E> {
     #[inline]
-    fn is_fixed_size() -> bool { false }
+    fn is_fixed_size() -> bool {
+        false
+    }
 
     #[inline]
-    fn fixed_size() -> Option<usize> { None }
+    fn fixed_size() -> Option<usize> {
+        None
+    }
 
     #[inline]
     fn wire_size(&self) -> usize {
@@ -246,34 +290,50 @@ impl<T: WireEncode, E: WireEncode> WireEncode for Result<T, E> {
 
 impl WireSize for () {
     #[inline]
-    fn is_fixed_size() -> bool { true }
+    fn is_fixed_size() -> bool {
+        true
+    }
 
     #[inline]
-    fn fixed_size() -> Option<usize> { Some(0) }
+    fn fixed_size() -> Option<usize> {
+        Some(0)
+    }
 
     #[inline]
-    fn wire_size(&self) -> usize { 0 }
+    fn wire_size(&self) -> usize {
+        0
+    }
 }
 
 impl WireEncode for () {
     #[inline]
-    fn encode_to(&self, _buf: &mut [u8]) -> usize { 0 }
+    fn encode_to(&self, _buf: &mut [u8]) -> usize {
+        0
+    }
 }
 
 impl<T: WireSize + ?Sized> WireSize for &T {
     #[inline]
-    fn is_fixed_size() -> bool { false }
+    fn is_fixed_size() -> bool {
+        false
+    }
 
     #[inline]
-    fn fixed_size() -> Option<usize> { None }
+    fn fixed_size() -> Option<usize> {
+        None
+    }
 
     #[inline]
-    fn wire_size(&self) -> usize { (*self).wire_size() }
+    fn wire_size(&self) -> usize {
+        (*self).wire_size()
+    }
 }
 
 impl<T: WireEncode + ?Sized> WireEncode for &T {
     #[inline]
-    fn encode_to(&self, buf: &mut [u8]) -> usize { (*self).encode_to(buf) }
+    fn encode_to(&self, buf: &mut [u8]) -> usize {
+        (*self).encode_to(buf)
+    }
 }
 
 #[cfg(test)]

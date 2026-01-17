@@ -185,7 +185,18 @@ fn is_record_type(type_str: &str) -> bool {
 fn is_primitive_type(s: &str) -> bool {
     matches!(
         s,
-        "i8" | "i16" | "i32" | "i64" | "u8" | "u16" | "u32" | "u64" 
-        | "f32" | "f64" | "bool" | "isize" | "usize" | "()"
+        "i8" | "i16"
+            | "i32"
+            | "i64"
+            | "u8"
+            | "u16"
+            | "u32"
+            | "u64"
+            | "f32"
+            | "f64"
+            | "bool"
+            | "isize"
+            | "usize"
+            | "()"
     )
 }

@@ -11,9 +11,9 @@ pub fn data_impl(item: TokenStream) -> TokenStream {
         if !has_repr {
             item_struct.attrs.insert(0, syn::parse_quote!(#[repr(C)]));
         }
-        
+
         let wire_impls = wire_gen::generate_wire_impls(&item_struct);
-        
+
         return TokenStream::from(quote! {
             #item_struct
             #wire_impls
@@ -32,9 +32,9 @@ pub fn data_impl(item: TokenStream) -> TokenStream {
                 item_enum.attrs.insert(0, syn::parse_quote!(#[repr(i32)]));
             }
         }
-        
+
         let wire_impls = wire_gen::generate_enum_wire_impls(&item_enum);
-        
+
         return TokenStream::from(quote! {
             #item_enum
             #wire_impls
