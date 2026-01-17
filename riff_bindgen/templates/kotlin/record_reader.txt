@@ -4,16 +4,13 @@ private object {{ reader_name }} {
     const val OFFSET_{{ field.const_name }} = {{ field.offset }}
 {%- endfor %}
 
-    fun read(buf: ByteBuffer, index: Int): {{ class_name }} {
-        val base = index * STRUCT_SIZE
-        return {{ class_name }}(
+    fun read(buf: ByteBuffer, offset: Int): {{ class_name }} =
+        {{ class_name }}(
 {%- for field in fields %}
-            {{ field.name }} = buf.{{ field.getter }}(base + OFFSET_{{ field.const_name }}){{ field.conversion }}{% if !loop.last %},{% endif %}
+            {{ field.name }} = buf.{{ field.getter }}(offset + OFFSET_{{ field.const_name }}){{ field.conversion }}{% if !loop.last %},{% endif %}
 {%- endfor %}
         )
-    }
 
-    fun readAll(buf: ByteBuffer, count: Int): List<{{ class_name }}> {
-        return (0 until count).map { read(buf, it) }
-    }
+    fun readAll(buf: ByteBuffer, baseOffset: Int, count: Int): List<{{ class_name }}> =
+        (0 until count).map { i -> read(buf, baseOffset + i * STRUCT_SIZE) }
 }

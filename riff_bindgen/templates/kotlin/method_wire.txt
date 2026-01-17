@@ -1,0 +1,24 @@
+{%- if throws %}
+@Throws({{ err_type }}::class)
+{%- endif %}
+fun {{ method_name }}({% for param in params %}{{ param.name }}: {{ param.kotlin_type }}{% if !loop.last %}, {% endif %}{% endfor %}){% if let Some(ret) = return_type %}: {{ ret }}{% endif %} {
+{%- if return_abi.is_unit() %}
+    Native.{{ ffi_name }}(handle{% if params.len() > 0 %}, {% endif %}{% for param in params %}{{ param.conversion }}{% if !loop.last %}, {% endif %}{% endfor %})
+{%- else if return_abi.is_direct() %}
+    return Native.{{ ffi_name }}(handle{% if params.len() > 0 %}, {% endif %}{% for param in params %}{{ param.conversion }}{% if !loop.last %}, {% endif %}{% endfor %}){{ return_abi.kotlin_cast() }}
+{%- else %}
+    val buf = Native.{{ ffi_name }}(handle{% if params.len() > 0 %}, {% endif %}{% for param in params %}{{ param.conversion }}{% if !loop.last %}, {% endif %}{% endfor %})
+        ?: throw FfiException(-1, "Null buffer returned")
+{%- if is_blittable_return %}
+    return useNativeBuffer(buf) { buffer ->
+        {{ decode_expr }}
+    }
+{%- else %}
+    return useNativeBuffer(buf) { buffer ->
+        val wire = WireBuffer.fromByteBuffer(buffer)
+        {{ decode_expr }}
+    }
+{%- endif %}
+{%- endif %}
+}
+

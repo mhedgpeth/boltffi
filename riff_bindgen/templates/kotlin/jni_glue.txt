@@ -71,7 +71,7 @@ static void {{ trampoline.trampoline_name }}(void* user_data{{ trampoline.c_para
     }
     jobject callback = (jobject)user_data;
 {%- for rp in trampoline.record_params %}
-    jobject buf_p{{ rp.index }} = (*env)->NewDirectByteBuffer(env, (void*)&p{{ rp.index }}, {{ rp.size }});
+    jobject buf_p{{ rp.index }} = (*env)->NewDirectByteBuffer(env, (void*)p{{ rp.index }}_ptr, (jlong)p{{ rp.index }}_len);
 {%- endfor %}
     if (g_{{ trampoline.signature_id }}_invoke == NULL) {
         jclass cls = (*env)->GetObjectClass(env, callback);
@@ -83,6 +83,19 @@ static void {{ trampoline.trampoline_name }}(void* user_data{{ trampoline.c_para
     }
 }
 {%- endfor %}
+
+{%- for wire_fn in wire_functions %}
+{{ wire_fn }}
+{%- endfor %}
+
+JNIEXPORT void JNICALL Java_{{ jni_prefix }}_Native_{{ prefix }}_1free_1native_1buffer(JNIEnv *env, jclass cls, jobject buffer) {
+    void* ptr = (*env)->GetDirectBufferAddress(env, buffer);
+    jlong len = (*env)->GetDirectBufferCapacity(env, buffer);
+    if (ptr != NULL) {
+        FfiBuf_u8 buf = { (uint8_t*)ptr, (size_t)len, (size_t)len };
+        {{ prefix }}_free_buf_u8(buf);
+    }
+}
 
 {%- for func in functions %}
 {%- if func.is_data_enum_return %}
@@ -1062,45 +1075,8 @@ JNIEXPORT void JNICALL Java_{{ class.jni_prefix }}_Native_{{ class.jni_ffi_prefi
     if (handle != 0) {{ class.ffi_prefix }}_free((void*)handle);
 }
 
-{%- for method in class.methods %}
-
-JNIEXPORT {{ method.jni_return }} JNICALL {{ method.jni_name }}(JNIEnv *env, jclass cls, jlong handle{{ method.jni_params }}) {
-{%- if method.return_kind.is_void() %}
-    if (handle == 0) return;
-{%- else %}
-    if (handle == 0) return 0;
-{%- endif %}
-{%- for param in method.params %}
-{%- if param.is_string %}
-    const char* _{{ param.name }}_c = {{ param.name }} ? (*env)->GetStringUTFChars(env, {{ param.name }}, NULL) : NULL;
-{%- endif %}
-{%- if param.is_closure() %}
-    jobject _{{ param.name }}_ref = (*env)->NewGlobalRef(env, (jobject){{ param.name }});
-{%- endif %}
-{%- endfor %}
-{%- if method.return_kind.is_void() %}
-    {{ method.ffi_name }}((void*)handle{% for param in method.params %}, {{ param.ffi_arg() }}{% endfor %});
-{%- for param in method.params %}
-{%- if param.is_string %}
-    if ({{ param.name }}) (*env)->ReleaseStringUTFChars(env, {{ param.name }}, _{{ param.name }}_c);
-{%- endif %}
-{%- if param.is_closure() %}
-    (*env)->DeleteGlobalRef(env, _{{ param.name }}_ref);
-{%- endif %}
-{%- endfor %}
-{%- else %}
-    {{ method.jni_return }} _result = {{ method.ffi_name }}((void*)handle{% for param in method.params %}, {{ param.ffi_arg() }}{% endfor %});
-{%- for param in method.params %}
-{%- if param.is_string %}
-    if ({{ param.name }}) (*env)->ReleaseStringUTFChars(env, {{ param.name }}, _{{ param.name }}_c);
-{%- endif %}
-{%- if param.is_closure() %}
-    (*env)->DeleteGlobalRef(env, _{{ param.name }}_ref);
-{%- endif %}
-{%- endfor %}
-    return _result;
-{%- endif %}
-}
+{%- for wire_method in class.wire_methods %}
+{{ wire_method }}
 {%- endfor %}
 
 {%- for func in class.async_methods %}
@@ -1111,9 +1087,23 @@ JNIEXPORT jlong JNICALL {{ func.jni_create_name }}(JNIEnv *env, jclass cls, jlon
 {%- if param.is_string %}
     const char* _{{ param.name }}_c = {{ param.name }} ? (*env)->GetStringUTFChars(env, {{ param.name }}, NULL) : NULL;
 {%- endif %}
+{%- if param.is_primitive_array() %}
+    uintptr_t _{{ param.name }}_len = (uintptr_t)(*env)->GetArrayLength(env, {{ param.name }});
+    {{ param.array_c_type() }}* _{{ param.name }}_ptr = ({{ param.array_c_type() }}*)(*env)->GetPrimitiveArrayCritical(env, {{ param.name }}, NULL);
+{%- endif %}
+{%- if param.is_wire_param() || param.is_data_enum() %}
+    uintptr_t _{{ param.name }}_len = (uintptr_t)(*env)->GetArrayLength(env, {{ param.name }});
+    uint8_t* _{{ param.name }}_ptr = (uint8_t*)(*env)->GetByteArrayElements(env, {{ param.name }}, NULL);
+{%- endif %}
 {%- endfor %}
     RustFutureHandle _handle = {{ func.ffi_name }}((void*)handle{% for param in func.params %}, {{ param.ffi_arg() }}{% endfor %});
 {%- for param in func.params %}
+{%- if param.is_primitive_array() %}
+    (*env)->ReleasePrimitiveArrayCritical(env, {{ param.name }}, _{{ param.name }}_ptr, {{ param.array_release_mode() }});
+{%- endif %}
+{%- if param.is_wire_param() || param.is_data_enum() %}
+    (*env)->ReleaseByteArrayElements(env, {{ param.name }}, (jbyte*)_{{ param.name }}_ptr, JNI_ABORT);
+{%- endif %}
 {%- if param.is_string %}
     if ({{ param.name }}) (*env)->ReleaseStringUTFChars(env, {{ param.name }}, _{{ param.name }}_c);
 {%- endif %}
@@ -1131,84 +1121,71 @@ JNIEXPORT {{ func.jni_complete_return }} JNICALL {{ func.jni_complete_name }}(JN
     {{ func.ffi_complete }}((RustFutureHandle)future, &_status);
 {%- else if func.complete_is_string %}
     FfiStatus _status;
-    FfiString _out = {{ func.ffi_complete }}((RustFutureHandle)future, &_status);
-    if (_status.code != 0 || _out.ptr == NULL) return NULL;
-    char* _tmp = (char*)malloc(_out.len + 1);
-    if (!_tmp) { {{ prefix }}_free_string(_out); return NULL; }
-    memcpy(_tmp, _out.ptr, _out.len);
-    _tmp[_out.len] = '\0';
+    FfiBuf_u8 _buf = {{ func.ffi_complete }}((RustFutureHandle)future, &_status);
+    if (_status.code != 0 || _buf.ptr == NULL) return NULL;
+    uint32_t _str_len = *((uint32_t*)_buf.ptr);
+    const char* _str_ptr = (const char*)(_buf.ptr + sizeof(uint32_t));
+    char* _tmp = (char*)malloc(_str_len + 1);
+    if (!_tmp) { {{ prefix }}_free_buf_u8(_buf); return NULL; }
+    memcpy(_tmp, _str_ptr, _str_len);
+    _tmp[_str_len] = '\0';
     jstring _result = (*env)->NewStringUTF(env, _tmp);
     free(_tmp);
-    {{ prefix }}_free_string(_out);
+    {{ prefix }}_free_buf_u8(_buf);
     return _result;
 {%- else if func.complete_is_vec %}
     FfiStatus _status;
-    {{ func.vec_buf_type }} _buf = {{ func.ffi_complete }}((RustFutureHandle)future, &_status);
+    FfiBuf_u8 _buf = {{ func.ffi_complete }}((RustFutureHandle)future, &_status);
     if (_status.code != 0 || _buf.ptr == NULL) return NULL;
-    {{ func.vec_jni_array_type }} _result = (*env)->{{ func.vec_new_array_fn }}(env, (jsize)_buf.len);
+    uint32_t _vec_len = *((uint32_t*)_buf.ptr);
+    const {{ func.vec_jni_element_type }}* _vec_ptr = (const {{ func.vec_jni_element_type }}*)(_buf.ptr + sizeof(uint32_t));
+    {{ func.vec_jni_array_type }} _result = (*env)->{{ func.vec_new_array_fn }}(env, (jsize)_vec_len);
     if (_result) {
-        (*env)->{{ func.vec_set_array_fn }}(env, _result, 0, (jsize)_buf.len, (const {{ func.vec_jni_element_type }}*)_buf.ptr);
+        (*env)->{{ func.vec_set_array_fn }}(env, _result, 0, (jsize)_vec_len, _vec_ptr);
     }
-    {{ func.vec_free_fn }}(_buf);
+    {{ prefix }}_free_buf_u8(_buf);
     return _result;
 {%- else if func.complete_is_record %}
     FfiStatus _status;
-    {{ func.record_c_type }} _out = {{ func.ffi_complete }}((RustFutureHandle)future, &_status);
-    if (_status.code != 0) return NULL;
-    void* _buf = malloc({{ func.record_struct_size }});
-    if (!_buf) return NULL;
-    memcpy(_buf, &_out, {{ func.record_struct_size }});
-    return (*env)->NewDirectByteBuffer(env, _buf, (jlong){{ func.record_struct_size }});
+    FfiBuf_u8 _buf = {{ func.ffi_complete }}((RustFutureHandle)future, &_status);
+    if (_status.code != 0 || _buf.ptr == NULL) return NULL;
+    return (*env)->NewDirectByteBuffer(env, (void*)_buf.ptr, (jlong)_buf.len);
 {%- else if func.complete_is_result %}
-{%- if func.result_err_is_string %}
-    FfiError _out_err = {0};
     FfiStatus _status;
+    FfiBuf_u8 _buf = {{ func.ffi_complete }}((RustFutureHandle)future, &_status);
+    if (_status.code != 0 || _buf.ptr == NULL) {
 {%- if func.result_ok_is_void %}
-    {{ func.ffi_complete }}((RustFutureHandle)future, &_status, &_out_err);
+        return;
 {%- else if func.result_ok_is_string %}
-    FfiString _out = {{ func.ffi_complete }}((RustFutureHandle)future, &_status, &_out_err);
+        return NULL;
 {%- else %}
-    {{ func.result_ok_c_type }} _out = {{ func.ffi_complete }}((RustFutureHandle)future, &_status, &_out_err);
+        return 0;
 {%- endif %}
-    if (_status.code != 0) {
+    }
+    uint8_t _tag = _buf.ptr[0];
+    if (_tag == 1) {
+{%- if func.result_err_is_string %}
+        uint32_t _err_len = *((uint32_t*)(_buf.ptr + 1));
+        const char* _err_ptr = (const char*)(_buf.ptr + 1 + sizeof(uint32_t));
         jclass _exc_cls = (*env)->FindClass(env, "java/lang/Exception");
-        if (_exc_cls && _out_err.message.ptr) {
-            char* _err_tmp = (char*)malloc(_out_err.message.len + 1);
+        if (_exc_cls && _err_len > 0) {
+            char* _err_tmp = (char*)malloc(_err_len + 1);
             if (_err_tmp) {
-                memcpy(_err_tmp, _out_err.message.ptr, _out_err.message.len);
-                _err_tmp[_out_err.message.len] = '\0';
+                memcpy(_err_tmp, _err_ptr, _err_len);
+                _err_tmp[_err_len] = '\0';
                 (*env)->ThrowNew(env, _exc_cls, _err_tmp);
                 free(_err_tmp);
             }
-            {{ prefix }}_free_string(_out_err.message);
         }
+        {{ prefix }}_free_buf_u8(_buf);
 {%- else %}
-    uint8_t _out_err[{{ func.result_err_struct_size }}];
-    memset(_out_err, 0, {{ func.result_err_struct_size }});
-    FfiStatus _status;
-{%- if func.result_ok_is_void %}
-    {{ func.ffi_complete }}((RustFutureHandle)future, &_status, (void*)&_out_err);
-{%- else if func.result_ok_is_string %}
-    FfiString _out = {{ func.ffi_complete }}((RustFutureHandle)future, &_status, (void*)&_out_err);
-{%- else %}
-    {{ func.result_ok_c_type }} _out = {{ func.ffi_complete }}((RustFutureHandle)future, &_status, (void*)&_out_err);
-{%- endif %}
-    if (_status.code != 0) {
-        void* _err_buf = malloc({{ func.result_err_struct_size }});
-        if (_err_buf) {
-            memcpy(_err_buf, _out_err, {{ func.result_err_struct_size }});
-            jclass _exc_cls = (*env)->FindClass(env, "{{ package_path }}/RiffException");
-            if (_exc_cls) {
-                jmethodID _exc_ctor = (*env)->GetMethodID(env, _exc_cls, "<init>", "(Ljava/nio/ByteBuffer;)V");
-                if (_exc_ctor) {
-                    jobject _err_bb = (*env)->NewDirectByteBuffer(env, _err_buf, (jlong){{ func.result_err_struct_size }});
-                    jobject _exc = (*env)->NewObject(env, _exc_cls, _exc_ctor, _err_bb);
-                    if (_exc) (*env)->Throw(env, (jthrowable)_exc);
-                } else {
-                    free(_err_buf);
-                }
-            } else {
-                free(_err_buf);
+        jclass _exc_cls = (*env)->FindClass(env, "{{ package_path }}/RiffException");
+        if (_exc_cls) {
+            jmethodID _exc_ctor = (*env)->GetMethodID(env, _exc_cls, "<init>", "(Ljava/nio/ByteBuffer;)V");
+            if (_exc_ctor) {
+                jobject _err_bb = (*env)->NewDirectByteBuffer(env, (void*)(_buf.ptr + 1), (jlong)(_buf.len - 1));
+                jobject _exc = (*env)->NewObject(env, _exc_cls, _exc_ctor, _err_bb);
+                if (_exc) (*env)->Throw(env, (jthrowable)_exc);
             }
         }
 {%- endif %}
@@ -1221,17 +1198,22 @@ JNIEXPORT {{ func.jni_complete_return }} JNICALL {{ func.jni_complete_name }}(JN
 {%- endif %}
     }
 {%- if func.result_ok_is_void %}
+    {{ prefix }}_free_buf_u8(_buf);
 {%- else if func.result_ok_is_string %}
-    char* _tmp = (char*)malloc(_out.len + 1);
-    if (!_tmp) { {{ prefix }}_free_string(_out); return NULL; }
-    memcpy(_tmp, _out.ptr, _out.len);
-    _tmp[_out.len] = '\0';
+    uint32_t _str_len = *((uint32_t*)(_buf.ptr + 1));
+    const char* _str_ptr = (const char*)(_buf.ptr + 1 + sizeof(uint32_t));
+    char* _tmp = (char*)malloc(_str_len + 1);
+    if (!_tmp) { {{ prefix }}_free_buf_u8(_buf); return NULL; }
+    memcpy(_tmp, _str_ptr, _str_len);
+    _tmp[_str_len] = '\0';
     jstring _result = (*env)->NewStringUTF(env, _tmp);
     free(_tmp);
-    {{ prefix }}_free_string(_out);
+    {{ prefix }}_free_buf_u8(_buf);
     return _result;
 {%- else %}
-    return ({{ func.result_ok_jni_type }})_out;
+    {{ func.result_ok_c_type }} _result = *(({{ func.result_ok_c_type }}*)(_buf.ptr + 1));
+    {{ prefix }}_free_buf_u8(_buf);
+    return ({{ func.result_ok_jni_type }})_result;
 {%- endif %}
 {%- else %}
     FfiStatus _status;
@@ -1257,9 +1239,23 @@ JNIEXPORT jlong JNICALL {{ func.jni_create_name }}(JNIEnv *env, jclass cls{{ fun
 {%- if param.is_string %}
     const char* _{{ param.name }}_c = {{ param.name }} ? (*env)->GetStringUTFChars(env, {{ param.name }}, NULL) : NULL;
 {%- endif %}
+{%- if param.is_primitive_array() %}
+    uintptr_t _{{ param.name }}_len = (uintptr_t)(*env)->GetArrayLength(env, {{ param.name }});
+    {{ param.array_c_type() }}* _{{ param.name }}_ptr = ({{ param.array_c_type() }}*)(*env)->GetPrimitiveArrayCritical(env, {{ param.name }}, NULL);
+{%- endif %}
+{%- if param.is_wire_param() || param.is_data_enum() %}
+    uintptr_t _{{ param.name }}_len = (uintptr_t)(*env)->GetArrayLength(env, {{ param.name }});
+    uint8_t* _{{ param.name }}_ptr = (uint8_t*)(*env)->GetByteArrayElements(env, {{ param.name }}, NULL);
+{%- endif %}
 {%- endfor %}
     RustFutureHandle _handle = {{ func.ffi_name }}({% for param in func.params %}{{ param.ffi_arg() }}{% if !loop.last %}, {% endif %}{% endfor %});
 {%- for param in func.params %}
+{%- if param.is_primitive_array() %}
+    (*env)->ReleasePrimitiveArrayCritical(env, {{ param.name }}, _{{ param.name }}_ptr, {{ param.array_release_mode() }});
+{%- endif %}
+{%- if param.is_wire_param() || param.is_data_enum() %}
+    (*env)->ReleaseByteArrayElements(env, {{ param.name }}, (jbyte*)_{{ param.name }}_ptr, JNI_ABORT);
+{%- endif %}
 {%- if param.is_string %}
     if ({{ param.name }}) (*env)->ReleaseStringUTFChars(env, {{ param.name }}, _{{ param.name }}_c);
 {%- endif %}
@@ -1277,79 +1273,71 @@ JNIEXPORT {{ func.jni_complete_return }} JNICALL {{ func.jni_complete_name }}(JN
     {{ func.ffi_complete }}((RustFutureHandle)future, &_status);
 {%- else if func.complete_is_string %}
     FfiStatus _status;
-    FfiString _out = {{ func.ffi_complete }}((RustFutureHandle)future, &_status);
-    if (_status.code != 0 || _out.ptr == NULL) return NULL;
-    char* _tmp = (char*)malloc(_out.len + 1);
-    if (!_tmp) { {{ prefix }}_free_string(_out); return NULL; }
-    memcpy(_tmp, _out.ptr, _out.len);
-    _tmp[_out.len] = '\0';
+    FfiBuf_u8 _buf = {{ func.ffi_complete }}((RustFutureHandle)future, &_status);
+    if (_status.code != 0 || _buf.ptr == NULL) return NULL;
+    uint32_t _str_len = *((uint32_t*)_buf.ptr);
+    const char* _str_ptr = (const char*)(_buf.ptr + sizeof(uint32_t));
+    char* _tmp = (char*)malloc(_str_len + 1);
+    if (!_tmp) { {{ prefix }}_free_buf_u8(_buf); return NULL; }
+    memcpy(_tmp, _str_ptr, _str_len);
+    _tmp[_str_len] = '\0';
     jstring _result = (*env)->NewStringUTF(env, _tmp);
     free(_tmp);
-    {{ prefix }}_free_string(_out);
+    {{ prefix }}_free_buf_u8(_buf);
     return _result;
 {%- else if func.complete_is_vec %}
     FfiStatus _status;
-    {{ func.vec_buf_type }} _buf = {{ func.ffi_complete }}((RustFutureHandle)future, &_status);
+    FfiBuf_u8 _buf = {{ func.ffi_complete }}((RustFutureHandle)future, &_status);
     if (_status.code != 0 || _buf.ptr == NULL) return NULL;
-    {{ func.vec_jni_array_type }} _result = (*env)->{{ func.vec_new_array_fn }}(env, (jsize)_buf.len);
+    uint32_t _vec_len = *((uint32_t*)_buf.ptr);
+    const {{ func.vec_jni_element_type }}* _vec_ptr = (const {{ func.vec_jni_element_type }}*)(_buf.ptr + sizeof(uint32_t));
+    {{ func.vec_jni_array_type }} _result = (*env)->{{ func.vec_new_array_fn }}(env, (jsize)_vec_len);
     if (_result) {
-        (*env)->{{ func.vec_set_array_fn }}(env, _result, 0, (jsize)_buf.len, (const {{ func.vec_jni_element_type }}*)_buf.ptr);
+        (*env)->{{ func.vec_set_array_fn }}(env, _result, 0, (jsize)_vec_len, _vec_ptr);
     }
-    {{ func.vec_free_fn }}(_buf);
+    {{ prefix }}_free_buf_u8(_buf);
     return _result;
 {%- else if func.complete_is_record %}
     FfiStatus _status;
-    {{ func.record_c_type }} _out = {{ func.ffi_complete }}((RustFutureHandle)future, &_status);
-    if (_status.code != 0) return NULL;
-    void* _buf = malloc({{ func.record_struct_size }});
-    if (!_buf) return NULL;
-    memcpy(_buf, &_out, {{ func.record_struct_size }});
-    return (*env)->NewDirectByteBuffer(env, _buf, (jlong){{ func.record_struct_size }});
+    FfiBuf_u8 _buf = {{ func.ffi_complete }}((RustFutureHandle)future, &_status);
+    if (_status.code != 0 || _buf.ptr == NULL) return NULL;
+    return (*env)->NewDirectByteBuffer(env, (void*)_buf.ptr, (jlong)_buf.len);
 {%- else if func.complete_is_result %}
-{%- if func.result_err_is_string %}
-    FfiError _out_err = {0};
-{%- else %}
-    uint8_t _out_err[{{ func.result_err_struct_size }}];
-    memset(_out_err, 0, {{ func.result_err_struct_size }});
-{%- endif %}
     FfiStatus _status;
+    FfiBuf_u8 _buf = {{ func.ffi_complete }}((RustFutureHandle)future, &_status);
+    if (_status.code != 0 || _buf.ptr == NULL) {
 {%- if func.result_ok_is_void %}
-    {{ func.ffi_complete }}((RustFutureHandle)future, &_status, (void*)&_out_err);
+        return;
 {%- else if func.result_ok_is_string %}
-    FfiString _out = {{ func.ffi_complete }}((RustFutureHandle)future, &_status, (void*)&_out_err);
+        return NULL;
 {%- else %}
-    {{ func.result_ok_c_type }} _out = {{ func.ffi_complete }}((RustFutureHandle)future, &_status, (void*)&_out_err);
+        return 0;
 {%- endif %}
-    if (_status.code != 0) {
+    }
+    uint8_t _tag = _buf.ptr[0];
+    if (_tag == 1) {
 {%- if func.result_err_is_string %}
-        FfiString* _err_str = (FfiString*)&_out_err;
+        uint32_t _err_len = *((uint32_t*)(_buf.ptr + 1));
+        const char* _err_ptr = (const char*)(_buf.ptr + 1 + sizeof(uint32_t));
         jclass _exc_cls = (*env)->FindClass(env, "java/lang/Exception");
-        if (_exc_cls && _err_str->ptr) {
-            char* _err_tmp = (char*)malloc(_err_str->len + 1);
+        if (_exc_cls && _err_len > 0) {
+            char* _err_tmp = (char*)malloc(_err_len + 1);
             if (_err_tmp) {
-                memcpy(_err_tmp, _err_str->ptr, _err_str->len);
-                _err_tmp[_err_str->len] = '\0';
+                memcpy(_err_tmp, _err_ptr, _err_len);
+                _err_tmp[_err_len] = '\0';
                 (*env)->ThrowNew(env, _exc_cls, _err_tmp);
                 free(_err_tmp);
             }
-            {{ prefix }}_free_string(*_err_str);
         }
+        {{ prefix }}_free_buf_u8(_buf);
 {%- else %}
-        void* _err_buf = malloc({{ func.result_err_struct_size }});
-        if (_err_buf) {
-            memcpy(_err_buf, _out_err, {{ func.result_err_struct_size }});
-            jclass _exc_cls = (*env)->FindClass(env, "{{ package_path }}/RiffException");
-            if (_exc_cls) {
-                jmethodID _exc_ctor = (*env)->GetMethodID(env, _exc_cls, "<init>", "(Ljava/nio/ByteBuffer;)V");
-                if (_exc_ctor) {
-                    jobject _err_bb = (*env)->NewDirectByteBuffer(env, _err_buf, (jlong){{ func.result_err_struct_size }});
-                    jobject _exc = (*env)->NewObject(env, _exc_cls, _exc_ctor, _err_bb);
-                    if (_exc) (*env)->Throw(env, (jthrowable)_exc);
-                } else {
-                    free(_err_buf);
-                }
-            } else {
-                free(_err_buf);
+        jclass _exc_cls = (*env)->FindClass(env, "{{ package_path }}/RiffException");
+        if (_exc_cls) {
+            jmethodID _exc_ctor = (*env)->GetMethodID(env, _exc_cls, "<init>", "(Ljava/nio/ByteBuffer;)V");
+            if (_exc_ctor) {
+                jobject _err_bb = (*env)->NewDirectByteBuffer(env, (void*)(_buf.ptr + 1), (jlong)(_buf.len - 1));
+                jobject _exc = (*env)->NewObject(env, _exc_cls, _exc_ctor, _err_bb);
+                if (_exc) (*env)->Throw(env, (jthrowable)_exc);
             }
         }
 {%- endif %}
@@ -1362,17 +1350,22 @@ JNIEXPORT {{ func.jni_complete_return }} JNICALL {{ func.jni_complete_name }}(JN
 {%- endif %}
     }
 {%- if func.result_ok_is_void %}
+    {{ prefix }}_free_buf_u8(_buf);
 {%- else if func.result_ok_is_string %}
-    char* _tmp = (char*)malloc(_out.len + 1);
-    if (!_tmp) { {{ prefix }}_free_string(_out); return NULL; }
-    memcpy(_tmp, _out.ptr, _out.len);
-    _tmp[_out.len] = '\0';
+    uint32_t _str_len = *((uint32_t*)(_buf.ptr + 1));
+    const char* _str_ptr = (const char*)(_buf.ptr + 1 + sizeof(uint32_t));
+    char* _tmp = (char*)malloc(_str_len + 1);
+    if (!_tmp) { {{ prefix }}_free_buf_u8(_buf); return NULL; }
+    memcpy(_tmp, _str_ptr, _str_len);
+    _tmp[_str_len] = '\0';
     jstring _result = (*env)->NewStringUTF(env, _tmp);
     free(_tmp);
-    {{ prefix }}_free_string(_out);
+    {{ prefix }}_free_buf_u8(_buf);
     return _result;
 {%- else %}
-    return ({{ func.result_ok_jni_type }})_out;
+    {{ func.result_ok_c_type }} _result = *(({{ func.result_ok_c_type }}*)(_buf.ptr + 1));
+    {{ prefix }}_free_buf_u8(_buf);
+    return ({{ func.result_ok_jni_type }})_result;
 {%- endif %}
 {%- else %}
     FfiStatus _status;
@@ -1389,13 +1382,6 @@ JNIEXPORT void JNICALL {{ func.jni_free_name }}(JNIEnv *env, jclass cls, jlong f
     {{ func.ffi_free }}((RustFutureHandle)future);
 }
 {%- endfor %}
-
-JNIEXPORT void JNICALL Java_{{ jni_prefix }}_Native_{{ prefix }}_1free_1native_1buffer(JNIEnv *env, jclass cls, jobject buffer) {
-    if (buffer) {
-        void* ptr = (*env)->GetDirectBufferAddress(env, buffer);
-        if (ptr) free(ptr);
-    }
-}
 
 {%- for cb in callback_traits %}
 

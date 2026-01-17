@@ -1,6 +1,7 @@
 mod jni;
 mod layout;
 mod marshal;
+mod call_plan;
 mod names;
 mod primitives;
 mod return_abi;
@@ -15,20 +16,29 @@ use std::collections::HashSet;
 use askama::Template;
 
 pub use jni::JniGenerator;
-pub use marshal::{JniParamInfo, JniReturnKind, ParamConversion, ReturnKind};
+pub use marshal::{JniParamInfo, JniReturnKind, ParamConversion};
 pub use names::NamingConvention;
 pub use templates::{
-    AsyncFunctionTemplate, ClosureInterfaceTemplate, CStyleEnumTemplate, CallbackTraitTemplate,
-    ClassTemplate, DataEnumCodecTemplate, FunctionTemplate, NativeTemplate, PreambleTemplate,
-    RecordReaderTemplate, RecordTemplate, RecordWriterTemplate, SealedEnumTemplate,
-    WireFunctionTemplate,
+    AsyncFunctionTemplate, CStyleEnumTemplate, CallbackTraitTemplate, ClassTemplate,
+    ClosureInterfaceTemplate, DataEnumCodecTemplate, NativeTemplate,
+    PreambleTemplate, RecordReaderTemplate, RecordTemplate, RecordWriterTemplate,
+    SealedEnumTemplate, WireFunctionTemplate,
 };
 pub use types::TypeMapper;
 
 use crate::model::{
-    CallbackTrait, Class, ClosureSignature, Enumeration, Function, Module, Record, ReturnType,
-    Type,
+    CallbackTrait, Class, ClosureSignature, Enumeration, Function, Module, Record, ReturnType, Type,
 };
+
+pub fn is_primitive_only(func: &Function) -> bool {
+    matches!(
+        &func.returns,
+        ReturnType::Void | ReturnType::Value(Type::Void) | ReturnType::Value(Type::Primitive(_))
+    ) && func
+        .inputs
+        .iter()
+        .all(|p| matches!(&p.param_type, Type::Primitive(_)))
+}
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum FactoryStyle {
@@ -92,7 +102,13 @@ impl Kotlin {
         module
             .functions
             .iter()
-            .filter(|func| Self::is_supported_function(func, module))
+            .filter(|func| !func.is_async)
+            .for_each(|function| sections.push(Self::render_function(function, module)));
+
+        module
+            .functions
+            .iter()
+            .filter(|func| func.is_async && Self::is_supported_async_function(func, module))
             .for_each(|function| sections.push(Self::render_function(function, module)));
 
         module
@@ -180,33 +196,31 @@ impl Kotlin {
     }
 
     fn collect_unique_closures(module: &Module) -> Vec<ClosureSignature> {
-        let mut seen: HashSet<String> = HashSet::new();
-        let mut closures = Vec::new();
+        let mut seen_signature_ids = HashSet::<String>::new();
 
-        let mut extract = |ty: &Type| {
-            if let Type::Closure(sig) = ty {
-                let id = sig.signature_id();
-                if seen.insert(id) {
-                    closures.push(sig.clone());
+        module
+            .functions
+            .iter()
+            .flat_map(|function| function.inputs.iter())
+            .map(|param| &param.param_type)
+            .chain(
+                module
+                    .classes
+                    .iter()
+                    .flat_map(|class| class.methods.iter())
+                    .flat_map(|method| method.inputs.iter())
+                    .map(|param| &param.param_type),
+            )
+            .filter_map(|param_type| match param_type {
+                Type::Closure(signature) => {
+                    let signature_id = signature.signature_id();
+                    seen_signature_ids
+                        .insert(signature_id)
+                        .then_some(signature.clone())
                 }
-            }
-        };
-
-        for func in &module.functions {
-            for param in &func.inputs {
-                extract(&param.param_type);
-            }
-        }
-
-        for class in &module.classes {
-            for method in &class.methods {
-                for param in &method.inputs {
-                    extract(&param.param_type);
-                }
-            }
-        }
-
-        closures
+                _ => None,
+            })
+            .collect()
     }
 
     pub fn render_function(function: &Function, module: &Module) -> String {
@@ -311,7 +325,7 @@ impl Kotlin {
             .collect()
     }
 
-    fn is_supported_function(func: &Function, module: &Module) -> bool {
+    pub fn is_supported_function(func: &Function, module: &Module) -> bool {
         if func.is_async {
             return Self::is_supported_async_function(func, module);
         }
@@ -358,7 +372,10 @@ impl Kotlin {
             Type::Vec(vec_inner) => match vec_inner.as_ref() {
                 Type::Primitive(_) | Type::String => true,
                 Type::Record(name) => Self::is_record_blittable(name, module),
-                Type::Enum(name) => module.enums.iter().any(|e| &e.name == name && !e.is_data_enum()),
+                Type::Enum(name) => module
+                    .enums
+                    .iter()
+                    .any(|e| &e.name == name && !e.is_data_enum()),
                 _ => false,
             },
             _ => false,
@@ -390,33 +407,11 @@ impl Kotlin {
     }
 
     fn is_supported_async_function(func: &Function, module: &Module) -> bool {
-        let supported_output = Self::is_supported_async_output(&func.returns, module);
-
-        let supported_inputs = func
-            .inputs
-            .iter()
-            .all(|param| matches!(&param.param_type, Type::Primitive(_) | Type::String));
-
-        supported_output && supported_inputs
+        call_plan::AsyncCallPlan::supports_call(&func.inputs, &func.returns, module)
     }
 
     pub fn is_supported_async_output(returns: &ReturnType, module: &Module) -> bool {
-        match returns {
-            ReturnType::Void => true,
-            ReturnType::Fallible { ok, .. } => Self::is_supported_async_result_ok(ok),
-            ReturnType::Value(ty) => match ty {
-                Type::Void => true,
-                Type::Primitive(_) => true,
-                Type::String => true,
-                Type::Vec(inner) => matches!(inner.as_ref(), Type::Primitive(_)),
-                Type::Record(name) => Self::is_record_blittable(name, module),
-                _ => false,
-            },
-        }
-    }
-
-    fn is_supported_async_result_ok(ok: &Type) -> bool {
-        matches!(ok, Type::Primitive(_) | Type::String | Type::Void)
+        call_plan::AsyncCallPlan::supports_returns(returns, module)
     }
 }
 
@@ -445,7 +440,11 @@ mod tests {
         assert_eq!(TypeMapper::map_type(&Type::Bytes), "ByteArray");
         assert_eq!(
             TypeMapper::map_type(&Type::Vec(Box::new(Type::Primitive(Primitive::F64)))),
-            "List<Double>"
+            "DoubleArray"
+        );
+        assert_eq!(
+            TypeMapper::map_type(&Type::Vec(Box::new(Type::Record("Point".into())))),
+            "List<Point>"
         );
     }
 
@@ -585,9 +584,13 @@ mod tests {
 
         assert!(output.contains("data class Point"));
         assert!(output.contains("companion object"));
+        assert!(output.contains("const val SIZE_BYTES: Int = 8"));
         assert!(output.contains("fun decode(wire: WireBuffer, offset: Int)"));
-        assert!(output.contains("wire.readI32(pos)"));
-        assert!(!output.contains("wireEncodedSize"), "blittable should not have wireEncodedSize");
+        assert!(output.contains("wire.readI32(offset + 0)"));
+        assert!(output.contains("wire.readI32(offset + 4)"));
+        assert!(output.contains(") to SIZE_BYTES"));
+        assert!(output.contains("fun wireEncodedSize(): Int = SIZE_BYTES"));
+        assert!(output.contains("fun wireEncodeTo(wire: WireWriter)"));
     }
 
     #[test]
@@ -595,7 +598,10 @@ mod tests {
         let profile = Record::new("user_profile")
             .with_field(RecordField::new("id", Type::Primitive(Primitive::I64)))
             .with_field(RecordField::new("name", Type::String))
-            .with_field(RecordField::new("email", Type::Option(Box::new(Type::String))));
+            .with_field(RecordField::new(
+                "email",
+                Type::Option(Box::new(Type::String)),
+            ));
 
         let module = Module::new("test");
         let output = Kotlin::render_record_with_module(&profile, &module);
@@ -608,5 +614,118 @@ mod tests {
         assert!(output.contains("wire.readNullable(pos)"));
         assert!(output.contains("fun wireEncodedSize(): Int"));
         assert!(output.contains("fun wireEncodeTo(wire: WireWriter)"));
+    }
+
+    #[test]
+    fn test_sealed_enum_wire_codec() {
+        let result_enum = Enumeration::new("api_response")
+            .with_variant(
+                Variant::new("success").with_field(RecordField::new("data", Type::String)),
+            )
+            .with_variant(
+                Variant::new("error")
+                    .with_field(RecordField::new("code", Type::Primitive(Primitive::I32))),
+            );
+
+        let module = Module::new("test");
+        let output = Kotlin::render_enum_with_module(&result_enum, &module);
+
+        assert!(output.contains("sealed class ApiResponse"));
+        assert!(output.contains("companion object"));
+        assert!(output.contains("fun decode(wire: WireBuffer, offset: Int)"));
+        assert!(output.contains("fun wireEncodedSize(): Int"));
+        assert!(output.contains("fun wireEncodeTo(wire: WireWriter)"));
+        assert!(output.contains("wire.writeI32(0)"));
+        assert!(output.contains("wire.writeI32(1)"));
+    }
+
+    #[test]
+    fn test_wire_function_with_string_return() {
+        let func = Function::new("get_greeting")
+            .with_param(Parameter::new("name", Type::String))
+            .with_output(Type::String)
+            .with_wire_encoded();
+
+        let module = Module::new("test");
+        let output = Kotlin::render_function(&func, &module);
+
+        assert!(output.contains("fun getGreeting(name: String): String"));
+        assert!(output.contains("WireBuffer.fromByteBuffer"));
+        assert!(output.contains("wire.readString(0).first"));
+    }
+
+    #[test]
+    fn test_wire_function_with_result_return() {
+        let func = Function::new("try_parse")
+            .with_param(Parameter::new("input", Type::String))
+            .with_return(ReturnType::Fallible {
+                ok: Type::Primitive(Primitive::I64),
+                err: Type::String,
+            })
+            .with_wire_encoded();
+
+        let module = Module::new("test");
+        let output = Kotlin::render_function(&func, &module);
+
+        assert!(output.contains("@Throws(FfiException::class)"));
+        assert!(output.contains("fun tryParse(input: String): Long"));
+        assert!(output.contains("readResult"));
+        assert!(output.contains("getOrThrow()"));
+    }
+
+    #[test]
+    fn test_wire_function_with_vec_return() {
+        let func = Function::new("get_numbers")
+            .with_output(Type::Vec(Box::new(Type::Primitive(Primitive::I32))))
+            .with_wire_encoded();
+
+        let module = Module::new("test");
+        let output = Kotlin::render_function(&func, &module);
+
+        assert!(output.contains("fun getNumbers(): IntArray"));
+        assert!(output.contains("WireBuffer"));
+    }
+
+    #[test]
+    fn test_wire_encoded_function_bypasses_support_check() {
+        let func = Function::new("complex_return")
+            .with_output(Type::Vec(Box::new(Type::Option(Box::new(Type::String)))))
+            .with_wire_encoded();
+
+        let module = Module::new("test");
+        assert!(Kotlin::is_supported_function(&func, &module));
+    }
+
+    #[test]
+    fn test_wire_function_option_param_is_encoded() {
+        let func = Function::new("count_optional")
+            .with_param(Parameter::new("maybe_name", Type::Option(Box::new(Type::String))))
+            .with_output(Type::Primitive(Primitive::I32));
+
+        let module = Module::new("test").with_function(func);
+        let output = Kotlin::render_module(&module);
+
+        assert!(output.contains("fun countOptional(maybeName: String?): Int"));
+        assert!(output.contains("WireWriter().also"));
+        assert!(output.contains("writeU8(1u)"));
+        assert!(output.contains("writeU8(0u)"));
+        assert!(output.contains("writeString"));
+        assert!(output.contains("external fun riff_count_optional(maybeName: ByteArray): Int"));
+    }
+
+    #[test]
+    fn test_wire_function_closure_param_is_wrapped_to_interface() {
+        let signature = ClosureSignature::single_param(Type::Primitive(Primitive::I32));
+        let func = Function::new("with_callback").with_param(Parameter::new(
+            "callback",
+            Type::Closure(signature),
+        ));
+
+        let module = Module::new("test").with_function(func);
+        let output = Kotlin::render_module(&module);
+
+        assert!(output.contains("fun interface I32Callback"));
+        assert!(output.contains("I32Callback { p0 -> callback(p0) }"));
+        assert!(output.contains("external fun riff_with_callback(callback: I32Callback): Unit"));
     }
 }

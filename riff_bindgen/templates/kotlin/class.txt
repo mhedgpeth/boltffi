@@ -32,20 +32,13 @@ class {{ class_name }} private constructor(private val handle: Long) : AutoClose
     }
 {%- endif %}
 {%- for method in methods %}
-{%- if method.is_async %}
+{%- match method.impl_ %}
+{%- when AsyncMethod with (async_method) %}
 
-    suspend fun {{ method.name }}({% for param in method.params %}{{ param.name }}: {{ param.kotlin_type }}{% if !loop.last %}, {% endif %}{% endfor %}){% match method.return_type %}{% when Some with (ret) %}: {{ ret }}{% when None %}{% endmatch %} = riffCallAsync(
-        createFuture = { Native.{{ method.ffi_name }}(handle{% for param in method.params %}, {{ param.conversion }}{% endfor %}) },
-        poll = { future, contHandle -> Native.{{ method.ffi_poll }}(handle, future, contHandle) },
-        complete = { future -> {{ method.complete_expr }} },
-        free = { future -> Native.{{ method.ffi_free }}(handle, future) },
-        cancel = { future -> Native.{{ method.ffi_cancel }}(handle, future) }
-    )
-{%- else %}
+    {{ async_method }}
+{%- when SyncMethod with (wire_method) %}
 
-    fun {{ method.name }}({% for param in method.params %}{{ param.name }}: {{ param.kotlin_type }}{% if !loop.last %}, {% endif %}{% endfor %}){% match method.return_type %}{% when Some with (ret) %}: {{ ret }}{% when None %}{% endmatch %} {
-        {{ method.body }}
-    }
-{%- endif %}
+    {{ wire_method }}
+{%- endmatch %}
 {%- endfor %}
 }

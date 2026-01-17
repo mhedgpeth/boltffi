@@ -6,14 +6,17 @@ use riff_ffi_rules::naming;
 
 use crate::model::{
     CallbackTrait, Class, ClosureSignature, DataEnumLayout, Enumeration, Function, Method, Module,
-    Primitive, Record, ReturnType, TraitMethod, TraitMethodParam, Type,
+    Primitive, Record, RecordField, ReturnType, TraitMethod, TraitMethodParam, Type,
 };
 
 use super::layout::{KotlinBufferRead, KotlinBufferWrite};
-use super::marshal::{OptionView, ParamConversion, ResultView, ReturnKind};
+use super::call_plan::{AsyncCallPlan, WireFunctionPlan};
+use super::marshal::{OptionView, ParamConversion};
 use super::primitives;
 use super::return_abi::ReturnAbi;
 use super::{FactoryStyle, KotlinOptions, NamingConvention, TypeMapper};
+
+use self::MethodImpl::{AsyncMethod, SyncMethod};
 
 #[derive(Template)]
 #[template(path = "kotlin/preamble.txt", escape = "none")]
@@ -171,6 +174,7 @@ pub struct SealedVariantView {
 
 pub struct SealedFieldView {
     pub name: String,
+    pub local_name: String,
     pub index: usize,
     pub kotlin_type: String,
     pub is_tuple: bool,
@@ -328,13 +332,19 @@ impl SealedEnumTemplate {
                             } else {
                                 NamingConvention::property_name(&field.name)
                             };
-                            let encoder = super::wire::encode_type(&field.field_type, &name, module);
+                            let encoder =
+                                super::wire::encode_type(&field.field_type, &name, module);
+                            let local_name = format!("_{}_", field.name.to_lowercase());
                             SealedFieldView {
                                 name: name.clone(),
+                                local_name,
                                 index: i,
                                 kotlin_type: TypeMapper::map_type(&field.field_type),
                                 is_tuple: field_is_tuple,
-                                wire_decode_inline: Self::make_decode_inline(&field.field_type, module),
+                                wire_decode_inline: Self::make_decode_inline(
+                                    &field.field_type,
+                                    module,
+                                ),
                                 wire_size_expr: encoder.size_expr,
                                 wire_encode: encoder.encode_expr,
                             }
@@ -371,14 +381,20 @@ pub struct RecordTemplate {
     pub class_name: String,
     pub fields: Vec<FieldView>,
     pub is_blittable: bool,
+    pub struct_size: usize,
 }
 
 pub struct FieldView {
     pub name: String,
+    pub local_name: String,
     pub kotlin_type: String,
     pub wire_decode_inline: String,
     pub wire_size_expr: String,
     pub wire_encode: String,
+    pub offset: usize,
+    pub size: usize,
+    pub read_expr: String,
+    pub padding_after: usize,
 }
 
 impl RecordTemplate {
@@ -388,29 +404,75 @@ impl RecordTemplate {
 
     pub fn from_record_with_module(record: &Record, module: &Module) -> Self {
         let is_blittable = record.is_blittable();
+        let layout = record.layout();
+        let struct_size = layout.total_size().as_usize();
+        let offsets = layout.offsets().map(|offset| offset.as_usize()).collect::<Vec<_>>();
+
         let fields = record
             .fields
             .iter()
-            .map(|field| Self::make_field(field, module))
+            .zip(offsets.iter().copied())
+            .enumerate()
+            .map(|(index, (field, offset))| {
+                let next_start = offsets.get(index + 1).copied().unwrap_or(struct_size);
+                let mut view = Self::make_field(field, module, offset);
+                let field_end = view.offset + view.size;
+                view.padding_after = next_start.saturating_sub(field_end);
+                view
+            })
             .collect();
 
         Self {
             class_name: NamingConvention::class_name(&record.name),
             fields,
             is_blittable,
+            struct_size,
         }
     }
 
-    fn make_field(field: &crate::model::RecordField, module: &Module) -> FieldView {
+    fn make_field(field: &RecordField, module: &Module, offset: usize) -> FieldView {
         let name = NamingConvention::property_name(&field.name);
+        let local_name = format!("_{}_", field.name.to_lowercase());
         let encoder = super::wire::encode_type(&field.field_type, &name, module);
-        
+        let size = match &field.field_type {
+            Type::Primitive(p) => p.size_bytes(),
+            _ => 0,
+        };
+        let read_expr = Self::make_blittable_read(&field.field_type, offset);
+
         FieldView {
             name: name.clone(),
+            local_name,
             kotlin_type: TypeMapper::map_type(&field.field_type),
             wire_decode_inline: Self::make_decode_inline(&field.field_type, module),
             wire_size_expr: encoder.size_expr,
             wire_encode: encoder.encode_expr,
+            offset,
+            size,
+            read_expr,
+            padding_after: 0,
+        }
+    }
+
+    fn make_blittable_read(ty: &Type, offset: usize) -> String {
+        match ty {
+            Type::Primitive(p) => {
+                let read_fn = match p {
+                    Primitive::Bool => "readBool",
+                    Primitive::I8 => "readI8",
+                    Primitive::U8 => "readU8",
+                    Primitive::I16 => "readI16",
+                    Primitive::U16 => "readU16",
+                    Primitive::I32 => "readI32",
+                    Primitive::U32 => "readU32",
+                    Primitive::I64 | Primitive::Isize => "readI64",
+                    Primitive::U64 | Primitive::Usize => "readU64",
+                    Primitive::F32 => "readF32",
+                    Primitive::F64 => "readF64",
+                };
+                format!("wire.{}(offset + {})", read_fn, offset)
+            }
+            _ => String::new(),
         }
     }
 
@@ -447,11 +509,14 @@ pub struct ReaderFieldView {
 
 impl RecordReaderTemplate {
     pub fn from_record(record: &Record) -> Self {
-        let offsets = record.field_offsets();
-        let fields = record
+        let layout = record.layout();
+        let offsets: Vec<_> = layout.offsets().map(|o| o.as_usize()).collect();
+        let struct_size = layout.total_size().as_usize();
+
+        let fields: Vec<ReaderFieldView> = record
             .fields
             .iter()
-            .zip(offsets)
+            .zip(offsets.iter().copied())
             .map(|(field, offset)| {
                 let (getter, conversion) = match &field.field_type {
                     Type::Primitive(primitive) => (
@@ -474,7 +539,7 @@ impl RecordReaderTemplate {
         Self {
             reader_name: format!("{}Reader", NamingConvention::class_name(&record.name)),
             class_name: NamingConvention::class_name(&record.name),
-            struct_size: record.struct_size().as_usize(),
+            struct_size,
             fields,
         }
     }
@@ -535,130 +600,10 @@ impl RecordWriterTemplate {
     }
 }
 
-#[derive(Template)]
-#[template(path = "kotlin/function.txt", escape = "none")]
-pub struct FunctionTemplate {
-    pub func_name: String,
-    pub ffi_name: String,
-    pub prefix: String,
-    pub params: Vec<ParamView>,
-    pub return_type: Option<String>,
-    pub return_kind: ReturnKind,
-    pub enum_name: Option<String>,
-    pub enum_codec_name: Option<String>,
-    pub enum_is_data: bool,
-    pub inner_type: Option<String>,
-    pub len_fn: Option<String>,
-    pub copy_fn: Option<String>,
-    pub reader_name: Option<String>,
-    pub is_async: bool,
-    pub option: Option<OptionView>,
-    pub result: Option<ResultView>,
-}
-
 pub struct ParamView {
     pub name: String,
     pub kotlin_type: String,
     pub conversion: String,
-}
-
-impl FunctionTemplate {
-    pub fn from_function(function: &Function, _module: &Module) -> Self {
-        let ffi_name = format!("{}_{}", naming::ffi_prefix(), function.name);
-
-        let enum_output = function.returns.ok_type().and_then(|ty| match ty {
-            Type::Enum(name) => _module.enums.iter().find(|e| e.name == *name),
-            _ => None,
-        });
-
-        let enum_name = function.returns.ok_type().and_then(|ty| match ty {
-            Type::Enum(name) => Some(NamingConvention::class_name(name)),
-            _ => None,
-        });
-
-        let enum_is_data = enum_output.map(|e| e.is_data_enum()).unwrap_or(false);
-        let enum_codec_name = if enum_is_data {
-            enum_name.as_ref().map(|name| format!("{}Codec", name))
-        } else {
-            None
-        };
-
-        let return_kind = function
-            .returns
-            .ok_type()
-            .map(|ty| ReturnKind::from_type(ty, &ffi_name))
-            .unwrap_or(ReturnKind::Void);
-
-        let params: Vec<ParamView> = function
-            .inputs
-            .iter()
-            .map(|param| {
-                let param_name = NamingConvention::param_name(&param.name);
-
-                let conversion = match &param.param_type {
-                    Type::Enum(enum_name) => {
-                        let is_data_enum = _module
-                            .enums
-                            .iter()
-                            .find(|e| &e.name == enum_name)
-                            .map(|e| e.is_data_enum())
-                            .unwrap_or(false);
-
-                        if is_data_enum {
-                            format!(
-                                "{}Codec.pack({})",
-                                NamingConvention::class_name(enum_name),
-                                param_name
-                            )
-                        } else {
-                            ParamConversion::to_ffi(&param_name, &param.param_type)
-                        }
-                    }
-                    _ => ParamConversion::to_ffi(&param_name, &param.param_type),
-                };
-
-                ParamView {
-                    name: param_name,
-                    kotlin_type: TypeMapper::map_type(&param.param_type),
-                    conversion,
-                }
-            })
-            .collect();
-
-        let return_type = function.returns.ok_type().map(TypeMapper::map_type);
-        let inner_type = return_kind.inner_type().map(String::from);
-        let len_fn = return_kind.len_fn().map(String::from);
-        let copy_fn = return_kind.copy_fn().map(String::from);
-        let reader_name = return_kind.reader_name().map(String::from);
-
-        let option = function.returns.ok_type().and_then(|ty| match ty {
-            Type::Option(inner) => Some(OptionView::from_inner(inner, _module)),
-            _ => None,
-        });
-
-        let result = function.returns.as_result_types().map(|(ok, err)| {
-            ResultView::from_result(ok, err, _module, &function.name)
-        });
-
-        Self {
-            func_name: NamingConvention::method_name(&function.name),
-            ffi_name,
-            prefix: naming::ffi_prefix().to_string(),
-            params,
-            return_type,
-            return_kind,
-            enum_name,
-            enum_codec_name,
-            enum_is_data,
-            inner_type,
-            len_fn,
-            copy_fn,
-            reader_name,
-            is_async: function.is_async,
-            option,
-            result,
-        }
-    }
 }
 
 #[derive(Template)]
@@ -669,68 +614,36 @@ pub struct WireFunctionTemplate {
     pub params: Vec<ParamView>,
     pub return_type: Option<String>,
     pub return_abi: ReturnAbi,
+    pub decode_expr: String,
     pub throws: bool,
     pub err_type: String,
+    pub is_blittable_return: bool,
 }
 
 impl WireFunctionTemplate {
     pub fn from_function(function: &Function, module: &Module) -> Self {
-        let ffi_name = naming::function_ffi_name(&function.name);
-        let return_abi = ReturnAbi::from_return_type(&function.returns, module);
-
-        let params: Vec<ParamView> = function
-            .inputs
-            .iter()
-            .map(|param| {
-                let param_name = NamingConvention::param_name(&param.name);
-                let conversion = Self::param_conversion(&param_name, &param.param_type, module);
-                ParamView {
-                    name: param_name,
-                    kotlin_type: TypeMapper::map_type(&param.param_type),
-                    conversion,
-                }
+        let plan =
+            WireFunctionPlan::for_function(&function.name, &function.inputs, &function.returns, module);
+        let params = plan
+            .params
+            .into_iter()
+            .map(|spec| ParamView {
+                name: spec.name,
+                kotlin_type: spec.kotlin_type,
+                conversion: spec.conversion,
             })
             .collect();
 
-        let return_type = return_abi.kotlin_type().map(String::from);
-        let throws = return_abi.throws();
-        let err_type = function
-            .returns
-            .as_result_types()
-            .map(|(_, err)| Self::error_type_name(err, module))
-            .unwrap_or_else(|| "FfiException".into());
-
         Self {
-            func_name: NamingConvention::method_name(&function.name),
-            ffi_name,
+            func_name: plan.func_name,
+            ffi_name: plan.ffi_name,
             params,
-            return_type,
-            return_abi,
-            throws,
-            err_type,
-        }
-    }
-
-    fn param_conversion(name: &str, ty: &Type, module: &Module) -> String {
-        match ty {
-            Type::Enum(enum_name) => {
-                let is_data = module.is_data_enum(enum_name);
-                if is_data {
-                    format!("{}Codec.pack({})", NamingConvention::class_name(enum_name), name)
-                } else {
-                    format!("{}.value", name)
-                }
-            }
-            _ => ParamConversion::to_ffi(name, ty),
-        }
-    }
-
-    fn error_type_name(err: &Type, module: &Module) -> String {
-        match err {
-            Type::Enum(name) if module.enums.iter().any(|e| &e.name == name && e.is_error) => {
-                NamingConvention::class_name(name)
-            }
-            _ => "FfiException".into(),
+            return_type: plan.return_type,
+            return_abi: plan.return_abi,
+            decode_expr: plan.decode_expr,
+            throws: plan.throws,
+            err_type: plan.err_type,
+            is_blittable_return: plan.is_blittable_return,
         }
     }
 }
@@ -746,115 +659,41 @@ pub struct AsyncFunctionTemplate {
     pub ffi_cancel: String,
     pub params: Vec<ParamView>,
     pub return_type: Option<String>,
-    pub complete_expr: String,
-    pub has_structured_error: bool,
-    pub error_codec: String,
+    pub return_abi: ReturnAbi,
+    pub decode_expr: String,
+    pub throws: bool,
+    pub err_type: String,
+    pub is_blittable_return: bool,
 }
 
 impl AsyncFunctionTemplate {
-    pub fn from_function(function: &Function, _module: &Module) -> Self {
-        let ffi_name = naming::function_ffi_name(&function.name);
-
-        let params: Vec<ParamView> = function
-            .inputs
-            .iter()
-            .map(|param| {
-                let param_name = NamingConvention::param_name(&param.name);
-                let conversion = ParamConversion::to_ffi(&param_name, &param.param_type);
-                ParamView {
-                    name: param_name,
-                    kotlin_type: TypeMapper::map_type(&param.param_type),
-                    conversion,
-                }
+    pub fn from_function(function: &Function, module: &Module) -> Self {
+        let plan = AsyncCallPlan::for_function(&function.name, &function.inputs, &function.returns, module);
+        let params = plan
+            .params
+            .into_iter()
+            .map(|spec| ParamView {
+                name: spec.name,
+                kotlin_type: spec.kotlin_type,
+                conversion: spec.conversion,
             })
             .collect();
 
-        let return_type = function.returns.ok_type().map(TypeMapper::map_type);
-
-        let complete_expr = Self::generate_complete_expr_for_returns(&function.returns, &function.name, None);
-
-        let (has_structured_error, error_codec) = match &function.returns {
-            ReturnType::Fallible { err, .. } => match err {
-                Type::Enum(name) => (true, format!("{}Codec", NamingConvention::class_name(name))),
-                _ => (false, String::new()),
-            },
-            _ => (false, String::new()),
-        };
-
         Self {
-            func_name: NamingConvention::method_name(&function.name),
-            ffi_name,
-            ffi_poll: naming::function_ffi_poll(&function.name),
-            ffi_complete: naming::function_ffi_complete(&function.name),
-            ffi_free: naming::function_ffi_free(&function.name),
-            ffi_cancel: naming::function_ffi_cancel(&function.name),
+            func_name: plan.func_name,
+            ffi_name: plan.ffi_name,
+            ffi_poll: plan.ffi_poll,
+            ffi_complete: plan.ffi_complete,
+            ffi_free: plan.ffi_free,
+            ffi_cancel: plan.ffi_cancel,
             params,
-            return_type,
-            complete_expr,
-            has_structured_error,
-            error_codec,
+            return_type: plan.return_type,
+            return_abi: plan.return_abi,
+            decode_expr: plan.decode_expr,
+            throws: plan.throws,
+            err_type: plan.err_type,
+            is_blittable_return: plan.is_blittable_return,
         }
-    }
-
-    pub fn vec_primitive_conversion(call: &str, primitive: &Primitive) -> String {
-        primitives::info(*primitive)
-            .vec_to_unsigned
-            .map(|conv| format!("({}).{}", call, conv))
-            .unwrap_or_else(|| format!("({}).toList()", call))
-    }
-
-    pub fn generate_complete_expr_for_returns(
-        returns: &ReturnType,
-        func_name: &str,
-        class_name: Option<&str>,
-    ) -> String {
-        let ffi_complete = match class_name {
-            Some(class) => naming::method_ffi_complete(class, func_name),
-            None => naming::function_ffi_complete(func_name),
-        };
-        let args = match class_name {
-            Some(_) => "handle, future",
-            None => "future",
-        };
-        let call = format!("Native.{}({})", ffi_complete, args);
-
-        let ok_type = match returns {
-            ReturnType::Void => return call,
-            ReturnType::Value(ty) => ty,
-            ReturnType::Fallible { ok, .. } => ok,
-        };
-
-        Self::apply_type_conversion(&call, ok_type)
-    }
-
-    fn apply_type_conversion(call: &str, ty: &Type) -> String {
-        match ty {
-            Type::Void => call.to_string(),
-            Type::Primitive(p) => Self::apply_unsigned_conversion(call, p),
-            Type::String => format!("{} ?: throw FfiException(-1, \"Null string\")", call),
-            Type::Vec(inner) => {
-                let null_check = format!("{} ?: throw FfiException(-1, \"Null array\")", call);
-                match inner.as_ref() {
-                    Type::Primitive(p) => Self::vec_primitive_conversion(&null_check, p),
-                    _ => null_check,
-                }
-            }
-            Type::Record(name) => {
-                let reader_name = format!("{}Reader", NamingConvention::class_name(name));
-                format!(
-                    "useNativeBuffer({} ?: throw FfiException(-1, \"Null record\")) {{ buf -> buf.order(ByteOrder.nativeOrder()); {}.read(buf, 0) }}",
-                    call, reader_name
-                )
-            }
-            _ => call.to_string(),
-        }
-    }
-
-    fn apply_unsigned_conversion(call: &str, p: &Primitive) -> String {
-        primitives::info(*p)
-            .to_unsigned
-            .map(|conv| format!("{}.{}", call, conv))
-            .unwrap_or_else(|| call.to_string())
     }
 }
 
@@ -879,16 +718,12 @@ pub struct ConstructorView {
 
 pub struct MethodView {
     pub name: String,
-    pub ffi_name: String,
-    pub params: Vec<ParamView>,
-    pub return_type: Option<String>,
-    pub body: String,
-    pub is_async: bool,
-    pub ffi_poll: String,
-    pub ffi_complete: String,
-    pub ffi_cancel: String,
-    pub ffi_free: String,
-    pub complete_expr: String,
+    pub impl_: MethodImpl,
+}
+
+pub enum MethodImpl {
+    AsyncMethod(AsyncMethodTemplate),
+    SyncMethod(WireMethodTemplate),
 }
 
 impl ClassTemplate {
@@ -925,6 +760,7 @@ impl ClassTemplate {
                             conversion: ParamConversion::to_ffi(
                                 &NamingConvention::param_name(&param.name),
                                 &param.param_type,
+                                module,
                             ),
                         })
                         .collect(),
@@ -937,38 +773,14 @@ impl ClassTemplate {
             .iter()
             .filter(|method| Self::is_supported_method(method, module))
             .map(|method| {
-                let method_ffi = naming::method_ffi_name(&class.name, &method.name);
-                let return_type = method.returns.ok_type().map(TypeMapper::map_type);
-                let body = Self::generate_method_body(method, &method_ffi);
-                let complete_expr = if method.is_async {
-                    AsyncFunctionTemplate::generate_complete_expr_for_returns(&method.returns, &method.name, Some(&class.name))
+                let impl_ = if method.is_async {
+                    MethodImpl::AsyncMethod(AsyncMethodTemplate::from_method(class, method, module))
                 } else {
-                    String::new()
+                    MethodImpl::SyncMethod(WireMethodTemplate::from_method(class, method, module))
                 };
-
                 MethodView {
                     name: NamingConvention::method_name(&method.name),
-                    ffi_name: method_ffi.clone(),
-                    params: method
-                        .inputs
-                        .iter()
-                        .map(|param| ParamView {
-                            name: NamingConvention::param_name(&param.name),
-                            kotlin_type: TypeMapper::map_type(&param.param_type),
-                            conversion: ParamConversion::to_ffi(
-                                &NamingConvention::param_name(&param.name),
-                                &param.param_type,
-                            ),
-                        })
-                        .collect(),
-                    return_type,
-                    body,
-                    is_async: method.is_async,
-                    ffi_poll: naming::method_ffi_poll(&class.name, &method.name),
-                    ffi_complete: naming::method_ffi_complete(&class.name, &method.name),
-                    ffi_cancel: naming::method_ffi_cancel(&class.name, &method.name),
-                    ffi_free: naming::method_ffi_free(&class.name, &method.name),
-                    complete_expr,
+                    impl_,
                 }
             })
             .collect();
@@ -976,7 +788,9 @@ impl ClassTemplate {
         let has_factory_ctors = if use_companion_methods {
             constructors.iter().any(|c| c.is_factory)
         } else {
-            constructors.iter().any(|c| c.is_factory && c.params.is_empty())
+            constructors
+                .iter()
+                .any(|c| c.is_factory && c.params.is_empty())
         };
 
         Self {
@@ -991,44 +805,102 @@ impl ClassTemplate {
     }
 
     fn is_supported_method(method: &Method, module: &Module) -> bool {
-        let supported_output = if method.is_async {
-            super::Kotlin::is_supported_async_output(&method.returns, module)
+        if method.is_async {
+            AsyncCallPlan::supports_call(&method.inputs, &method.returns, module)
         } else {
-            match method.returns.ok_type() {
-                None => true,
-                Some(Type::Void) => true,
-                Some(Type::Primitive(_)) => true,
-                _ => false,
-            }
-        };
-
-        let supported_inputs = method
-            .inputs
-            .iter()
-            .all(|param| matches!(&param.param_type, Type::Primitive(_) | Type::Closure(_)));
-
-        supported_output && supported_inputs
+            WireFunctionPlan::supports_call(&method.inputs, &method.returns, module)
+        }
     }
+}
 
-    fn generate_method_body(method: &Method, ffi_name: &str) -> String {
-        let args = std::iter::once("handle".to_string())
-            .chain(method.inputs.iter().map(|p| {
-                ParamConversion::to_ffi(&NamingConvention::param_name(&p.name), &p.param_type)
-            }))
-            .collect::<Vec<_>>()
-            .join(", ");
+#[derive(Template)]
+#[template(path = "kotlin/method_wire.txt", escape = "none")]
+pub struct WireMethodTemplate {
+    pub method_name: String,
+    pub ffi_name: String,
+    pub params: Vec<ParamView>,
+    pub return_type: Option<String>,
+    pub return_abi: ReturnAbi,
+    pub decode_expr: String,
+    pub throws: bool,
+    pub err_type: String,
+    pub is_blittable_return: bool,
+}
 
-        match method.returns.ok_type() {
-            Some(Type::Primitive(primitive)) => {
-                let call = format!("Native.{}({})", ffi_name, args);
-                let converted = primitives::info(*primitive)
-                    .to_unsigned
-                    .map(|conv| format!("{}.{}", call, conv))
-                    .unwrap_or(call);
-                format!("return {}", converted)
-            }
-            Some(_) => format!("return Native.{}({})", ffi_name, args),
-            None => format!("Native.{}({})", ffi_name, args),
+impl WireMethodTemplate {
+    pub fn from_method(class: &Class, method: &Method, module: &Module) -> Self {
+        let plan = WireFunctionPlan::for_function(
+            &method.name,
+            &method.inputs,
+            &method.returns,
+            module,
+        );
+
+        Self {
+            method_name: NamingConvention::method_name(&method.name),
+            ffi_name: naming::method_ffi_name(&class.name, &method.name),
+            params: plan
+                .params
+                .into_iter()
+                .map(|spec| ParamView {
+                    name: spec.name,
+                    kotlin_type: spec.kotlin_type,
+                    conversion: spec.conversion,
+                })
+                .collect(),
+            return_type: plan.return_type,
+            return_abi: plan.return_abi,
+            decode_expr: plan.decode_expr,
+            throws: plan.throws,
+            err_type: plan.err_type,
+            is_blittable_return: plan.is_blittable_return,
+        }
+    }
+}
+
+#[derive(Template)]
+#[template(path = "kotlin/method_async.txt", escape = "none")]
+pub struct AsyncMethodTemplate {
+    pub method_name: String,
+    pub ffi_name: String,
+    pub ffi_poll: String,
+    pub ffi_complete: String,
+    pub ffi_cancel: String,
+    pub ffi_free: String,
+    pub params: Vec<ParamView>,
+    pub return_type: Option<String>,
+    pub return_abi: ReturnAbi,
+    pub decode_expr: String,
+    pub throws: bool,
+    pub err_type: String,
+    pub is_blittable_return: bool,
+}
+
+impl AsyncMethodTemplate {
+    pub fn from_method(class: &Class, method: &Method, module: &Module) -> Self {
+        let plan = AsyncCallPlan::for_method(class, method, module);
+        Self {
+            method_name: NamingConvention::method_name(&method.name),
+            ffi_name: plan.ffi_name,
+            ffi_poll: plan.ffi_poll,
+            ffi_complete: plan.ffi_complete,
+            ffi_cancel: plan.ffi_cancel,
+            ffi_free: plan.ffi_free,
+            params: plan
+                .params
+                .into_iter()
+                .map(|spec| ParamView {
+                    name: spec.name,
+                    kotlin_type: spec.kotlin_type,
+                    conversion: spec.conversion,
+                })
+                .collect(),
+            return_type: plan.return_type,
+            return_abi: plan.return_abi,
+            decode_expr: plan.decode_expr,
+            throws: plan.throws,
+            err_type: plan.err_type,
+            is_blittable_return: plan.is_blittable_return,
         }
     }
 }
@@ -1039,8 +911,15 @@ pub struct NativeTemplate {
     pub lib_name: String,
     pub prefix: String,
     pub functions: Vec<NativeFunctionView>,
+    pub wire_functions: Vec<NativeWireFunctionView>,
     pub classes: Vec<NativeClassView>,
     pub async_callback_invokers: Vec<AsyncCallbackInvokerView>,
+}
+
+pub struct NativeWireFunctionView {
+    pub ffi_name: String,
+    pub params: Vec<NativeParamView>,
+    pub return_jni_type: String,
 }
 
 pub struct AsyncCallbackInvokerView {
@@ -1073,7 +952,8 @@ pub struct NativeClassView {
     pub ffi_free: String,
     pub ctor_params: Vec<NativeParamView>,
     pub factory_ctors: Vec<NativeFactoryCtorView>,
-    pub methods: Vec<NativeMethodView>,
+    pub sync_methods: Vec<NativeSyncMethodView>,
+    pub async_methods: Vec<NativeAsyncMethodView>,
 }
 
 pub struct NativeFactoryCtorView {
@@ -1081,7 +961,13 @@ pub struct NativeFactoryCtorView {
     pub params: Vec<NativeParamView>,
 }
 
-pub struct NativeMethodView {
+pub struct NativeSyncMethodView {
+    pub ffi_name: String,
+    pub params: Vec<NativeParamView>,
+    pub return_jni_type: String,
+}
+
+pub struct NativeAsyncMethodView {
     pub ffi_name: String,
     pub params: Vec<NativeParamView>,
     pub has_out_param: bool,
@@ -1101,10 +987,27 @@ impl NativeTemplate {
         let functions: Vec<NativeFunctionView> = module
             .functions
             .iter()
+            .filter(|func| {
+                (func.is_async && AsyncCallPlan::supports_call(&func.inputs, &func.returns, module))
+                    || (!func.is_async && Self::is_primitive_return(func))
+            })
             .map(|func| {
                 let ffi_name = naming::function_ffi_name(&func.name);
                 let (has_out_param, out_type, return_jni_type) =
                     Self::analyze_return(&func.returns, module);
+                let return_abi = ReturnAbi::from_return_type(&func.returns, module);
+                let complete_return_jni_type = if func.is_async {
+                    if return_abi.is_wire_encoded() {
+                        "ByteBuffer?".to_string()
+                    } else {
+                        return_abi
+                            .kotlin_type()
+                            .unwrap_or("Unit")
+                            .to_string()
+                    }
+                } else {
+                    String::new()
+                };
 
                 NativeFunctionView {
                     ffi_name: ffi_name.clone(),
@@ -1113,24 +1016,7 @@ impl NativeTemplate {
                         .iter()
                         .map(|p| NativeParamView {
                             name: NamingConvention::param_name(&p.name),
-                            jni_type: match &p.param_type {
-                                Type::Vec(inner) | Type::Slice(inner)
-                                    if matches!(inner.as_ref(), Type::Record(_)) =>
-                                {
-                                    "ByteArray".to_string()
-                                }
-                                Type::Enum(enum_name)
-                                    if module
-                                        .enums
-                                        .iter()
-                                        .find(|e| &e.name == enum_name)
-                                        .map(|e| e.is_data_enum())
-                                        .unwrap_or(false) =>
-                                {
-                                    "ByteArray".to_string()
-                                }
-                                _ => TypeMapper::jni_type(&p.param_type),
-                            },
+                            jni_type: WireFunctionPlan::jni_param_type_for_wire_param(&p.param_type),
                         })
                         .collect(),
                     has_out_param,
@@ -1141,7 +1027,28 @@ impl NativeTemplate {
                     ffi_complete: naming::function_ffi_complete(&func.name),
                     ffi_cancel: naming::function_ffi_cancel(&func.name),
                     ffi_free: naming::function_ffi_free(&func.name),
-                    complete_return_jni_type: Self::async_complete_return_type(&func.returns, &return_jni_type),
+                    complete_return_jni_type,
+                }
+            })
+            .collect();
+
+        let wire_functions: Vec<NativeWireFunctionView> = module
+            .functions
+            .iter()
+            .filter(|func| !func.is_async && !Self::is_primitive_return(func))
+            .map(|func| {
+                let return_abi = ReturnAbi::from_return_type(&func.returns, module);
+                NativeWireFunctionView {
+                    ffi_name: naming::function_ffi_name(&func.name),
+                    params: func
+                        .inputs
+                        .iter()
+                        .map(|p| NativeParamView {
+                            name: NamingConvention::param_name(&p.name),
+                            jni_type: WireFunctionPlan::jni_param_type_for_wire_param(&p.param_type),
+                        })
+                        .collect(),
+                    return_jni_type: Self::wire_return_jni_type(&return_abi),
                 }
             })
             .collect();
@@ -1172,7 +1079,11 @@ impl NativeTemplate {
                     .constructors
                     .iter()
                     .filter(|c| !c.is_default())
-                    .filter(|c| c.inputs.iter().all(|p| matches!(&p.param_type, Type::Primitive(_))))
+                    .filter(|c| {
+                        c.inputs
+                            .iter()
+                            .all(|p| matches!(&p.param_type, Type::Primitive(_)))
+                    })
                     .map(|ctor| NativeFactoryCtorView {
                         ffi_name: naming::method_ffi_name(&class.name, &ctor.name),
                         params: ctor
@@ -1186,46 +1097,37 @@ impl NativeTemplate {
                     })
                     .collect();
 
-                let methods: Vec<NativeMethodView> = class
+                let methods: Vec<NativeAsyncMethodView> = class
                     .methods
                     .iter()
-                    .filter(|method| {
-                        let supported_output = if method.is_async {
-                            super::Kotlin::is_supported_async_output(&method.returns, module)
-                        } else {
-                            match method.returns.ok_type() {
-                                None => true,
-                                Some(Type::Void) => true,
-                                Some(Type::Primitive(_)) => true,
-                                _ => false,
-                            }
-                        };
-
-                        let supported_inputs = method
-                            .inputs
-                            .iter()
-                            .all(|param| matches!(&param.param_type, Type::Primitive(_) | Type::Closure(_)));
-
-                        supported_output && supported_inputs
-                    })
+                    .filter(|method| method.is_async)
+                    .filter(|method| AsyncCallPlan::supports_call(&method.inputs, &method.returns, module))
                     .map(|method| {
                         let method_ffi = naming::method_ffi_name(&class.name, &method.name);
-                        let (has_out_param, out_type, return_jni_type) =
+                        let (has_out_param, out_type, _return_jni_type) =
                             Self::analyze_return(&method.returns, module);
+                        let return_abi = ReturnAbi::from_return_type(&method.returns, module);
+                        let complete_return_jni_type = if return_abi.is_wire_encoded() {
+                            "ByteBuffer?".to_string()
+                        } else {
+                            return_abi.kotlin_type().unwrap_or("Unit").to_string()
+                        };
 
-                        NativeMethodView {
+                        NativeAsyncMethodView {
                             ffi_name: method_ffi.clone(),
                             params: method
                                 .inputs
                                 .iter()
                                 .map(|p| NativeParamView {
                                     name: NamingConvention::param_name(&p.name),
-                                    jni_type: TypeMapper::jni_type(&p.param_type),
+                                    jni_type: WireFunctionPlan::jni_param_type_for_wire_param(
+                                        &p.param_type,
+                                    ),
                                 })
                                 .collect(),
                             has_out_param,
                             out_type,
-                            return_jni_type,
+                            return_jni_type: complete_return_jni_type,
                             is_async: method.is_async,
                             ffi_poll: naming::method_ffi_poll(&class.name, &method.name),
                             ffi_complete: naming::method_ffi_complete(&class.name, &method.name),
@@ -1235,12 +1137,37 @@ impl NativeTemplate {
                     })
                     .collect();
 
+                let sync_methods: Vec<NativeSyncMethodView> = class
+                    .methods
+                    .iter()
+                    .filter(|method| !method.is_async)
+                    .filter(|method| WireFunctionPlan::supports_call(&method.inputs, &method.returns, module))
+                    .map(|method| {
+                        let return_abi = ReturnAbi::from_return_type(&method.returns, module);
+                        NativeSyncMethodView {
+                            ffi_name: naming::method_ffi_name(&class.name, &method.name),
+                            params: method
+                                .inputs
+                                .iter()
+                                .map(|param| NativeParamView {
+                                    name: NamingConvention::param_name(&param.name),
+                                    jni_type: WireFunctionPlan::jni_param_type_for_wire_param(
+                                        &param.param_type,
+                                    ),
+                                })
+                                .collect(),
+                            return_jni_type: Self::wire_return_jni_type(&return_abi),
+                        }
+                    })
+                    .collect();
+
                 NativeClassView {
                     ffi_new: format!("{}_new", ffi_prefix),
                     ffi_free: format!("{}_free", ffi_prefix),
                     ctor_params,
                     factory_ctors,
-                    methods,
+                    sync_methods,
+                    async_methods: methods,
                 }
             })
             .collect();
@@ -1251,8 +1178,30 @@ impl NativeTemplate {
             lib_name: format!("{}_jni", module.name),
             prefix,
             functions,
+            wire_functions,
             classes,
             async_callback_invokers,
+        }
+    }
+
+    fn is_primitive_return(func: &Function) -> bool {
+        super::is_primitive_only(func)
+    }
+
+    fn wire_return_jni_type(return_abi: &ReturnAbi) -> String {
+        match return_abi {
+            ReturnAbi::Unit => "Unit".into(),
+            ReturnAbi::Direct { kotlin_type } => match kotlin_type.as_str() {
+                "Boolean" => "Boolean".into(),
+                "Byte" | "UByte" => "Byte".into(),
+                "Short" | "UShort" => "Short".into(),
+                "Int" | "UInt" => "Int".into(),
+                "Long" | "ULong" => "Long".into(),
+                "Float" => "Float".into(),
+                "Double" => "Double".into(),
+                _ => "Long".into(),
+            },
+            ReturnAbi::WireEncoded { .. } => "ByteBuffer?".into(),
         }
     }
 
@@ -1283,7 +1232,7 @@ impl NativeTemplate {
         }
     }
 
-    fn build_invoker_view(suffix: &str, returns: &ReturnType) -> AsyncCallbackInvokerView {
+    fn build_invoker_view(suffix: &str, _returns: &ReturnType) -> AsyncCallbackInvokerView {
         let (jni_type, has_result) = match suffix {
             "Void" => ("Unit".to_string(), false),
             "Bool" => ("Boolean".to_string(), true),
@@ -1357,16 +1306,6 @@ impl NativeTemplate {
                 }
             }
             _ => (false, String::new(), TypeMapper::jni_type(ok)),
-        }
-    }
-
-    fn async_complete_return_type(returns: &ReturnType, base_type: &str) -> String {
-        match returns.ok_type() {
-            Some(Type::Vec(inner)) => match inner.as_ref() {
-                Type::Primitive(_) => format!("{}?", base_type),
-                _ => base_type.to_string(),
-            },
-            _ => base_type.to_string(),
         }
     }
 
@@ -1545,9 +1484,10 @@ impl CallbackTraitTemplate {
             _ => false,
         };
 
-        let supported_params = method.inputs.iter().all(|param| {
-            matches!(&param.param_type, Type::Primitive(_))
-        });
+        let supported_params = method
+            .inputs
+            .iter()
+            .all(|param| matches!(&param.param_type, Type::Primitive(_)));
 
         supported_return && supported_params
     }
@@ -1565,7 +1505,7 @@ impl CallbackTraitTemplate {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{Function, Module, Parameter, Primitive, RecordField, Record, ReturnType, Type};
+    use crate::model::Parameter;
 
     fn make_function(name: &str, inputs: Vec<Parameter>, returns: ReturnType) -> Function {
         Function {
@@ -1602,20 +1542,28 @@ mod tests {
     }
 
     #[test]
-    fn test_wire_function_direct_return() {
-        let module = Module::new("test");
+    fn test_wire_function_primitive_return_with_complex_params() {
+        let mut module = Module::new("test");
+        module.records.push(Record {
+            name: "Item".into(),
+            fields: vec![],
+            doc: None,
+            deprecated: None,
+        });
         let func = make_function(
-            "get_count",
-            vec![],
+            "count_items",
+            vec![Parameter {
+                name: "items".into(),
+                param_type: Type::Vec(Box::new(Type::Record("Item".into()))),
+            }],
             ReturnType::Value(Type::Primitive(Primitive::I32)),
         );
 
         let template = WireFunctionTemplate::from_function(&func, &module);
         let output = template.render().unwrap();
 
-        assert!(output.contains("fun getCount(): Int"));
-        assert!(output.contains("return Native.riff_get_count()"));
-        assert!(!output.contains("WireBuffer"));
+        assert!(output.contains("fun countItems(items: List<Item>): Int"));
+        assert!(output.contains("return Native.riff_count_items"));
     }
 
     #[test]
@@ -1683,9 +1631,8 @@ mod tests {
         let template = WireFunctionTemplate::from_function(&func, &module);
         let output = template.render().unwrap();
 
-        assert!(output.contains("fun getItems(): List<Int>"));
+        assert!(output.contains("fun getItems(): IntArray"));
         assert!(output.contains("WireBuffer"));
-        assert!(output.contains("readList"));
     }
 
     #[test]
@@ -1709,6 +1656,7 @@ mod tests {
         let output = template.render().unwrap();
 
         assert!(output.contains("fun getPoint(): Point"));
-        assert!(output.contains("WireBuffer"));
+        assert!(output.contains("PointReader.read(buffer, 0)"));
+        assert!(!output.contains("WireBuffer"));
     }
 }

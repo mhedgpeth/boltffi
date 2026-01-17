@@ -2,8 +2,7 @@ use quote::quote;
 use syn::{FnArg, Pat};
 
 use crate::util::{
-    ParamTransform, classify_param_transform, extract_option_param_inner, is_primitive_vec_inner,
-    len_ident, ptr_ident,
+    ParamTransform, classify_param_transform, is_primitive_vec_inner, len_ident, ptr_ident,
 };
 
 pub struct FfiParams {
@@ -13,26 +12,35 @@ pub struct FfiParams {
 }
 
 pub fn transform_params(inputs: &syn::punctuated::Punctuated<FnArg, syn::Token![,]>) -> FfiParams {
-    let mut ffi_params = Vec::new();
-    let mut conversions = Vec::new();
-    let mut call_args = Vec::new();
+    inputs
+        .iter()
+        .filter_map(|arg| match arg {
+            FnArg::Typed(pat_type) => Some(pat_type),
+            FnArg::Receiver(_) => None,
+        })
+        .fold(
+            FfiParams {
+                ffi_params: Vec::new(),
+                conversions: Vec::new(),
+                call_args: Vec::new(),
+            },
+            |mut acc, pat_type| {
+                let Some(name) = (match pat_type.pat.as_ref() {
+                    Pat::Ident(ident) => Some(ident.ident.clone()),
+                    _ => None,
+                }) else {
+                    return acc;
+                };
 
-    for arg in inputs.iter() {
-        if let FnArg::Typed(pat_type) = arg {
-            let name = match pat_type.pat.as_ref() {
-                Pat::Ident(ident) => ident.ident.clone(),
-                _ => continue,
-            };
-
-            match classify_param_transform(&pat_type.ty) {
+                match classify_param_transform(&pat_type.ty) {
                 ParamTransform::StrRef => {
                     let ptr_name = ptr_ident(&name);
                     let len_name = len_ident(&name);
 
-                    ffi_params.push(quote! { #ptr_name: *const u8 });
-                    ffi_params.push(quote! { #len_name: usize });
+                    acc.ffi_params.push(quote! { #ptr_name: *const u8 });
+                    acc.ffi_params.push(quote! { #len_name: usize });
 
-                    conversions.push(quote! {
+                    acc.conversions.push(quote! {
                         let #name: &str = if #ptr_name.is_null() {
                             ""
                         } else {
@@ -41,16 +49,16 @@ pub fn transform_params(inputs: &syn::punctuated::Punctuated<FnArg, syn::Token![
                         };
                     });
 
-                    call_args.push(quote! { #name });
+                    acc.call_args.push(quote! { #name });
                 }
                 ParamTransform::OwnedString => {
                     let ptr_name = ptr_ident(&name);
                     let len_name = len_ident(&name);
 
-                    ffi_params.push(quote! { #ptr_name: *const u8 });
-                    ffi_params.push(quote! { #len_name: usize });
+                    acc.ffi_params.push(quote! { #ptr_name: *const u8 });
+                    acc.ffi_params.push(quote! { #len_name: usize });
 
-                    conversions.push(quote! {
+                    acc.conversions.push(quote! {
                         let #name: String = if #ptr_name.is_null() {
                             String::new()
                         } else {
@@ -60,59 +68,64 @@ pub fn transform_params(inputs: &syn::punctuated::Punctuated<FnArg, syn::Token![
                         };
                     });
 
-                    call_args.push(quote! { #name });
+                    acc.call_args.push(quote! { #name });
                 }
                 ParamTransform::Callback(arg_types) => {
                     let cb_name = syn::Ident::new(&format!("{}_cb", name), name.span());
                     let ud_name = syn::Ident::new(&format!("{}_ud", name), name.span());
 
-                    let mut ffi_cb_args = Vec::new();
-                    let mut arg_names = Vec::new();
-                    let mut cb_call_args = Vec::new();
-                    let mut wire_vars = Vec::new();
+                    let (ffi_cb_args, arg_names, cb_call_args, wire_vars) = arg_types.iter().enumerate().fold(
+                        (Vec::new(), Vec::new(), Vec::new(), Vec::new()),
+                        |(mut ffi_cb_args, mut arg_names, mut cb_call_args, mut wire_vars),
+                         (index, arg_ty)| {
+                            let arg_name =
+                                syn::Ident::new(&format!("__arg{}", index), name.span());
+                            let arg_ty_str = quote!(#arg_ty).to_string().replace(' ', "");
 
-                    for (i, arg_ty) in arg_types.iter().enumerate() {
-                        let arg_name = syn::Ident::new(&format!("__arg{}", i), name.span());
-                        let arg_ty_str = quote!(#arg_ty).to_string().replace(' ', "");
+                            if is_primitive_vec_inner(&arg_ty_str) {
+                                ffi_cb_args.push(quote! { #arg_ty });
+                                cb_call_args.push(quote! { #arg_name });
+                            } else {
+                                let wire_name =
+                                    syn::Ident::new(&format!("__wire{}", index), name.span());
+                                ffi_cb_args.push(quote! { *const u8 });
+                                ffi_cb_args.push(quote! { usize });
+                                wire_vars.push(quote! {
+                                    let #wire_name = crate::wire::encode(&#arg_name);
+                                });
+                                cb_call_args.push(quote! { #wire_name.as_ptr() });
+                                cb_call_args.push(quote! { #wire_name.len() });
+                            }
 
-                        if is_primitive_vec_inner(&arg_ty_str) {
-                            ffi_cb_args.push(quote! { #arg_ty });
-                            cb_call_args.push(quote! { #arg_name });
-                        } else {
-                            let wire_name = syn::Ident::new(&format!("__wire{}", i), name.span());
-                            ffi_cb_args.push(quote! { *const u8 });
-                            ffi_cb_args.push(quote! { usize });
-                            wire_vars.push(quote! {
-                                let #wire_name = crate::wire::encode(&#arg_name);
-                            });
-                            cb_call_args.push(quote! { #wire_name.as_ptr() });
-                            cb_call_args.push(quote! { #wire_name.len() });
-                        }
-                        arg_names.push(arg_name);
-                    }
+                            arg_names.push(arg_name);
 
-                    ffi_params.push(
+                            (ffi_cb_args, arg_names, cb_call_args, wire_vars)
+                        },
+                    );
+
+                    acc.ffi_params.push(
                         quote! { #cb_name: extern "C" fn(*mut core::ffi::c_void, #(#ffi_cb_args),*) },
                     );
-                    ffi_params.push(quote! { #ud_name: *mut core::ffi::c_void });
+                    acc.ffi_params
+                        .push(quote! { #ud_name: *mut core::ffi::c_void });
 
-                    conversions.push(quote! {
+                    acc.conversions.push(quote! {
                         let #name = |#(#arg_names: #arg_types),*| {
                             #(#wire_vars)*
                             #cb_name(#ud_name, #(#cb_call_args),*)
                         };
                     });
 
-                    call_args.push(quote! { #name });
+                    acc.call_args.push(quote! { #name });
                 }
                 ParamTransform::SliceRef(inner_ty) => {
                     let ptr_name = ptr_ident(&name);
                     let len_name = len_ident(&name);
 
-                    ffi_params.push(quote! { #ptr_name: *const #inner_ty });
-                    ffi_params.push(quote! { #len_name: usize });
+                    acc.ffi_params.push(quote! { #ptr_name: *const #inner_ty });
+                    acc.ffi_params.push(quote! { #len_name: usize });
 
-                    conversions.push(quote! {
+                    acc.conversions.push(quote! {
                         let #name: &[#inner_ty] = if #ptr_name.is_null() {
                             &[]
                         } else {
@@ -120,16 +133,16 @@ pub fn transform_params(inputs: &syn::punctuated::Punctuated<FnArg, syn::Token![
                         };
                     });
 
-                    call_args.push(quote! { #name });
+                    acc.call_args.push(quote! { #name });
                 }
                 ParamTransform::SliceMut(inner_ty) => {
                     let ptr_name = ptr_ident(&name);
                     let len_name = len_ident(&name);
 
-                    ffi_params.push(quote! { #ptr_name: *mut #inner_ty });
-                    ffi_params.push(quote! { #len_name: usize });
+                    acc.ffi_params.push(quote! { #ptr_name: *mut #inner_ty });
+                    acc.ffi_params.push(quote! { #len_name: usize });
 
-                    conversions.push(quote! {
+                    acc.conversions.push(quote! {
                         let #name: &mut [#inner_ty] = if #ptr_name.is_null() {
                             &mut []
                         } else {
@@ -137,29 +150,29 @@ pub fn transform_params(inputs: &syn::punctuated::Punctuated<FnArg, syn::Token![
                         };
                     });
 
-                    call_args.push(quote! { #name });
+                    acc.call_args.push(quote! { #name });
                 }
                 ParamTransform::BoxedTrait(trait_name) => {
                     let foreign_type =
                         syn::Ident::new(&format!("Foreign{}", trait_name), trait_name.span());
 
-                    ffi_params.push(quote! { #name: *mut #foreign_type });
+                    acc.ffi_params.push(quote! { #name: *mut #foreign_type });
 
-                    conversions.push(quote! {
+                    acc.conversions.push(quote! {
                         assert!(!#name.is_null(), concat!(stringify!(#name), ": null pointer"));
                         let #name: Box<dyn #trait_name> = Box::from_raw(#name);
                     });
 
-                    call_args.push(quote! { #name });
+                    acc.call_args.push(quote! { #name });
                 }
                 ParamTransform::VecPrimitive(inner_ty) => {
                     let ptr_name = ptr_ident(&name);
                     let len_name = len_ident(&name);
 
-                    ffi_params.push(quote! { #ptr_name: *const #inner_ty });
-                    ffi_params.push(quote! { #len_name: usize });
+                    acc.ffi_params.push(quote! { #ptr_name: *const #inner_ty });
+                    acc.ffi_params.push(quote! { #len_name: usize });
 
-                    conversions.push(quote! {
+                    acc.conversions.push(quote! {
                         let #name: Vec<#inner_ty> = if #ptr_name.is_null() {
                             Vec::new()
                         } else {
@@ -167,16 +180,16 @@ pub fn transform_params(inputs: &syn::punctuated::Punctuated<FnArg, syn::Token![
                         };
                     });
 
-                    call_args.push(quote! { #name });
+                    acc.call_args.push(quote! { #name });
                 }
                 ParamTransform::VecWireEncoded(inner_ty) => {
                     let ptr_name = ptr_ident(&name);
                     let len_name = len_ident(&name);
 
-                    ffi_params.push(quote! { #ptr_name: *const u8 });
-                    ffi_params.push(quote! { #len_name: usize });
+                    acc.ffi_params.push(quote! { #ptr_name: *const u8 });
+                    acc.ffi_params.push(quote! { #len_name: usize });
 
-                    conversions.push(quote! {
+                    acc.conversions.push(quote! {
                         let #name: Vec<#inner_ty> = if #ptr_name.is_null() || #len_name == 0 {
                             Vec::new()
                         } else {
@@ -185,16 +198,16 @@ pub fn transform_params(inputs: &syn::punctuated::Punctuated<FnArg, syn::Token![
                         };
                     });
 
-                    call_args.push(quote! { #name });
+                    acc.call_args.push(quote! { #name });
                 }
                 ParamTransform::OptionWireEncoded(inner_ty) => {
                     let ptr_name = ptr_ident(&name);
                     let len_name = len_ident(&name);
 
-                    ffi_params.push(quote! { #ptr_name: *const u8 });
-                    ffi_params.push(quote! { #len_name: usize });
+                    acc.ffi_params.push(quote! { #ptr_name: *const u8 });
+                    acc.ffi_params.push(quote! { #len_name: usize });
 
-                    conversions.push(quote! {
+                    acc.conversions.push(quote! {
                         let #name: Option<#inner_ty> = if #ptr_name.is_null() || #len_name == 0 {
                             None
                         } else {
@@ -203,16 +216,16 @@ pub fn transform_params(inputs: &syn::punctuated::Punctuated<FnArg, syn::Token![
                         };
                     });
 
-                    call_args.push(quote! { #name });
+                    acc.call_args.push(quote! { #name });
                 }
                 ParamTransform::RecordWireEncoded(record_ty) => {
                     let ptr_name = ptr_ident(&name);
                     let len_name = len_ident(&name);
 
-                    ffi_params.push(quote! { #ptr_name: *const u8 });
-                    ffi_params.push(quote! { #len_name: usize });
+                    acc.ffi_params.push(quote! { #ptr_name: *const u8 });
+                    acc.ffi_params.push(quote! { #len_name: usize });
 
-                    conversions.push(quote! {
+                    acc.conversions.push(quote! {
                         let #name: #record_ty = {
                             assert!(!#ptr_name.is_null(), concat!(stringify!(#name), ": null pointer"));
                             let __bytes = core::slice::from_raw_parts(#ptr_name, #len_name);
@@ -220,22 +233,17 @@ pub fn transform_params(inputs: &syn::punctuated::Punctuated<FnArg, syn::Token![
                         };
                     });
 
-                    call_args.push(quote! { #name });
+                    acc.call_args.push(quote! { #name });
                 }
                 ParamTransform::PassThrough => {
                     let ty = &pat_type.ty;
-                    ffi_params.push(quote! { #name: #ty });
-                    call_args.push(quote! { #name });
+                    acc.ffi_params.push(quote! { #name: #ty });
+                    acc.call_args.push(quote! { #name });
                 }
             }
-        }
-    }
-
-    FfiParams {
-        ffi_params,
-        conversions,
-        call_args,
-    }
+                acc
+            },
+        )
 }
 
 pub struct AsyncFfiParams {
@@ -249,29 +257,38 @@ pub struct AsyncFfiParams {
 pub fn transform_params_async(
     inputs: &syn::punctuated::Punctuated<FnArg, syn::Token![,]>,
 ) -> AsyncFfiParams {
-    let mut ffi_params = Vec::new();
-    let mut pre_spawn = Vec::new();
-    let mut thread_setup = Vec::new();
-    let mut call_args = Vec::new();
-    let mut move_vars = Vec::new();
+    inputs
+        .iter()
+        .filter_map(|arg| match arg {
+            FnArg::Typed(pat_type) => Some(pat_type),
+            FnArg::Receiver(_) => None,
+        })
+        .fold(
+            AsyncFfiParams {
+                ffi_params: Vec::new(),
+                pre_spawn: Vec::new(),
+                thread_setup: Vec::new(),
+                call_args: Vec::new(),
+                move_vars: Vec::new(),
+            },
+            |mut acc, pat_type| {
+                let Some(name) = (match pat_type.pat.as_ref() {
+                    Pat::Ident(ident) => Some(ident.ident.clone()),
+                    _ => None,
+                }) else {
+                    return acc;
+                };
 
-    for arg in inputs.iter() {
-        if let FnArg::Typed(pat_type) = arg {
-            let name = match pat_type.pat.as_ref() {
-                Pat::Ident(ident) => ident.ident.clone(),
-                _ => continue,
-            };
-
-            match classify_param_transform(&pat_type.ty) {
+                match classify_param_transform(&pat_type.ty) {
                 ParamTransform::StrRef => {
                     let ptr_name = ptr_ident(&name);
                     let len_name = len_ident(&name);
                     let owned_name = syn::Ident::new(&format!("{}_owned", name), name.span());
 
-                    ffi_params.push(quote! { #ptr_name: *const u8 });
-                    ffi_params.push(quote! { #len_name: usize });
+                    acc.ffi_params.push(quote! { #ptr_name: *const u8 });
+                    acc.ffi_params.push(quote! { #len_name: usize });
 
-                    pre_spawn.push(quote! {
+                    acc.pre_spawn.push(quote! {
                         let #owned_name: String = if #ptr_name.is_null() {
                             String::new()
                         } else {
@@ -284,21 +301,21 @@ pub fn transform_params_async(
                         };
                     });
 
-                    thread_setup.push(quote! {
+                    acc.thread_setup.push(quote! {
                         let #name: &str = &#owned_name;
                     });
 
-                    move_vars.push(owned_name);
-                    call_args.push(quote! { #name });
+                    acc.move_vars.push(owned_name);
+                    acc.call_args.push(quote! { #name });
                 }
                 ParamTransform::OwnedString => {
                     let ptr_name = ptr_ident(&name);
                     let len_name = len_ident(&name);
 
-                    ffi_params.push(quote! { #ptr_name: *const u8 });
-                    ffi_params.push(quote! { #len_name: usize });
+                    acc.ffi_params.push(quote! { #ptr_name: *const u8 });
+                    acc.ffi_params.push(quote! { #len_name: usize });
 
-                    pre_spawn.push(quote! {
+                    acc.pre_spawn.push(quote! {
                         let #name: String = if #ptr_name.is_null() {
                             String::new()
                         } else {
@@ -311,8 +328,8 @@ pub fn transform_params_async(
                         };
                     });
 
-                    move_vars.push(name.clone());
-                    call_args.push(quote! { #name });
+                    acc.move_vars.push(name.clone());
+                    acc.call_args.push(quote! { #name });
                 }
                 ParamTransform::Callback(_) => {
                     panic!("Callbacks are not supported in async functions");
@@ -322,10 +339,10 @@ pub fn transform_params_async(
                     let len_name = len_ident(&name);
                     let owned_name = syn::Ident::new(&format!("{}_vec", name), name.span());
 
-                    ffi_params.push(quote! { #ptr_name: *const #inner_ty });
-                    ffi_params.push(quote! { #len_name: usize });
+                    acc.ffi_params.push(quote! { #ptr_name: *const #inner_ty });
+                    acc.ffi_params.push(quote! { #len_name: usize });
 
-                    pre_spawn.push(quote! {
+                    acc.pre_spawn.push(quote! {
                         let #owned_name: Vec<#inner_ty> = if #ptr_name.is_null() {
                             Vec::new()
                         } else {
@@ -333,12 +350,12 @@ pub fn transform_params_async(
                         };
                     });
 
-                    thread_setup.push(quote! {
+                    acc.thread_setup.push(quote! {
                         let #name: &[#inner_ty] = &#owned_name;
                     });
 
-                    move_vars.push(owned_name);
-                    call_args.push(quote! { #name });
+                    acc.move_vars.push(owned_name);
+                    acc.call_args.push(quote! { #name });
                 }
                 ParamTransform::SliceMut(_) => {
                     panic!("Mutable slices are not supported in async functions");
@@ -350,10 +367,10 @@ pub fn transform_params_async(
                     let ptr_name = ptr_ident(&name);
                     let len_name = len_ident(&name);
 
-                    ffi_params.push(quote! { #ptr_name: *const #inner_ty });
-                    ffi_params.push(quote! { #len_name: usize });
+                    acc.ffi_params.push(quote! { #ptr_name: *const #inner_ty });
+                    acc.ffi_params.push(quote! { #len_name: usize });
 
-                    pre_spawn.push(quote! {
+                    acc.pre_spawn.push(quote! {
                         let #name: Vec<#inner_ty> = if #ptr_name.is_null() {
                             Vec::new()
                         } else {
@@ -361,17 +378,17 @@ pub fn transform_params_async(
                         };
                     });
 
-                    move_vars.push(name.clone());
-                    call_args.push(quote! { #name });
+                    acc.move_vars.push(name.clone());
+                    acc.call_args.push(quote! { #name });
                 }
                 ParamTransform::VecWireEncoded(inner_ty) => {
                     let ptr_name = ptr_ident(&name);
                     let len_name = len_ident(&name);
 
-                    ffi_params.push(quote! { #ptr_name: *const u8 });
-                    ffi_params.push(quote! { #len_name: usize });
+                    acc.ffi_params.push(quote! { #ptr_name: *const u8 });
+                    acc.ffi_params.push(quote! { #len_name: usize });
 
-                    pre_spawn.push(quote! {
+                    acc.pre_spawn.push(quote! {
                         let #name: Vec<#inner_ty> = if #ptr_name.is_null() || #len_name == 0 {
                             Vec::new()
                         } else {
@@ -380,17 +397,17 @@ pub fn transform_params_async(
                         };
                     });
 
-                    move_vars.push(name.clone());
-                    call_args.push(quote! { #name });
+                    acc.move_vars.push(name.clone());
+                    acc.call_args.push(quote! { #name });
                 }
                 ParamTransform::OptionWireEncoded(inner_ty) => {
                     let ptr_name = ptr_ident(&name);
                     let len_name = len_ident(&name);
 
-                    ffi_params.push(quote! { #ptr_name: *const u8 });
-                    ffi_params.push(quote! { #len_name: usize });
+                    acc.ffi_params.push(quote! { #ptr_name: *const u8 });
+                    acc.ffi_params.push(quote! { #len_name: usize });
 
-                    pre_spawn.push(quote! {
+                    acc.pre_spawn.push(quote! {
                         let #name: Option<#inner_ty> = if #ptr_name.is_null() || #len_name == 0 {
                             None
                         } else {
@@ -399,17 +416,17 @@ pub fn transform_params_async(
                         };
                     });
 
-                    move_vars.push(name.clone());
-                    call_args.push(quote! { #name });
+                    acc.move_vars.push(name.clone());
+                    acc.call_args.push(quote! { #name });
                 }
                 ParamTransform::RecordWireEncoded(record_ty) => {
                     let ptr_name = ptr_ident(&name);
                     let len_name = len_ident(&name);
 
-                    ffi_params.push(quote! { #ptr_name: *const u8 });
-                    ffi_params.push(quote! { #len_name: usize });
+                    acc.ffi_params.push(quote! { #ptr_name: *const u8 });
+                    acc.ffi_params.push(quote! { #len_name: usize });
 
-                    pre_spawn.push(quote! {
+                    acc.pre_spawn.push(quote! {
                         let #name: #record_ty = {
                             assert!(!#ptr_name.is_null(), concat!(stringify!(#name), ": null pointer"));
                             let __bytes = unsafe { core::slice::from_raw_parts(#ptr_name, #len_name) };
@@ -417,49 +434,50 @@ pub fn transform_params_async(
                         };
                     });
 
-                    move_vars.push(name.clone());
-                    call_args.push(quote! { #name });
+                    acc.move_vars.push(name.clone());
+                    acc.call_args.push(quote! { #name });
                 }
                 ParamTransform::PassThrough => {
                     let ty = &pat_type.ty;
-                    ffi_params.push(quote! { #name: #ty });
-                    move_vars.push(name.clone());
-                    call_args.push(quote! { #name });
+                    acc.ffi_params.push(quote! { #name: #ty });
+                    acc.move_vars.push(name.clone());
+                    acc.call_args.push(quote! { #name });
                 }
             }
-        }
-    }
-
-    AsyncFfiParams {
-        ffi_params,
-        pre_spawn,
-        thread_setup,
-        call_args,
-        move_vars,
-    }
+                acc
+            },
+        )
 }
 
 pub fn transform_method_params(inputs: impl Iterator<Item = syn::FnArg>) -> FfiParams {
-    let mut ffi_params = Vec::new();
-    let mut conversions = Vec::new();
-    let mut call_args = Vec::new();
+    inputs
+        .filter_map(|arg| match arg {
+            FnArg::Typed(pat_type) => Some(pat_type),
+            FnArg::Receiver(_) => None,
+        })
+        .fold(
+            FfiParams {
+                ffi_params: Vec::new(),
+                conversions: Vec::new(),
+                call_args: Vec::new(),
+            },
+            |mut acc, pat_type| {
+                let Some(name) = (match pat_type.pat.as_ref() {
+                    Pat::Ident(ident) => Some(ident.ident.clone()),
+                    _ => None,
+                }) else {
+                    return acc;
+                };
 
-    for arg in inputs {
-        if let FnArg::Typed(pat_type) = arg {
-            let name = match pat_type.pat.as_ref() {
-                Pat::Ident(ident) => ident.ident.clone(),
-                _ => continue,
-            };
-
-            match classify_param_transform(&pat_type.ty) {
+                match classify_param_transform(&pat_type.ty) {
                 ParamTransform::StrRef => {
                     let ptr_name = ptr_ident(&name);
                     let len_name = len_ident(&name);
 
-                    ffi_params.push(quote! { #ptr_name: *const u8 });
-                    ffi_params.push(quote! { #len_name: usize });
+                    acc.ffi_params.push(quote! { #ptr_name: *const u8 });
+                    acc.ffi_params.push(quote! { #len_name: usize });
 
-                    conversions.push(quote! {
+                    acc.conversions.push(quote! {
                         let #name: &str = if #ptr_name.is_null() {
                             ""
                         } else {
@@ -468,16 +486,16 @@ pub fn transform_method_params(inputs: impl Iterator<Item = syn::FnArg>) -> FfiP
                         };
                     });
 
-                    call_args.push(quote! { #name });
+                    acc.call_args.push(quote! { #name });
                 }
                 ParamTransform::OwnedString => {
                     let ptr_name = ptr_ident(&name);
                     let len_name = len_ident(&name);
 
-                    ffi_params.push(quote! { #ptr_name: *const u8 });
-                    ffi_params.push(quote! { #len_name: usize });
+                    acc.ffi_params.push(quote! { #ptr_name: *const u8 });
+                    acc.ffi_params.push(quote! { #len_name: usize });
 
-                    conversions.push(quote! {
+                    acc.conversions.push(quote! {
                         let #name: String = if #ptr_name.is_null() {
                             String::new()
                         } else {
@@ -487,59 +505,64 @@ pub fn transform_method_params(inputs: impl Iterator<Item = syn::FnArg>) -> FfiP
                         };
                     });
 
-                    call_args.push(quote! { #name });
+                    acc.call_args.push(quote! { #name });
                 }
                 ParamTransform::Callback(arg_types) => {
                     let cb_name = syn::Ident::new(&format!("{}_cb", name), name.span());
                     let ud_name = syn::Ident::new(&format!("{}_ud", name), name.span());
 
-                    let mut ffi_cb_args = Vec::new();
-                    let mut arg_names = Vec::new();
-                    let mut cb_call_args = Vec::new();
-                    let mut wire_vars = Vec::new();
+                    let (ffi_cb_args, arg_names, cb_call_args, wire_vars) = arg_types.iter().enumerate().fold(
+                        (Vec::new(), Vec::new(), Vec::new(), Vec::new()),
+                        |(mut ffi_cb_args, mut arg_names, mut cb_call_args, mut wire_vars),
+                         (index, arg_ty)| {
+                            let arg_name =
+                                syn::Ident::new(&format!("__arg{}", index), name.span());
+                            let arg_ty_str = quote!(#arg_ty).to_string().replace(' ', "");
 
-                    for (i, arg_ty) in arg_types.iter().enumerate() {
-                        let arg_name = syn::Ident::new(&format!("__arg{}", i), name.span());
-                        let arg_ty_str = quote!(#arg_ty).to_string().replace(' ', "");
+                            if is_primitive_vec_inner(&arg_ty_str) {
+                                ffi_cb_args.push(quote! { #arg_ty });
+                                cb_call_args.push(quote! { #arg_name });
+                            } else {
+                                let wire_name =
+                                    syn::Ident::new(&format!("__wire{}", index), name.span());
+                                ffi_cb_args.push(quote! { *const u8 });
+                                ffi_cb_args.push(quote! { usize });
+                                wire_vars.push(quote! {
+                                    let #wire_name = crate::wire::encode(&#arg_name);
+                                });
+                                cb_call_args.push(quote! { #wire_name.as_ptr() });
+                                cb_call_args.push(quote! { #wire_name.len() });
+                            }
 
-                        if is_primitive_vec_inner(&arg_ty_str) {
-                            ffi_cb_args.push(quote! { #arg_ty });
-                            cb_call_args.push(quote! { #arg_name });
-                        } else {
-                            let wire_name = syn::Ident::new(&format!("__wire{}", i), name.span());
-                            ffi_cb_args.push(quote! { *const u8 });
-                            ffi_cb_args.push(quote! { usize });
-                            wire_vars.push(quote! {
-                                let #wire_name = crate::wire::encode(&#arg_name);
-                            });
-                            cb_call_args.push(quote! { #wire_name.as_ptr() });
-                            cb_call_args.push(quote! { #wire_name.len() });
-                        }
-                        arg_names.push(arg_name);
-                    }
+                            arg_names.push(arg_name);
 
-                    ffi_params.push(
+                            (ffi_cb_args, arg_names, cb_call_args, wire_vars)
+                        },
+                    );
+
+                    acc.ffi_params.push(
                         quote! { #cb_name: extern "C" fn(*mut core::ffi::c_void, #(#ffi_cb_args),*) },
                     );
-                    ffi_params.push(quote! { #ud_name: *mut core::ffi::c_void });
+                    acc.ffi_params
+                        .push(quote! { #ud_name: *mut core::ffi::c_void });
 
-                    conversions.push(quote! {
+                    acc.conversions.push(quote! {
                         let #name = |#(#arg_names: #arg_types),*| {
                             #(#wire_vars)*
                             #cb_name(#ud_name, #(#cb_call_args),*)
                         };
                     });
 
-                    call_args.push(quote! { #name });
+                    acc.call_args.push(quote! { #name });
                 }
                 ParamTransform::SliceRef(inner_ty) => {
                     let ptr_name = ptr_ident(&name);
                     let len_name = len_ident(&name);
 
-                    ffi_params.push(quote! { #ptr_name: *const #inner_ty });
-                    ffi_params.push(quote! { #len_name: usize });
+                    acc.ffi_params.push(quote! { #ptr_name: *const #inner_ty });
+                    acc.ffi_params.push(quote! { #len_name: usize });
 
-                    conversions.push(quote! {
+                    acc.conversions.push(quote! {
                         let #name: &[#inner_ty] = if #ptr_name.is_null() {
                             &[]
                         } else {
@@ -547,16 +570,16 @@ pub fn transform_method_params(inputs: impl Iterator<Item = syn::FnArg>) -> FfiP
                         };
                     });
 
-                    call_args.push(quote! { #name });
+                    acc.call_args.push(quote! { #name });
                 }
                 ParamTransform::SliceMut(inner_ty) => {
                     let ptr_name = ptr_ident(&name);
                     let len_name = len_ident(&name);
 
-                    ffi_params.push(quote! { #ptr_name: *mut #inner_ty });
-                    ffi_params.push(quote! { #len_name: usize });
+                    acc.ffi_params.push(quote! { #ptr_name: *mut #inner_ty });
+                    acc.ffi_params.push(quote! { #len_name: usize });
 
-                    conversions.push(quote! {
+                    acc.conversions.push(quote! {
                         let #name: &mut [#inner_ty] = if #ptr_name.is_null() {
                             &mut []
                         } else {
@@ -564,29 +587,29 @@ pub fn transform_method_params(inputs: impl Iterator<Item = syn::FnArg>) -> FfiP
                         };
                     });
 
-                    call_args.push(quote! { #name });
+                    acc.call_args.push(quote! { #name });
                 }
                 ParamTransform::BoxedTrait(trait_name) => {
                     let foreign_type =
                         syn::Ident::new(&format!("Foreign{}", trait_name), trait_name.span());
 
-                    ffi_params.push(quote! { #name: *mut #foreign_type });
+                    acc.ffi_params.push(quote! { #name: *mut #foreign_type });
 
-                    conversions.push(quote! {
+                    acc.conversions.push(quote! {
                         assert!(!#name.is_null(), concat!(stringify!(#name), ": null pointer"));
                         let #name: Box<dyn #trait_name> = Box::from_raw(#name);
                     });
 
-                    call_args.push(quote! { #name });
+                    acc.call_args.push(quote! { #name });
                 }
                 ParamTransform::VecPrimitive(inner_ty) => {
                     let ptr_name = ptr_ident(&name);
                     let len_name = len_ident(&name);
 
-                    ffi_params.push(quote! { #ptr_name: *const #inner_ty });
-                    ffi_params.push(quote! { #len_name: usize });
+                    acc.ffi_params.push(quote! { #ptr_name: *const #inner_ty });
+                    acc.ffi_params.push(quote! { #len_name: usize });
 
-                    conversions.push(quote! {
+                    acc.conversions.push(quote! {
                         let #name: Vec<#inner_ty> = if #ptr_name.is_null() {
                             Vec::new()
                         } else {
@@ -594,16 +617,16 @@ pub fn transform_method_params(inputs: impl Iterator<Item = syn::FnArg>) -> FfiP
                         };
                     });
 
-                    call_args.push(quote! { #name });
+                    acc.call_args.push(quote! { #name });
                 }
                 ParamTransform::VecWireEncoded(inner_ty) => {
                     let ptr_name = ptr_ident(&name);
                     let len_name = len_ident(&name);
 
-                    ffi_params.push(quote! { #ptr_name: *const u8 });
-                    ffi_params.push(quote! { #len_name: usize });
+                    acc.ffi_params.push(quote! { #ptr_name: *const u8 });
+                    acc.ffi_params.push(quote! { #len_name: usize });
 
-                    conversions.push(quote! {
+                    acc.conversions.push(quote! {
                         let #name: Vec<#inner_ty> = if #ptr_name.is_null() || #len_name == 0 {
                             Vec::new()
                         } else {
@@ -612,16 +635,16 @@ pub fn transform_method_params(inputs: impl Iterator<Item = syn::FnArg>) -> FfiP
                         };
                     });
 
-                    call_args.push(quote! { #name });
+                    acc.call_args.push(quote! { #name });
                 }
                 ParamTransform::OptionWireEncoded(inner_ty) => {
                     let ptr_name = ptr_ident(&name);
                     let len_name = len_ident(&name);
 
-                    ffi_params.push(quote! { #ptr_name: *const u8 });
-                    ffi_params.push(quote! { #len_name: usize });
+                    acc.ffi_params.push(quote! { #ptr_name: *const u8 });
+                    acc.ffi_params.push(quote! { #len_name: usize });
 
-                    conversions.push(quote! {
+                    acc.conversions.push(quote! {
                         let #name: Option<#inner_ty> = if #ptr_name.is_null() || #len_name == 0 {
                             None
                         } else {
@@ -630,16 +653,16 @@ pub fn transform_method_params(inputs: impl Iterator<Item = syn::FnArg>) -> FfiP
                         };
                     });
 
-                    call_args.push(quote! { #name });
+                    acc.call_args.push(quote! { #name });
                 }
                 ParamTransform::RecordWireEncoded(record_ty) => {
                     let ptr_name = ptr_ident(&name);
                     let len_name = len_ident(&name);
 
-                    ffi_params.push(quote! { #ptr_name: *const u8 });
-                    ffi_params.push(quote! { #len_name: usize });
+                    acc.ffi_params.push(quote! { #ptr_name: *const u8 });
+                    acc.ffi_params.push(quote! { #len_name: usize });
 
-                    conversions.push(quote! {
+                    acc.conversions.push(quote! {
                         let #name: #record_ty = {
                             assert!(!#ptr_name.is_null(), concat!(stringify!(#name), ": null pointer"));
                             let __bytes = core::slice::from_raw_parts(#ptr_name, #len_name);
@@ -647,48 +670,51 @@ pub fn transform_method_params(inputs: impl Iterator<Item = syn::FnArg>) -> FfiP
                         };
                     });
 
-                    call_args.push(quote! { #name });
+                    acc.call_args.push(quote! { #name });
                 }
                 ParamTransform::PassThrough => {
                     let ty = &pat_type.ty;
-                    ffi_params.push(quote! { #name: #ty });
-                    call_args.push(quote! { #name });
+                    acc.ffi_params.push(quote! { #name: #ty });
+                    acc.call_args.push(quote! { #name });
                 }
             }
-        }
-    }
-
-    FfiParams {
-        ffi_params,
-        conversions,
-        call_args,
-    }
+                acc
+            },
+        )
 }
 
 pub fn transform_method_params_async(inputs: impl Iterator<Item = syn::FnArg>) -> AsyncFfiParams {
-    let mut ffi_params = Vec::new();
-    let mut pre_spawn = Vec::new();
-    let mut thread_setup = Vec::new();
-    let mut call_args = Vec::new();
-    let mut move_vars = Vec::new();
+    inputs
+        .filter_map(|arg| match arg {
+            FnArg::Typed(pat_type) => Some(pat_type),
+            FnArg::Receiver(_) => None,
+        })
+        .fold(
+            AsyncFfiParams {
+                ffi_params: Vec::new(),
+                pre_spawn: Vec::new(),
+                thread_setup: Vec::new(),
+                call_args: Vec::new(),
+                move_vars: Vec::new(),
+            },
+            |mut acc, pat_type| {
+                let Some(name) = (match pat_type.pat.as_ref() {
+                    Pat::Ident(ident) => Some(ident.ident.clone()),
+                    _ => None,
+                }) else {
+                    return acc;
+                };
 
-    for arg in inputs {
-        if let FnArg::Typed(pat_type) = arg {
-            let name = match pat_type.pat.as_ref() {
-                Pat::Ident(ident) => ident.ident.clone(),
-                _ => continue,
-            };
-
-            match classify_param_transform(&pat_type.ty) {
+                match classify_param_transform(&pat_type.ty) {
                 ParamTransform::StrRef => {
                     let ptr_name = ptr_ident(&name);
                     let len_name = len_ident(&name);
                     let owned_name = syn::Ident::new(&format!("{}_owned", name), name.span());
 
-                    ffi_params.push(quote! { #ptr_name: *const u8 });
-                    ffi_params.push(quote! { #len_name: usize });
+                    acc.ffi_params.push(quote! { #ptr_name: *const u8 });
+                    acc.ffi_params.push(quote! { #len_name: usize });
 
-                    pre_spawn.push(quote! {
+                    acc.pre_spawn.push(quote! {
                         let #owned_name: String = if #ptr_name.is_null() {
                             String::new()
                         } else {
@@ -699,21 +725,21 @@ pub fn transform_method_params_async(inputs: impl Iterator<Item = syn::FnArg>) -
                         };
                     });
 
-                    thread_setup.push(quote! {
+                    acc.thread_setup.push(quote! {
                         let #name: &str = &#owned_name;
                     });
 
-                    move_vars.push(owned_name);
-                    call_args.push(quote! { #name });
+                    acc.move_vars.push(owned_name);
+                    acc.call_args.push(quote! { #name });
                 }
                 ParamTransform::OwnedString => {
                     let ptr_name = ptr_ident(&name);
                     let len_name = len_ident(&name);
 
-                    ffi_params.push(quote! { #ptr_name: *const u8 });
-                    ffi_params.push(quote! { #len_name: usize });
+                    acc.ffi_params.push(quote! { #ptr_name: *const u8 });
+                    acc.ffi_params.push(quote! { #len_name: usize });
 
-                    pre_spawn.push(quote! {
+                    acc.pre_spawn.push(quote! {
                         let #name: String = if #ptr_name.is_null() {
                             String::new()
                         } else {
@@ -724,8 +750,8 @@ pub fn transform_method_params_async(inputs: impl Iterator<Item = syn::FnArg>) -
                         };
                     });
 
-                    move_vars.push(name.clone());
-                    call_args.push(quote! { #name });
+                    acc.move_vars.push(name.clone());
+                    acc.call_args.push(quote! { #name });
                 }
                 ParamTransform::Callback(_) => {
                     panic!("Callbacks are not supported in async methods");
@@ -740,10 +766,10 @@ pub fn transform_method_params_async(inputs: impl Iterator<Item = syn::FnArg>) -
                     let ptr_name = ptr_ident(&name);
                     let len_name = len_ident(&name);
 
-                    ffi_params.push(quote! { #ptr_name: *const #inner_ty });
-                    ffi_params.push(quote! { #len_name: usize });
+                    acc.ffi_params.push(quote! { #ptr_name: *const #inner_ty });
+                    acc.ffi_params.push(quote! { #len_name: usize });
 
-                    pre_spawn.push(quote! {
+                    acc.pre_spawn.push(quote! {
                         let #name: Vec<#inner_ty> = if #ptr_name.is_null() {
                             Vec::new()
                         } else {
@@ -751,17 +777,17 @@ pub fn transform_method_params_async(inputs: impl Iterator<Item = syn::FnArg>) -
                         };
                     });
 
-                    move_vars.push(name.clone());
-                    call_args.push(quote! { #name });
+                    acc.move_vars.push(name.clone());
+                    acc.call_args.push(quote! { #name });
                 }
                 ParamTransform::VecWireEncoded(inner_ty) => {
                     let ptr_name = ptr_ident(&name);
                     let len_name = len_ident(&name);
 
-                    ffi_params.push(quote! { #ptr_name: *const u8 });
-                    ffi_params.push(quote! { #len_name: usize });
+                    acc.ffi_params.push(quote! { #ptr_name: *const u8 });
+                    acc.ffi_params.push(quote! { #len_name: usize });
 
-                    pre_spawn.push(quote! {
+                    acc.pre_spawn.push(quote! {
                         let #name: Vec<#inner_ty> = if #ptr_name.is_null() || #len_name == 0 {
                             Vec::new()
                         } else {
@@ -770,17 +796,17 @@ pub fn transform_method_params_async(inputs: impl Iterator<Item = syn::FnArg>) -
                         };
                     });
 
-                    move_vars.push(name.clone());
-                    call_args.push(quote! { #name });
+                    acc.move_vars.push(name.clone());
+                    acc.call_args.push(quote! { #name });
                 }
                 ParamTransform::OptionWireEncoded(inner_ty) => {
                     let ptr_name = ptr_ident(&name);
                     let len_name = len_ident(&name);
 
-                    ffi_params.push(quote! { #ptr_name: *const u8 });
-                    ffi_params.push(quote! { #len_name: usize });
+                    acc.ffi_params.push(quote! { #ptr_name: *const u8 });
+                    acc.ffi_params.push(quote! { #len_name: usize });
 
-                    pre_spawn.push(quote! {
+                    acc.pre_spawn.push(quote! {
                         let #name: Option<#inner_ty> = if #ptr_name.is_null() || #len_name == 0 {
                             None
                         } else {
@@ -789,17 +815,17 @@ pub fn transform_method_params_async(inputs: impl Iterator<Item = syn::FnArg>) -
                         };
                     });
 
-                    move_vars.push(name.clone());
-                    call_args.push(quote! { #name });
+                    acc.move_vars.push(name.clone());
+                    acc.call_args.push(quote! { #name });
                 }
                 ParamTransform::RecordWireEncoded(record_ty) => {
                     let ptr_name = ptr_ident(&name);
                     let len_name = len_ident(&name);
 
-                    ffi_params.push(quote! { #ptr_name: *const u8 });
-                    ffi_params.push(quote! { #len_name: usize });
+                    acc.ffi_params.push(quote! { #ptr_name: *const u8 });
+                    acc.ffi_params.push(quote! { #len_name: usize });
 
-                    pre_spawn.push(quote! {
+                    acc.pre_spawn.push(quote! {
                         let #name: #record_ty = {
                             assert!(!#ptr_name.is_null(), concat!(stringify!(#name), ": null pointer"));
                             let __bytes = unsafe { core::slice::from_raw_parts(#ptr_name, #len_name) };
@@ -807,24 +833,17 @@ pub fn transform_method_params_async(inputs: impl Iterator<Item = syn::FnArg>) -
                         };
                     });
 
-                    move_vars.push(name.clone());
-                    call_args.push(quote! { #name });
+                    acc.move_vars.push(name.clone());
+                    acc.call_args.push(quote! { #name });
                 }
                 ParamTransform::PassThrough => {
                     let ty = &pat_type.ty;
-                    ffi_params.push(quote! { #name: #ty });
-                    move_vars.push(name.clone());
-                    call_args.push(quote! { #name });
+                    acc.ffi_params.push(quote! { #name: #ty });
+                    acc.move_vars.push(name.clone());
+                    acc.call_args.push(quote! { #name });
                 }
             }
-        }
-    }
-
-    AsyncFfiParams {
-        ffi_params,
-        pre_spawn,
-        thread_setup,
-        call_args,
-        move_vars,
-    }
+                acc
+            },
+        )
 }

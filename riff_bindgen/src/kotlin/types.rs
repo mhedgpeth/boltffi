@@ -1,7 +1,7 @@
 use crate::model::{Primitive, Type};
 
-use super::primitives;
 use super::NamingConvention;
+use super::primitives;
 
 pub struct TypeMapper;
 
@@ -11,11 +11,10 @@ impl TypeMapper {
             Type::Primitive(primitive) => Self::map_primitive(primitive),
             Type::String => "String".into(),
             Type::Bytes => "ByteArray".into(),
-            Type::Slice(inner) => format!("List<{}>", Self::map_type(inner)),
-            Type::MutSlice(inner) => format!("MutableList<{}>", Self::map_type(inner)),
-            Type::Vec(inner) => format!("List<{}>", Self::map_type(inner)),
+            Type::Slice(inner) | Type::Vec(inner) => Self::map_sequence(inner),
+            Type::MutSlice(inner) => Self::map_mutable_sequence(inner),
             Type::Option(inner) => format!("{}?", Self::map_type(inner)),
-            Type::Result { ok, .. } => Self::map_type(ok),
+            Type::Result { ok, .. } => format!("Result<{}>", Self::map_type(ok)),
             Type::Closure(sig) => {
                 let params = sig
                     .params
@@ -40,6 +39,33 @@ impl TypeMapper {
 
     fn map_primitive(primitive: &Primitive) -> String {
         primitives::info(*primitive).kotlin_type.into()
+    }
+
+    fn map_sequence(inner: &Type) -> String {
+        match inner {
+            Type::Primitive(p) => Self::primitive_array_type(*p),
+            _ => format!("List<{}>", Self::map_type(inner)),
+        }
+    }
+
+    fn map_mutable_sequence(inner: &Type) -> String {
+        match inner {
+            Type::Primitive(p) => Self::primitive_array_type(*p),
+            _ => format!("MutableList<{}>", Self::map_type(inner)),
+        }
+    }
+
+    fn primitive_array_type(p: Primitive) -> String {
+        match p {
+            Primitive::I8 | Primitive::U8 => "ByteArray",
+            Primitive::I16 | Primitive::U16 => "ShortArray",
+            Primitive::I32 | Primitive::U32 => "IntArray",
+            Primitive::I64 | Primitive::U64 | Primitive::Isize | Primitive::Usize => "LongArray",
+            Primitive::F32 => "FloatArray",
+            Primitive::F64 => "DoubleArray",
+            Primitive::Bool => "BooleanArray",
+        }
+        .into()
     }
 
     pub fn jni_type(ty: &Type) -> String {
@@ -108,7 +134,25 @@ impl TypeMapper {
             Type::Primitive(primitive) => Self::primitive_default(primitive),
             Type::String => "\"\"".into(),
             Type::Bytes => "byteArrayOf()".into(),
-            Type::Vec(_) | Type::Slice(_) | Type::MutSlice(_) => "emptyList()".into(),
+            Type::Vec(inner) | Type::Slice(inner) | Type::MutSlice(inner) => {
+                if matches!(inner.as_ref(), Type::Primitive(_)) {
+                    match inner.as_ref() {
+                        Type::Primitive(Primitive::I8 | Primitive::U8) => "byteArrayOf()",
+                        Type::Primitive(Primitive::I16 | Primitive::U16) => "shortArrayOf()",
+                        Type::Primitive(Primitive::I32 | Primitive::U32) => "intArrayOf()",
+                        Type::Primitive(
+                            Primitive::I64 | Primitive::U64 | Primitive::Isize | Primitive::Usize,
+                        ) => "longArrayOf()",
+                        Type::Primitive(Primitive::F32) => "floatArrayOf()",
+                        Type::Primitive(Primitive::F64) => "doubleArrayOf()",
+                        Type::Primitive(Primitive::Bool) => "booleanArrayOf()",
+                        _ => "emptyList()",
+                    }
+                    .into()
+                } else {
+                    "emptyList()".into()
+                }
+            }
             Type::Option(_) => "null".into(),
             Type::Void => "Unit".into(),
             Type::Result { ok, .. } => Self::default_value(ok),
@@ -203,8 +247,10 @@ mod tests {
     fn test_default_value_collections() {
         assert_eq!(TypeMapper::default_value(&Type::String), "\"\"");
         assert_eq!(TypeMapper::default_value(&Type::Bytes), "byteArrayOf()");
-        let vec_type = Type::Vec(Box::new(Type::Primitive(Primitive::I32)));
-        assert_eq!(TypeMapper::default_value(&vec_type), "emptyList()");
+        let i32_vec = Type::Vec(Box::new(Type::Primitive(Primitive::I32)));
+        assert_eq!(TypeMapper::default_value(&i32_vec), "intArrayOf()");
+        let record_vec = Type::Vec(Box::new(Type::Record("Point".into())));
+        assert_eq!(TypeMapper::default_value(&record_vec), "emptyList()");
     }
 
     #[test]

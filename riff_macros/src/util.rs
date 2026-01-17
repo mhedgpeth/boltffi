@@ -37,20 +37,25 @@ pub fn extract_fn_arg_types(ty: &Type) -> Option<Vec<syn::Type>> {
     }
 
     if let Type::ImplTrait(impl_trait) = ty {
-        for bound in &impl_trait.bounds {
-            if let syn::TypeParamBound::Trait(trait_bound) = bound {
-                let path = &trait_bound.path;
-                if let Some(segment) = path.segments.last() {
-                    let ident = segment.ident.to_string();
-                    if (ident == "Fn" || ident == "FnMut" || ident == "FnOnce")
-                        && let syn::PathArguments::Parenthesized(args) = &segment.arguments
-                    {
-                        let arg_types: Vec<syn::Type> = args.inputs.iter().cloned().collect();
-                        return Some(arg_types);
-                    }
-                }
-            }
-        }
+        return impl_trait
+            .bounds
+            .iter()
+            .filter_map(|bound| match bound {
+                syn::TypeParamBound::Trait(trait_bound) => Some(&trait_bound.path),
+                _ => None,
+            })
+            .filter_map(|path| path.segments.last())
+            .filter_map(|segment| {
+                let ident = segment.ident.to_string();
+                (ident == "Fn" || ident == "FnMut" || ident == "FnOnce")
+                    .then_some(&segment.arguments)
+            })
+            .filter_map(|arguments| match arguments {
+                syn::PathArguments::Parenthesized(args) => Some(args),
+                _ => None,
+            })
+            .map(|args| args.inputs.iter().cloned().collect())
+            .next();
     }
 
     None
@@ -104,11 +109,6 @@ pub fn extract_option_param_inner(ty: &Type) -> Option<syn::Type> {
     None
 }
 
-pub fn is_option_primitive(inner_ty: &Type) -> bool {
-    let inner_str = quote!(#inner_ty).to_string().replace(' ', "");
-    is_primitive_vec_inner(&inner_str)
-}
-
 pub fn is_primitive_vec_inner(s: &str) -> bool {
     matches!(
         s,
@@ -153,9 +153,7 @@ pub fn classify_param_transform(ty: &Type) -> ParamTransform {
     }
 
     if let Some(inner_ty) = extract_option_param_inner(ty) {
-        if !is_option_primitive(&inner_ty) {
-            return ParamTransform::OptionWireEncoded(inner_ty);
-        }
+        return ParamTransform::OptionWireEncoded(inner_ty);
     }
 
     if type_str == "&str" || (type_str.starts_with("&'") && type_str.ends_with("str")) {

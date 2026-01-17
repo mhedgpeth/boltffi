@@ -5,13 +5,19 @@ fun {{ func_name }}({% for param in params %}{{ param.name }}: {{ param.kotlin_t
 {%- if return_abi.is_unit() %}
     Native.{{ ffi_name }}({% for param in params %}{{ param.conversion }}{% if !loop.last %}, {% endif %}{% endfor %})
 {%- else if return_abi.is_direct() %}
-    return Native.{{ ffi_name }}({% for param in params %}{{ param.conversion }}{% if !loop.last %}, {% endif %}{% endfor %})
-{%- else if return_abi.is_wire_encoded() %}
+    return Native.{{ ffi_name }}({% for param in params %}{{ param.conversion }}{% if !loop.last %}, {% endif %}{% endfor %}){{ return_abi.kotlin_cast() }}
+{%- else %}
     val buf = Native.{{ ffi_name }}({% for param in params %}{{ param.conversion }}{% if !loop.last %}, {% endif %}{% endfor %})
         ?: throw FfiException(-1, "Null buffer returned")
+{%- if is_blittable_return %}
+    return useNativeBuffer(buf) { buffer ->
+        {{ decode_expr }}
+    }
+{%- else %}
     return useNativeBuffer(buf) { buffer ->
         val wire = WireBuffer.fromByteBuffer(buffer)
-        {{ return_abi.decode_expr() }}
+        {{ decode_expr }}
     }
+{%- endif %}
 {%- endif %}
 }

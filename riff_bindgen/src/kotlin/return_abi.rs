@@ -1,13 +1,19 @@
-use crate::model::{Module, Primitive, ReturnType, Type};
-use super::wire;
 use super::NamingConvention;
 use super::TypeMapper;
+use super::wire;
+use crate::model::{Module, ReturnType, Type};
 
 #[derive(Debug, Clone)]
 pub enum ReturnAbi {
     Unit,
-    Direct { kotlin_type: String },
-    WireEncoded { kotlin_type: String, decode_expr: String, throws: bool },
+    Direct {
+        kotlin_type: String,
+    },
+    WireEncoded {
+        kotlin_type: String,
+        decode_expr: String,
+        throws: bool,
+    },
 }
 
 impl ReturnAbi {
@@ -22,21 +28,19 @@ impl ReturnAbi {
     fn from_value_type(ty: &Type, module: &Module) -> Self {
         match ty {
             Type::Void => Self::Unit,
-            Type::Primitive(Primitive::Bool) => Self::WireEncoded {
-                kotlin_type: "Boolean".into(),
-                decode_expr: "wire.readBool(0)".into(),
-                throws: false,
-            },
             Type::Primitive(_) => Self::Direct {
                 kotlin_type: TypeMapper::map_type(ty),
             },
-            Type::String | Type::Record(_) | Type::Enum(_) | Type::Vec(_) | Type::Option(_) | Type::Bytes => {
-                Self::WireEncoded {
-                    kotlin_type: TypeMapper::map_type(ty),
-                    decode_expr: Self::decode_at_zero(ty, module),
-                    throws: false,
-                }
-            }
+            Type::String
+            | Type::Record(_)
+            | Type::Enum(_)
+            | Type::Vec(_)
+            | Type::Option(_)
+            | Type::Bytes => Self::WireEncoded {
+                kotlin_type: TypeMapper::map_type(ty),
+                decode_expr: Self::decode_at_zero(ty, module),
+                throws: false,
+            },
             _ => Self::Direct {
                 kotlin_type: TypeMapper::map_type(ty),
             },
@@ -47,7 +51,11 @@ impl ReturnAbi {
         let ok_kotlin = TypeMapper::map_type(ok);
 
         Self::WireEncoded {
-            kotlin_type: if ok.is_void() { "Unit".into() } else { ok_kotlin },
+            kotlin_type: if ok.is_void() {
+                "Unit".into()
+            } else {
+                ok_kotlin
+            },
             decode_expr: Self::result_decode_expr(ok, err, module),
             throws: true,
         }
@@ -84,7 +92,9 @@ impl ReturnAbi {
             }
             Type::Enum(name) => {
                 let class_name = NamingConvention::class_name(name);
-                if module.is_data_enum(name) || module.enums.iter().any(|e| &e.name == name && e.is_error) {
+                if module.is_data_enum(name)
+                    || module.enums.iter().any(|e| &e.name == name && e.is_error)
+                {
                     format!("{}.decode(wire, pos)", class_name)
                 } else {
                     format!(
@@ -116,7 +126,9 @@ impl ReturnAbi {
     pub fn kotlin_type(&self) -> Option<&str> {
         match self {
             Self::Unit => None,
-            Self::Direct { kotlin_type } | Self::WireEncoded { kotlin_type, .. } => Some(kotlin_type),
+            Self::Direct { kotlin_type } | Self::WireEncoded { kotlin_type, .. } => {
+                Some(kotlin_type)
+            }
         }
     }
 
@@ -126,12 +138,77 @@ impl ReturnAbi {
             _ => "",
         }
     }
+
+    pub fn jni_return_type(&self) -> &'static str {
+        match self {
+            Self::Unit => "void",
+            Self::Direct { kotlin_type } => match kotlin_type.as_str() {
+                "Boolean" => "jboolean",
+                "Byte" | "UByte" => "jbyte",
+                "Short" | "UShort" => "jshort",
+                "Int" | "UInt" => "jint",
+                "Long" | "ULong" => "jlong",
+                "Float" => "jfloat",
+                "Double" => "jdouble",
+                _ => "jlong",
+            },
+            Self::WireEncoded { .. } => "jobject",
+        }
+    }
+
+    pub fn jni_c_return_type(&self) -> &'static str {
+        match self {
+            Self::Unit => "void",
+            Self::Direct { kotlin_type } => match kotlin_type.as_str() {
+                "Boolean" => "bool",
+                "Byte" => "int8_t",
+                "UByte" => "uint8_t",
+                "Short" => "int16_t",
+                "UShort" => "uint16_t",
+                "Int" => "int32_t",
+                "UInt" => "uint32_t",
+                "Long" => "int64_t",
+                "ULong" => "uint64_t",
+                "Float" => "float",
+                "Double" => "double",
+                _ => "int64_t",
+            },
+            Self::WireEncoded { .. } => "FfiBuf_u8",
+        }
+    }
+
+    pub fn jni_result_cast(&self) -> &'static str {
+        match self {
+            Self::Direct { kotlin_type } => match kotlin_type.as_str() {
+                "Boolean" => "(jboolean)",
+                "UByte" => "(jbyte)",
+                "UShort" => "(jshort)",
+                "UInt" => "(jint)",
+                "ULong" => "(jlong)",
+                _ => "",
+            },
+            _ => "",
+        }
+    }
+
+    pub fn kotlin_cast(&self) -> &'static str {
+        match self {
+            Self::Direct { kotlin_type } => match kotlin_type.as_str() {
+                "UByte" => ".toUByte()",
+                "UShort" => ".toUShort()",
+                "UInt" => ".toUInt()",
+                "ULong" => ".toULong()",
+                _ => "",
+            },
+            _ => "",
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{Enumeration, Record, RecordField};
+    use crate::model::Primitive;
 
     #[test]
     fn test_unit_return() {
@@ -162,10 +239,15 @@ mod tests {
     #[test]
     fn test_vec_return_is_wire_encoded() {
         let module = Module::new("test");
-        let ty = Type::Vec(Box::new(Type::Primitive(Primitive::I32)));
-        let abi = ReturnAbi::from_return_type(&ReturnType::Value(ty), &module);
+        let i32_vec = Type::Vec(Box::new(Type::Primitive(Primitive::I32)));
+        let abi = ReturnAbi::from_return_type(&ReturnType::Value(i32_vec), &module);
         assert!(abi.is_wire_encoded());
-        assert!(abi.decode_expr().contains("readList"));
+        assert!(abi.decode_expr().contains("readIntArray"));
+
+        let record_vec = Type::Vec(Box::new(Type::Record("Point".into())));
+        let abi2 = ReturnAbi::from_return_type(&ReturnType::Value(record_vec), &module);
+        assert!(abi2.is_wire_encoded());
+        assert!(abi2.decode_expr().contains("readList"));
     }
 
     #[test]

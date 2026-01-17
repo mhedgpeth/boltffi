@@ -18,9 +18,9 @@ sealed class {{ class_name }}{% if is_error %} : Exception(){% endif %} {
                     {{ variant.name }} to (pos - offset)
 {%- else %}
 {%- for field in variant.fields %}
-                    val {{ field.name }}V = {{ field.wire_decode_inline }}
+                    val {{ field.local_name }} = {{ field.wire_decode_inline }}
 {%- endfor %}
-                    {{ variant.name }}({% for field in variant.fields %}{{ field.name }}V{% if !loop.last %}, {% endif %}{% endfor %}) to (pos - offset)
+                    {{ variant.name }}({% for field in variant.fields %}{{ field.local_name }}{% if !loop.last %}, {% endif %}{% endfor %}) to (pos - offset)
 {%- endif %}
                 }
 {%- endfor %}

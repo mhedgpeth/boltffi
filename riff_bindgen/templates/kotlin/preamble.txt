@@ -23,6 +23,7 @@ class RiffException(val errorBuffer: ByteBuffer) : Exception("Structured error")
 }
 
 private inline fun <T> useNativeBuffer(buffer: ByteBuffer, block: (ByteBuffer) -> T): T {
+    buffer.order(java.nio.ByteOrder.LITTLE_ENDIAN)
     return try {
         block(buffer)
     } finally {
@@ -71,7 +72,7 @@ internal suspend inline fun <T> riffCallAsync(
     try {
         var pollResult: Byte
         do {
-            pollResult = suspendCancellableCoroutine { continuation ->
+            pollResult = suspendCancellableCoroutine<Byte> { continuation ->
                 continuation.invokeOnCancellation { cancel(rustFuture) }
                 poll(rustFuture, riffContinuationMap.insert(continuation))
             }
@@ -117,6 +118,44 @@ class WireBuffer(private val data: ByteArray) {
         return bytes to (4 + len)
     }
 
+    fun readByteArray(offset: Int): Pair<ByteArray, Int> = readBytes(offset)
+
+    fun readShortArray(offset: Int): Pair<ShortArray, Int> {
+        val count = readU32(offset).toInt()
+        val arr = ShortArray(count) { i -> readI16(offset + 4 + i * 2) }
+        return arr to (4 + count * 2)
+    }
+
+    fun readIntArray(offset: Int): Pair<IntArray, Int> {
+        val count = readU32(offset).toInt()
+        val arr = IntArray(count) { i -> readI32(offset + 4 + i * 4) }
+        return arr to (4 + count * 4)
+    }
+
+    fun readLongArray(offset: Int): Pair<LongArray, Int> {
+        val count = readU32(offset).toInt()
+        val arr = LongArray(count) { i -> readI64(offset + 4 + i * 8) }
+        return arr to (4 + count * 8)
+    }
+
+    fun readFloatArray(offset: Int): Pair<FloatArray, Int> {
+        val count = readU32(offset).toInt()
+        val arr = FloatArray(count) { i -> readF32(offset + 4 + i * 4) }
+        return arr to (4 + count * 4)
+    }
+
+    fun readDoubleArray(offset: Int): Pair<DoubleArray, Int> {
+        val count = readU32(offset).toInt()
+        val arr = DoubleArray(count) { i -> readF64(offset + 4 + i * 8) }
+        return arr to (4 + count * 8)
+    }
+
+    fun readBooleanArray(offset: Int): Pair<BooleanArray, Int> {
+        val count = readU32(offset).toInt()
+        val arr = BooleanArray(count) { i -> readBool(offset + 4 + i) }
+        return arr to (4 + count)
+    }
+
     inline fun <T> readNullable(offset: Int, reader: (Int) -> Pair<T, Int>): Pair<T?, Int> {
         return if (readU8(offset).toInt() == 0) {
             null to 1
@@ -138,7 +177,7 @@ class WireBuffer(private val data: ByteArray) {
         return result to (pos - offset)
     }
 
-    inline fun <T, E : Throwable> readResult(
+    inline fun <reified T, reified E : Throwable> readResult(
         offset: Int,
         okReader: (Int) -> Pair<T, Int>,
         errReader: (Int) -> Pair<E, Int>
@@ -146,20 +185,13 @@ class WireBuffer(private val data: ByteArray) {
         val tag = readU8(offset).toInt()
         return if (tag == 0) {
             val (ok, size) = okReader(offset + 1)
-            Result.success(ok) to (1 + size)
+            Result.success<T>(ok) to (1 + size)
         } else {
             val (err, size) = errReader(offset + 1)
-            Result.failure(err) to (1 + size)
+            Result.failure<T>(err) to (1 + size)
         }
     }
 
-    inline fun <reified T> readBlittable(offset: Int, structSize: Int): T {
-        TODO("Blittable read requires inline reified - use generated reader")
-    }
-
-    inline fun <reified T> readBlittableList(offset: Int, structSize: Int): Pair<List<T>, Int> {
-        TODO("Blittable list read requires inline reified - use generated reader")
-    }
 }
 
 class WireWriter(initialCapacity: Int = 256) {
@@ -173,6 +205,7 @@ class WireWriter(initialCapacity: Int = 256) {
     }
 
     fun writeBool(v: Boolean) { ensureCapacity(1); data[pos++] = if (v) 1 else 0 }
+    fun writePadding(count: Int) { ensureCapacity(count); repeat(count) { data[pos++] = 0 } }
     fun writeI8(v: Byte) { ensureCapacity(1); data[pos++] = v }
     fun writeU8(v: UByte) { ensureCapacity(1); data[pos++] = v.toByte() }
 
@@ -224,6 +257,73 @@ class WireWriter(initialCapacity: Int = 256) {
         ensureCapacity(v.size)
         System.arraycopy(v, 0, data, pos, v.size)
         pos += v.size
+    }
+
+    fun writePrimitiveList(v: IntArray) {
+        writeU32(v.size.toUInt())
+        v.forEach { writeI32(it) }
+    }
+
+    fun writePrimitiveList(v: LongArray) {
+        writeU32(v.size.toUInt())
+        v.forEach { writeI64(it) }
+    }
+
+    fun writePrimitiveList(v: FloatArray) {
+        writeU32(v.size.toUInt())
+        v.forEach { writeF32(it) }
+    }
+
+    fun writePrimitiveList(v: DoubleArray) {
+        writeU32(v.size.toUInt())
+        v.forEach { writeF64(it) }
+    }
+
+    fun writePrimitiveList(v: ShortArray) {
+        writeU32(v.size.toUInt())
+        v.forEach { writeI16(it) }
+    }
+
+    fun writePrimitiveList(v: ByteArray) {
+        writeU32(v.size.toUInt())
+        ensureCapacity(v.size)
+        System.arraycopy(v, 0, data, pos, v.size)
+        pos += v.size
+    }
+
+    fun writePrimitiveList(v: BooleanArray) {
+        writeU32(v.size.toUInt())
+        v.forEach { writeBool(it) }
+    }
+
+    @JvmName("writeIntList")
+    fun writePrimitiveList(v: List<Int>) {
+        writeU32(v.size.toUInt())
+        v.forEach { writeI32(it) }
+    }
+
+    @JvmName("writeLongList")
+    fun writePrimitiveList(v: List<Long>) {
+        writeU32(v.size.toUInt())
+        v.forEach { writeI64(it) }
+    }
+
+    inline fun <reified T> writeBlittable(v: T) {
+        when (v) {
+            is Byte -> writeI8(v)
+            is Short -> writeI16(v)
+            is Int -> writeI32(v)
+            is Long -> writeI64(v)
+            is Float -> writeF32(v)
+            is Double -> writeF64(v)
+            is Boolean -> writeBool(v)
+            else -> throw IllegalArgumentException("Cannot write blittable: ${T::class}")
+        }
+    }
+
+    inline fun <reified T> writeBlittableList(v: List<T>) {
+        writeU32(v.size.toUInt())
+        v.forEach { item -> writeBlittable(item) }
     }
 
     fun toByteArray(): ByteArray = data.copyOf(pos)
