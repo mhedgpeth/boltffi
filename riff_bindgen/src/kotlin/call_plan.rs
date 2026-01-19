@@ -225,28 +225,30 @@ impl WireFunctionPlan {
                     wire::decode_type(ok, module)
                 };
                 let err_lambda = Self::error_lambda_reader(err, module);
+                let err_to_throwable = Self::err_to_throwable_expr(err, module);
                 format!(
-                    "wire.readResult(0, {}, {}).first.getOrThrow()",
+                    "wire.readResult(0, {}, {}).first.unwrapOrThrow {{ err -> {} }}",
                     ok_codec.as_lambda_reader(),
-                    err_lambda
+                    err_lambda,
+                    err_to_throwable
                 )
             }
         }
     }
 
     fn error_lambda_reader(err: &Type, module: &Module) -> String {
+        wire::decode_type(err, module).as_lambda_reader()
+    }
+
+    fn err_to_throwable_expr(err: &Type, module: &Module) -> String {
         match err {
-            Type::String => {
-                "{ val (msg, s) = wire.readString(it); FfiException(-1, msg) to s }".into()
+            Type::String => "FfiException(-1, err)".into(),
+            Type::Enum(name)
+                if module.enums.iter().any(|enumeration| enumeration.name == *name && enumeration.is_error) =>
+            {
+                "err".into()
             }
-            Type::Enum(name) if module.enums.iter().any(|e| &e.name == name && e.is_error) => {
-                let codec = wire::decode_type(err, module);
-                codec.as_lambda_reader()
-            }
-            _ => {
-                let codec = wire::decode_type(err, module);
-                codec.as_lambda_reader()
-            }
+            _ => "FfiException(-1, \"Error: $err\")".into(),
         }
     }
 

@@ -395,10 +395,10 @@ static inline uint64_t {prefix}_atomic_u64_load(uint64_t* slot) {{
         let mut params = vec!["uint64_t handle".to_string()];
 
         for param in &method.inputs {
-            let param_parts = Self::param_to_c(&param.name, &param.param_type, module);
-            for (name, ty) in param_parts {
-                params.push(format!("{} {}", ty, name));
-            }
+            Self::trait_param_to_c(&param.name, &param.param_type, module)
+                .into_iter()
+                .map(|(name, ty)| format!("{} {}", ty, name))
+                .for_each(|decl| params.push(decl));
         }
 
         if method.is_async {
@@ -424,22 +424,54 @@ static inline uint64_t {prefix}_atomic_u64_load(uint64_t* slot) {{
 
     fn trait_callback_return_params(ty: &Type) -> String {
         match ty {
-            Type::Record(_) | Type::String | Type::Vec(_) | Type::Option(_) => {
-                ", const uint8_t*, uintptr_t".to_string()
-            }
             Type::Primitive(_) => format!(", {}", Self::type_to_c(ty)),
-            _ => format!(", {}", Self::type_to_c(ty)),
+            _ => ", const uint8_t*, uintptr_t".to_string(),
         }
     }
 
     fn trait_method_out_params(ty: &Type, params: &mut Vec<String>) {
         match ty {
-            Type::Record(_) | Type::String | Type::Vec(_) | Type::Option(_) => {
+            Type::Primitive(_) => {
+                params.push(format!("{} *out", Self::type_to_c(ty)));
+            }
+            _ => {
                 params.push("uint8_t *out_ptr".to_string());
                 params.push("uintptr_t *out_len".to_string());
             }
-            _ => {
-                params.push(format!("{} *out", Self::type_to_c(ty)));
+        }
+    }
+
+    fn trait_param_to_c(name: &str, ty: &Type, _module: &Module) -> Vec<(String, String)> {
+        match ty {
+            Type::Primitive(_) => vec![(name.to_string(), Self::type_to_c(ty))],
+            Type::Closure(signature) => {
+                let params_c: Vec<String> = signature
+                    .params
+                    .iter()
+                    .flat_map(|param_type| Self::closure_param_to_c(param_type))
+                    .collect();
+                let params_str = params_c.join(", ");
+                let ret_c = if signature.returns.is_void() {
+                    "void".to_string()
+                } else {
+                    Self::type_to_c(&signature.returns)
+                };
+                let callback_type = if params_str.is_empty() {
+                    format!("{} (*)(void*)", ret_c)
+                } else {
+                    format!("{} (*)(void*, {})", ret_c, params_str)
+                };
+                vec![
+                    (format!("{}_cb", name), callback_type),
+                    (format!("{}_ud", name), "void*".to_string()),
+                ]
+            }
+            Type::BoxedTrait(_) | Type::Object(_) => vec![(name.to_string(), Self::type_to_c(ty))],
+            _other => {
+                vec![
+                    (format!("{}_ptr", name), "const uint8_t*".to_string()),
+                    (format!("{}_len", name), "uintptr_t".to_string()),
+                ]
             }
         }
     }
@@ -791,7 +823,9 @@ static inline uint64_t {prefix}_atomic_u64_load(uint64_t* slot) {{
             Type::Option(inner) => {
                 if matches!(
                     inner.as_ref(),
-                    Type::Record(_) | Type::Enum(_) | Type::Vec(_)
+                    Type::Record(_)
+                        | Type::Enum(_)
+                        | Type::Vec(_)
                 ) {
                     vec![
                         (format!("{}_ptr", name), "const uint8_t*".to_string()),

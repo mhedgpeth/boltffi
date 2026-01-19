@@ -202,22 +202,33 @@ class WireBuffer private constructor(private val buffer: ByteBuffer) {
         return result to (pos - offset)
     }
 
-    inline fun <reified T, reified E : Throwable> readResult(
+    inline fun <T, E> readResult(
         offset: Int,
         okReader: (Int) -> Pair<T, Int>,
         errReader: (Int) -> Pair<E, Int>
-    ): Pair<Result<T>, Int> {
+    ): Pair<RiffResult<T, E>, Int> {
         val tag = readU8(offset).toInt()
         return if (tag == 0) {
             val (ok, size) = okReader(offset + 1)
-            Result.success<T>(ok) to (1 + size)
+            RiffResult.Ok(ok) to (1 + size)
         } else {
             val (err, size) = errReader(offset + 1)
-            Result.failure<T>(err) to (1 + size)
+            RiffResult.Err(err) to (1 + size)
         }
     }
 
 }
+
+sealed class RiffResult<out T, out E> {
+    data class Ok<T>(val value: T) : RiffResult<T, Nothing>()
+    data class Err<E>(val error: E) : RiffResult<Nothing, E>()
+}
+
+inline fun <T, E> RiffResult<T, E>.unwrapOrThrow(errorToThrowable: (E) -> Throwable): T =
+    when (this) {
+        is RiffResult.Ok -> value
+        is RiffResult.Err -> throw errorToThrowable(error)
+    }
 
 private object Utf8Codec {
     fun maxBytes(value: String): Int = value.length * 3

@@ -14,7 +14,7 @@ impl TypeMapper {
             Type::Slice(inner) | Type::Vec(inner) => Self::map_sequence(inner),
             Type::MutSlice(inner) => Self::map_mutable_sequence(inner),
             Type::Option(inner) => format!("{}?", Self::map_type(inner)),
-            Type::Result { ok, .. } => format!("Result<{}>", Self::map_type(ok)),
+            Type::Result { ok, err } => format!("RiffResult<{}, {}>", Self::map_type(ok), Self::map_type(err)),
             Type::Closure(sig) => {
                 let params = sig
                     .params

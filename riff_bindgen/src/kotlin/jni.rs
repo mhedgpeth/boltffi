@@ -214,7 +214,9 @@ pub struct JniAsyncCallbackMethodView {
     pub ffi_name: String,
     pub jni_method_name: String,
     pub jni_signature: String,
-    pub params: Vec<JniCallbackParamView>,
+    pub c_params: Vec<JniCallbackCParamView>,
+    pub setup_lines: Vec<String>,
+    pub jni_args: Vec<String>,
     pub has_return: bool,
     pub return_c_type: String,
     pub invoker_jni_name: String,
@@ -229,14 +231,119 @@ pub struct JniCallbackMethodView {
     pub jni_call_type: String,
     pub c_return_type: String,
     pub has_return: bool,
-    pub params: Vec<JniCallbackParamView>,
+    pub c_params: Vec<JniCallbackCParamView>,
+    pub setup_lines: Vec<String>,
+    pub jni_args: Vec<String>,
 }
 
-pub struct JniCallbackParamView {
-    pub ffi_name: String,
+#[derive(Clone)]
+pub struct JniCallbackCParamView {
+    pub name: String,
     pub c_type: String,
-    pub jni_type: String,
-    pub jni_arg: String,
+}
+
+struct LoweredCallbackParam {
+    c_params: Vec<JniCallbackCParamView>,
+    setup_lines: Vec<String>,
+    jni_arg: String,
+}
+
+impl LoweredCallbackParam {
+    fn lower_sync(param_name: &str, ty: &Type) -> Self {
+        Self::lower(param_name, ty, CallbackFailureMode::Sync)
+    }
+
+    fn lower_async(param_name: &str, ty: &Type) -> Self {
+        Self::lower(param_name, ty, CallbackFailureMode::Async)
+    }
+
+    fn lower(param_name: &str, ty: &Type, failure_mode: CallbackFailureMode) -> Self {
+        match ty {
+            Type::Primitive(primitive) => Self {
+                c_params: vec![JniCallbackCParamView {
+                    name: param_name.to_string(),
+                    c_type: primitive.c_type_name().to_string(),
+                }],
+                setup_lines: Vec::new(),
+                jni_arg: primitives::info(*primitive)
+                    .jni_cast
+                    .map(|cast| format!("{}{}", cast, param_name))
+                    .unwrap_or_else(|| param_name.to_string()),
+            },
+            Type::Option(_) => {
+                let ptr_name = format!("{param_name}_ptr");
+                let len_name = format!("{param_name}_len");
+                let buf_name = format!("buf_{param_name}");
+
+                let setup_lines = vec![
+                    format!("jobject {buf_name} = NULL;"),
+                    format!("if ({ptr_name} != NULL) {{"),
+                    format!(
+                        "    {buf_name} = (*env)->NewDirectByteBuffer(env, (void*){ptr_name}, (jlong){len_name});"
+                    ),
+                    "}".to_string(),
+                ];
+
+                Self {
+                    c_params: vec![
+                        JniCallbackCParamView {
+                            name: ptr_name,
+                            c_type: "const uint8_t*".to_string(),
+                        },
+                        JniCallbackCParamView {
+                            name: len_name,
+                            c_type: "uintptr_t".to_string(),
+                        },
+                    ],
+                    setup_lines,
+                    jni_arg: buf_name,
+                }
+            }
+            _ => {
+                let ptr_name = format!("{param_name}_ptr");
+                let len_name = format!("{param_name}_len");
+                let buf_name = format!("buf_{param_name}");
+
+                let setup_lines = match failure_mode {
+                    CallbackFailureMode::Sync => vec![
+                        format!("if ({ptr_name} == NULL) {{ status->code = 1; if (attached) (*g_jvm)->DetachCurrentThread(g_jvm); return; }}"),
+                        format!(
+                            "jobject {buf_name} = (*env)->NewDirectByteBuffer(env, (void*){ptr_name}, (jlong){len_name});"
+                        ),
+                        format!("if ({buf_name} == NULL) {{ status->code = 1; if (attached) (*g_jvm)->DetachCurrentThread(g_jvm); return; }}"),
+                    ],
+                    CallbackFailureMode::Async => vec![
+                        format!("if ({ptr_name} == NULL) {{ if (attached) (*g_jvm)->DetachCurrentThread(g_jvm); return; }}"),
+                        format!(
+                            "jobject {buf_name} = (*env)->NewDirectByteBuffer(env, (void*){ptr_name}, (jlong){len_name});"
+                        ),
+                        format!("if ({buf_name} == NULL) {{ if (attached) (*g_jvm)->DetachCurrentThread(g_jvm); return; }}"),
+                    ],
+                };
+
+                Self {
+                    c_params: vec![
+                        JniCallbackCParamView {
+                            name: ptr_name,
+                            c_type: "const uint8_t*".to_string(),
+                        },
+                        JniCallbackCParamView {
+                            name: len_name,
+                            c_type: "uintptr_t".to_string(),
+                        },
+                    ],
+                    setup_lines,
+                    jni_arg: buf_name,
+                }
+            }
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum CallbackFailureMode {
+    Sync,
+    Async,
 }
 
 pub struct JniAsyncFunctionView {
@@ -645,21 +752,10 @@ impl JniGlueTemplate {
             })
             .unwrap_or(("void".to_string(), "Void".to_string(), "void".to_string()));
 
-        let params: Vec<JniCallbackParamView> = method
+        let lowered_params: Vec<LoweredCallbackParam> = method
             .inputs
             .iter()
-            .map(|param| {
-                let c_type = Self::c_type_for_callback(&param.param_type);
-                let jni_type = Self::jni_type_for_callback(&param.param_type);
-                let jni_arg = Self::jni_arg_for_callback(&param.name, &param.param_type);
-
-                JniCallbackParamView {
-                    ffi_name: param.name.clone(),
-                    c_type,
-                    jni_type,
-                    jni_arg,
-                }
-            })
+            .map(|param| LoweredCallbackParam::lower_sync(&param.name, &param.param_type))
             .collect();
 
         let jni_signature = Self::build_jni_signature(&method.inputs, &method.returns);
@@ -672,7 +768,15 @@ impl JniGlueTemplate {
             jni_call_type,
             c_return_type,
             has_return,
-            params,
+            c_params: lowered_params
+                .iter()
+                .flat_map(|param| param.c_params.iter().cloned())
+                .collect(),
+            setup_lines: lowered_params
+                .iter()
+                .flat_map(|param| param.setup_lines.iter().cloned())
+                .collect(),
+            jni_args: lowered_params.iter().map(|param| param.jni_arg.clone()).collect(),
         }
     }
 
@@ -690,15 +794,10 @@ impl JniGlueTemplate {
             .map(Self::c_type_for_callback)
             .unwrap_or_else(|| "void".to_string());
 
-        let params: Vec<JniCallbackParamView> = method
+        let lowered_params: Vec<LoweredCallbackParam> = method
             .inputs
             .iter()
-            .map(|param| JniCallbackParamView {
-                ffi_name: param.name.clone(),
-                c_type: Self::c_type_for_callback(&param.param_type),
-                jni_type: Self::jni_type_for_callback(&param.param_type),
-                jni_arg: Self::jni_arg_for_callback(&param.name, &param.param_type),
-            })
+            .map(|param| LoweredCallbackParam::lower_async(&param.name, &param.param_type))
             .collect();
 
         let jni_signature = Self::build_async_callback_jni_signature(&method.inputs);
@@ -708,7 +807,15 @@ impl JniGlueTemplate {
             jni_method_name: ffi_name.clone(),
             ffi_name,
             jni_signature,
-            params,
+            c_params: lowered_params
+                .iter()
+                .flat_map(|param| param.c_params.iter().cloned())
+                .collect(),
+            setup_lines: lowered_params
+                .iter()
+                .flat_map(|param| param.setup_lines.iter().cloned())
+                .collect(),
+            jni_args: lowered_params.iter().map(|param| param.jni_arg.clone()).collect(),
             has_return,
             return_c_type,
             invoker_jni_name: format!(
@@ -752,9 +859,23 @@ impl JniGlueTemplate {
         let supported_params = method
             .inputs
             .iter()
-            .all(|param| matches!(&param.param_type, Type::Primitive(_)));
+            .all(|param| Self::is_supported_callback_param(&param.param_type));
 
         supported_return && supported_params
+    }
+
+    fn is_supported_callback_param(ty: &Type) -> bool {
+        matches!(
+            ty,
+            Type::Primitive(_)
+                | Type::String
+                | Type::Bytes
+                | Type::Record(_)
+                | Type::Enum(_)
+                | Type::Vec(_)
+                | Type::Option(_)
+                | Type::Result { .. }
+        )
     }
 
     fn jni_call_return_type(ty: &Type) -> String {
@@ -819,8 +940,7 @@ impl JniGlueTemplate {
         match ty {
             Type::Primitive(p) => primitives::info(*p).signature.to_string(),
             Type::Void => "V".to_string(),
-            Type::String => "Ljava/lang/String;".to_string(),
-            _ => "Ljava/lang/Object;".to_string(),
+            _ => "Ljava/nio/ByteBuffer;".to_string(),
         }
     }
 

@@ -45,7 +45,7 @@ object {{ callbacks_object }} {
 {%- for method in sync_methods %}
 
     @JvmStatic
-    fun {{ method.ffi_name }}(handle: Long{% for param in method.params %}, {{ param.ffi_name }}: {{ param.jni_type }}{% endfor %}){% match method.return_info %}{% when Some with (ret) %}: {{ ret.jni_type }}{% when None %}{% endmatch %} {
+    fun {{ method.ffi_name }}(handle: Long{% for param in method.params %}, {{ param.name }}: {{ param.jni_type }}{% endfor %}){% match method.return_info %}{% when Some with (ret) %}: {{ ret.jni_type }}{% when None %}{% endmatch %} {
         val impl = {{ handle_map_name }}.get(handle) ?: {% match method.return_info %}{% when Some with (ret) %}return {{ ret.default_value }}{% when None %}return{% endmatch %}
         {% match method.return_info %}{% when Some with (ret) %}return impl.{{ method.name }}({% for param in method.params %}{{ param.conversion }}{% if !loop.last %}, {% endif %}{% endfor %}){{ ret.to_jni }}{% when None %}impl.{{ method.name }}({% for param in method.params %}{{ param.conversion }}{% if !loop.last %}, {% endif %}{% endfor %}){% endmatch %}
     }
@@ -53,7 +53,7 @@ object {{ callbacks_object }} {
 {%- for method in async_methods %}
 
     @JvmStatic
-    fun {{ method.ffi_name }}(handle: Long{% for param in method.params %}, {{ param.ffi_name }}: {{ param.jni_type }}{% endfor %}, callbackPtr: Long, callbackData: Long) {
+    fun {{ method.ffi_name }}(handle: Long{% for param in method.params %}, {{ param.name }}: {{ param.jni_type }}{% endfor %}, callbackPtr: Long, callbackData: Long) {
         val impl = {{ handle_map_name }}.get(handle) ?: run {
             Native.{{ method.invoker_name }}(callbackPtr, callbackData{% match method.return_info %}{% when Some with (ret) %}, {{ ret.default_value }}{% when None %}{% endmatch %})
             return

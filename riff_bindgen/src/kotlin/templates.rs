@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use askama::Template;
 use heck::ToShoutySnakeCase;
@@ -388,6 +388,8 @@ pub struct FieldView {
     pub name: String,
     pub local_name: String,
     pub kotlin_type: String,
+    pub has_default: bool,
+    pub default_expr: String,
     pub wire_decode_inline: String,
     pub wire_size_expr: String,
     pub wire_encode: String,
@@ -411,6 +413,8 @@ impl RecordTemplate {
             .map(|offset| offset.as_usize())
             .collect::<Vec<_>>();
 
+        let mut defaults = KotlinDefaults::new(module);
+
         let fields = record
             .fields
             .iter()
@@ -418,7 +422,7 @@ impl RecordTemplate {
             .enumerate()
             .map(|(index, (field, offset))| {
                 let next_start = offsets.get(index + 1).copied().unwrap_or(struct_size);
-                let mut view = Self::make_field(field, module, offset);
+                let mut view = Self::make_field(field, module, offset, &mut defaults);
                 let field_end = view.offset + view.size;
                 view.padding_after = next_start.saturating_sub(field_end);
                 view
@@ -433,7 +437,12 @@ impl RecordTemplate {
         }
     }
 
-    fn make_field(field: &RecordField, module: &Module, offset: usize) -> FieldView {
+    fn make_field(
+        field: &RecordField,
+        module: &Module,
+        offset: usize,
+        defaults: &mut KotlinDefaults<'_>,
+    ) -> FieldView {
         let name = NamingConvention::property_name(&field.name);
         let local_name = format!("_{}_", field.name.to_lowercase());
         let encoder = super::wire::encode_type(&field.field_type, &name, module);
@@ -442,11 +451,14 @@ impl RecordTemplate {
             _ => 0,
         };
         let read_expr = Self::make_blittable_read(&field.field_type, offset);
+        let default_expr = defaults.default_expr(&field.field_type);
 
         FieldView {
             name: name.clone(),
             local_name,
             kotlin_type: TypeMapper::map_type(&field.field_type),
+            has_default: default_expr.is_some(),
+            default_expr: default_expr.unwrap_or_default(),
             wire_decode_inline: Self::make_decode_inline(&field.field_type, module),
             wire_size_expr: encoder.size_expr,
             wire_encode: encoder.encode_expr,
@@ -490,6 +502,99 @@ impl RecordTemplate {
                 format!("run {{ val (v, s) = {}; pos += s; v }}", reader)
             }
         }
+    }
+}
+
+struct KotlinDefaults<'a> {
+    module: &'a Module,
+    record_defaultable: HashMap<String, RecordDefaultability>,
+}
+
+#[derive(Clone)]
+enum RecordDefaultability {
+    Visiting,
+    Known(bool),
+}
+
+impl<'a> KotlinDefaults<'a> {
+    fn new(module: &'a Module) -> Self {
+        Self {
+            module,
+            record_defaultable: HashMap::new(),
+        }
+    }
+
+    fn default_expr(&mut self, ty: &Type) -> Option<String> {
+        match ty {
+            Type::Primitive(_)
+            | Type::String
+            | Type::Bytes
+            | Type::Vec(_)
+            | Type::Slice(_)
+            | Type::MutSlice(_)
+            | Type::Option(_) => {
+                Some(TypeMapper::default_value(ty))
+            }
+            Type::Void => Some("Unit".to_string()),
+            Type::Result { ok, .. } => self
+                .default_expr(ok)
+                .map(|ok_default| format!("RiffResult.Ok({})", ok_default)),
+            Type::Record(name) => self
+                .record_is_defaultable(name)
+                .then(|| {
+                    let class_name = NamingConvention::class_name(name);
+                    let is_unit_record = self
+                        .module
+                        .records
+                        .iter()
+                        .find(|record| record.name == *name)
+                        .is_some_and(|record| record.fields.is_empty());
+
+                    if is_unit_record {
+                        class_name
+                    } else {
+                        format!("{}()", class_name)
+                    }
+                }),
+            Type::Enum(_) | Type::Object(_) | Type::BoxedTrait(_) | Type::Closure(_) => None,
+        }
+    }
+
+    fn record_is_defaultable(&mut self, record_name: &str) -> bool {
+        match self
+            .record_defaultable
+            .get(record_name)
+            .cloned()
+            .unwrap_or(RecordDefaultability::Known(false))
+        {
+            RecordDefaultability::Known(known) => {
+                if self.record_defaultable.contains_key(record_name) {
+                    known
+                } else {
+                    self.compute_record_defaultable(record_name)
+                }
+            }
+            RecordDefaultability::Visiting => false,
+        }
+    }
+
+    fn compute_record_defaultable(&mut self, record_name: &str) -> bool {
+        self.record_defaultable
+            .insert(record_name.to_string(), RecordDefaultability::Visiting);
+
+        let defaultable = self
+            .module
+            .records
+            .iter()
+            .find(|record| record.name == record_name)
+            .map(|record| record.fields.iter().all(|field| self.default_expr(&field.field_type).is_some()))
+            .unwrap_or(false);
+
+        self.record_defaultable.insert(
+            record_name.to_string(),
+            RecordDefaultability::Known(defaultable),
+        );
+        defaultable
     }
 }
 
@@ -1427,20 +1532,20 @@ pub struct TraitParamView {
 }
 
 impl CallbackTraitTemplate {
-    pub fn from_trait(callback_trait: &CallbackTrait, _module: &Module) -> Self {
+    pub fn from_trait(callback_trait: &CallbackTrait, module: &Module) -> Self {
         let trait_name = &callback_trait.name;
         let interface_name = NamingConvention::class_name(trait_name);
 
         let sync_methods: Vec<SyncMethodView> = callback_trait
             .sync_methods()
-            .filter(|method| Self::is_supported_callback_method(method))
-            .map(|method| Self::build_sync_method(method))
+            .filter(|method| Self::is_supported_callback_method(method, module))
+            .map(|method| Self::build_sync_method(method, module))
             .collect();
 
         let async_methods: Vec<AsyncMethodView> = callback_trait
             .async_methods()
-            .filter(|method| Self::is_supported_callback_method(method))
-            .map(|method| Self::build_async_method(method))
+            .filter(|method| Self::is_supported_callback_method(method, module))
+            .map(|method| Self::build_async_method(method, module))
             .collect();
 
         let has_async = !async_methods.is_empty();
@@ -1461,23 +1566,23 @@ impl CallbackTraitTemplate {
         }
     }
 
-    fn build_sync_method(method: &TraitMethod) -> SyncMethodView {
+    fn build_sync_method(method: &TraitMethod, module: &Module) -> SyncMethodView {
         let return_info = Self::build_return_info(&method.returns);
         SyncMethodView {
             name: NamingConvention::method_name(&method.name),
             ffi_name: naming::to_snake_case(&method.name),
-            params: Self::build_params(&method.inputs),
+            params: Self::build_params(&method.inputs, module),
             return_info,
         }
     }
 
-    fn build_async_method(method: &TraitMethod) -> AsyncMethodView {
+    fn build_async_method(method: &TraitMethod, module: &Module) -> AsyncMethodView {
         let return_info = Self::build_return_info(&method.returns);
         let invoker_suffix = Self::async_invoker_suffix(&method.returns);
         AsyncMethodView {
             name: NamingConvention::method_name(&method.name),
             ffi_name: naming::to_snake_case(&method.name),
-            params: Self::build_params(&method.inputs),
+            params: Self::build_params(&method.inputs, module),
             return_info,
             invoker_name: format!("invokeAsyncCallback{}", invoker_suffix),
         }
@@ -1498,17 +1603,19 @@ impl CallbackTraitTemplate {
         })
     }
 
-    fn build_params(inputs: &[TraitMethodParam]) -> Vec<TraitParamView> {
+    fn build_params(inputs: &[TraitMethodParam], module: &Module) -> Vec<TraitParamView> {
         inputs
             .iter()
             .map(|param| {
                 let kotlin_name = NamingConvention::param_name(&param.name);
+                let (jni_type, conversion) =
+                    Self::callback_param_jni_and_conversion(&kotlin_name, &param.param_type, module);
                 TraitParamView {
                     name: kotlin_name.clone(),
                     ffi_name: param.name.clone(),
                     kotlin_type: TypeMapper::map_type(&param.param_type),
-                    jni_type: TypeMapper::jni_type(&param.param_type),
-                    conversion: Self::jni_param_conversion(&kotlin_name, &param.param_type),
+                    jni_type,
+                    conversion,
                 }
             })
             .collect()
@@ -1544,7 +1651,7 @@ impl CallbackTraitTemplate {
         }
     }
 
-    fn is_supported_callback_method(method: &TraitMethod) -> bool {
+    fn is_supported_callback_method(method: &TraitMethod, module: &Module) -> bool {
         let supported_return = match method.returns.ok_type() {
             None => true,
             Some(Type::Void) => true,
@@ -1555,9 +1662,64 @@ impl CallbackTraitTemplate {
         let supported_params = method
             .inputs
             .iter()
-            .all(|param| matches!(&param.param_type, Type::Primitive(_)));
+            .all(|param| Self::is_supported_callback_param(&param.param_type, module));
 
         supported_return && supported_params
+    }
+
+    fn is_supported_callback_param(ty: &Type, module: &Module) -> bool {
+        match ty {
+            Type::Primitive(_) => true,
+            Type::String | Type::Bytes | Type::Record(_) | Type::Enum(_) | Type::Vec(_) => true,
+            Type::Option(inner) => Self::is_supported_callback_param(inner, module),
+            Type::Result { ok, err } => {
+                Self::is_supported_callback_param(ok, module)
+                    && Self::is_supported_callback_param(err, module)
+            }
+            other => {
+                let _ = super::wire::decode_type(other, module);
+                true
+            }
+        }
+    }
+
+    fn callback_param_jni_and_conversion(
+        kotlin_name: &str,
+        ty: &Type,
+        module: &Module,
+    ) -> (String, String) {
+        match ty {
+            Type::Primitive(_) => (
+                TypeMapper::jni_type(ty),
+                Self::jni_param_conversion(kotlin_name, ty),
+            ),
+            Type::Option(_) => (
+                "ByteBuffer?".to_string(),
+                Self::wire_decode_from_bytebuffer_optional(kotlin_name, ty, module),
+            ),
+            _ => (
+                "ByteBuffer".to_string(),
+                Self::wire_decode_from_bytebuffer(kotlin_name, ty, module),
+            ),
+        }
+    }
+
+    fn wire_decode_from_bytebuffer(name: &str, ty: &Type, module: &Module) -> String {
+        let codec = super::wire::decode_type(ty, module);
+        let value_expr = codec.value_at("0");
+        format!(
+            "kotlin.run {{ val wire = WireBuffer.fromByteBuffer({}); {} }}",
+            name, value_expr
+        )
+    }
+
+    fn wire_decode_from_bytebuffer_optional(name: &str, ty: &Type, module: &Module) -> String {
+        let codec = super::wire::decode_type(ty, module);
+        let value_expr = codec.value_at("0");
+        format!(
+            "{}?.let {{ buf -> kotlin.run {{ val wire = WireBuffer.fromByteBuffer(buf); {} }} }}",
+            name, value_expr
+        )
     }
 
     fn default_value(ty: &Type) -> String {
@@ -1665,7 +1827,7 @@ mod tests {
         assert!(output.contains("@Throws(FfiException::class)"));
         assert!(output.contains("fun trySomething(): String"));
         assert!(output.contains("readResult"));
-        assert!(output.contains("getOrThrow()"));
+        assert!(output.contains("unwrapOrThrow"));
     }
 
     #[test]

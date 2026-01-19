@@ -1,5 +1,5 @@
 use proc_macro::TokenStream;
-use quote::quote;
+use quote::{format_ident, quote};
 use riff_ffi_rules::naming;
 use syn::{FnArg, Pat, ReturnType, Type};
 
@@ -125,7 +125,7 @@ fn expand_method(
     let method_name_snake = to_snake_case_ident(&method_name.to_string());
     let is_async = method.sig.asyncness.is_some();
 
-    let (param_types, param_names, call_args) = method
+    let (param_types, param_names, call_args, prelude_stmts) = method
         .sig
         .inputs
         .iter()
@@ -136,21 +136,15 @@ fn expand_method(
             },
             FnArg::Receiver(_) => None,
         })
-        .map(|(param_name, param_type)| {
-            let ffi_type = rust_type_to_ffi_param_type(&param_type);
-            (
-                quote! { #param_name: #ffi_type },
-                quote! { #param_name: #param_type },
-                quote! { #param_name },
-            )
-        })
+        .map(|(param_name, param_type)| lower_callback_param(&param_name, &param_type))
         .fold(
-            (Vec::new(), Vec::new(), Vec::new()),
-            |(mut ffi, mut rust, mut call), (ffi_ts, rust_ts, call_ts)| {
-                ffi.push(ffi_ts);
-                rust.push(rust_ts);
-                call.push(call_ts);
-                (ffi, rust, call)
+            (Vec::new(), Vec::new(), Vec::new(), Vec::new()),
+            |(mut ffi, mut rust, mut call, mut preludes), lowering| {
+                ffi.push(lowering.ffi_param);
+                rust.push(lowering.rust_param);
+                call.push(lowering.call_arg);
+                lowering.prelude.into_iter().for_each(|stmt| preludes.push(stmt));
+                (ffi, rust, call, preludes)
             },
         );
 
@@ -230,13 +224,16 @@ fn expand_method(
                     }
 
                     let ctx_ptr = Arc::into_raw(Arc::clone(&ctx)) as u64;
-                    unsafe {
-                        ((*self.vtable).#method_name_snake)(
-                            self.handle,
-                            #(#call_args,)*
-                            callback,
-                            ctx_ptr
-                        );
+                    {
+                        #(#prelude_stmts)*
+                        unsafe {
+                            ((*self.vtable).#method_name_snake)(
+                                self.handle,
+                                #(#call_args,)*
+                                callback,
+                                ctx_ptr
+                            );
+                        }
                     }
 
                     std::future::poll_fn(move |cx| {
@@ -293,13 +290,16 @@ fn expand_method(
                 }
 
                 let ctx_ptr = Arc::into_raw(Arc::clone(&ctx)) as u64;
-                unsafe {
-                    ((*self.vtable).#method_name_snake)(
-                        self.handle,
-                        #(#call_args,)*
-                        callback,
-                        ctx_ptr
-                    );
+                {
+                    #(#prelude_stmts)*
+                    unsafe {
+                        ((*self.vtable).#method_name_snake)(
+                            self.handle,
+                            #(#call_args,)*
+                            callback,
+                            ctx_ptr
+                        );
+                    }
                 }
 
                 std::future::poll_fn(move |cx| {
@@ -350,6 +350,7 @@ fn expand_method(
                 });
 
                 quote! {
+                    #(#prelude_stmts)*
                     let mut out: #ret_ty = Default::default();
                     let mut status = ::riff::__private::FfiStatus::default();
                     unsafe {
@@ -367,6 +368,7 @@ fn expand_method(
                 }
             }
             None => quote! {
+                #(#prelude_stmts)*
                 let mut status = ::riff::__private::FfiStatus::default();
                 unsafe {
                     ((*self.vtable).#method_name_snake)(
@@ -399,6 +401,57 @@ fn rust_type_to_ffi_param_type(ty: &syn::Type) -> proc_macro2::TokenStream {
         "String" => quote!(*const std::os::raw::c_char),
         _ => quote!(#ty),
     }
+}
+
+struct CallbackParamLowering {
+    ffi_param: proc_macro2::TokenStream,
+    rust_param: proc_macro2::TokenStream,
+    call_arg: proc_macro2::TokenStream,
+    prelude: Option<proc_macro2::TokenStream>,
+}
+
+fn lower_callback_param(param_name: &syn::Ident, param_type: &syn::Type) -> CallbackParamLowering {
+    let rust_param = quote! { #param_name: #param_type };
+
+    let type_str = quote!(#param_type).to_string().replace(' ', "");
+    if is_ffi_primitive(&type_str) {
+        return CallbackParamLowering {
+            ffi_param: quote! { #param_name: #param_type },
+            rust_param,
+            call_arg: quote! { #param_name },
+            prelude: None,
+        };
+    }
+
+    let ptr_name = format_ident!("{}_ptr", param_name);
+    let len_name = format_ident!("{}_len", param_name);
+    let wire_name = format_ident!("{}_wire", param_name);
+
+    CallbackParamLowering {
+        ffi_param: quote! { #ptr_name: *const u8, #len_name: usize },
+        rust_param,
+        call_arg: quote! { #wire_name.as_ptr(), #wire_name.len() },
+        prelude: Some(quote! { let #wire_name = ::riff::__private::wire::encode(&#param_name); }),
+    }
+}
+
+fn is_ffi_primitive(type_str: &str) -> bool {
+    matches!(
+        type_str,
+        "i8"
+            | "i16"
+            | "i32"
+            | "i64"
+            | "u8"
+            | "u16"
+            | "u32"
+            | "u64"
+            | "f32"
+            | "f64"
+            | "bool"
+            | "usize"
+            | "isize"
+    )
 }
 
 fn parse_result_type(ty: &Type) -> Option<(Type, Type)> {

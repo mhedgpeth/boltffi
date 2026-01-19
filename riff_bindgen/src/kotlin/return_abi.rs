@@ -1,4 +1,3 @@
-use super::NamingConvention;
 use super::TypeMapper;
 use super::wire;
 use crate::model::{Module, ReturnType, Type};
@@ -68,11 +67,12 @@ impl ReturnAbi {
 
     fn result_decode_expr(ok: &Type, err: &Type, module: &Module) -> String {
         let ok_lambda = Self::ok_decode_lambda(ok, module);
-        let err_lambda = Self::error_decode_lambda(err, module);
+        let err_lambda = Self::err_decode_lambda(err, module);
+        let err_to_throwable = Self::err_to_throwable("err", err, module);
 
         format!(
-            "wire.readResult(0, {{ pos -> {} }}, {{ pos -> {} }}).first.getOrThrow()",
-            ok_lambda, err_lambda
+            "wire.readResult(0, {{ pos -> {} }}, {{ pos -> {} }}).first.unwrapOrThrow {{ err -> {} }}",
+            ok_lambda, err_lambda, err_to_throwable
         )
     }
 
@@ -85,25 +85,19 @@ impl ReturnAbi {
         }
     }
 
-    fn error_decode_lambda(err: &Type, module: &Module) -> String {
-        match err {
-            Type::String => {
-                "val (msg, sz) = wire.readString(pos); FfiException(-1, msg) to sz".into()
+    fn err_decode_lambda(err: &Type, module: &Module) -> String {
+        wire::decode_type(err, module).lambda_body_at("pos")
+    }
+
+    fn err_to_throwable(err_value: &str, err_type: &Type, module: &Module) -> String {
+        match err_type {
+            Type::String => format!("FfiException(-1, {})", err_value),
+            Type::Enum(name)
+                if module.enums.iter().any(|enumeration| enumeration.name == *name && enumeration.is_error) =>
+            {
+                err_value.to_string()
             }
-            Type::Enum(name) => {
-                let class_name = NamingConvention::class_name(name);
-                if module.is_data_enum(name)
-                    || module.enums.iter().any(|e| &e.name == name && e.is_error)
-                {
-                    format!("{}.decode(wire, pos)", class_name)
-                } else {
-                    format!(
-                        "FfiException(-1, \"Error: ${{{}.fromValue(wire.readI32(pos))}}\") to 4",
-                        class_name
-                    )
-                }
-            }
-            _ => "FfiException(-1, \"Unknown error\") to 0".into(),
+            _ => format!("FfiException(-1, \"Error: ${{{}}}\")", err_value),
         }
     }
 

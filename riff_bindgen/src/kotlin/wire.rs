@@ -322,17 +322,16 @@ fn encode_option(inner: &Type, name: &str, module: &Module) -> KotlinEncoder {
 
 fn encode_result(ok: &Type, err: &Type, name: &str, module: &Module) -> KotlinEncoder {
     let ok_encoder = encode_type(ok, "okVal", module);
-    let err_type = super::types::TypeMapper::map_type(err);
     let err_encoder = encode_type(err, "e", module);
 
     KotlinEncoder {
         size_expr: format!(
-            "{}.fold({{ okVal -> 1 + {} }}, {{ t -> val e = t as {}; 1 + {} }})",
-            name, ok_encoder.size_expr, err_type, err_encoder.size_expr
+            "when (val result = {}) {{ is RiffResult.Ok -> run {{ val okVal = result.value; 1 + {} }}; is RiffResult.Err -> run {{ val e = result.error; 1 + {} }} }}",
+            name, ok_encoder.size_expr, err_encoder.size_expr
         ),
         encode_expr: format!(
-            "{}.fold({{ okVal -> wire.writeU8(0u); {} }}, {{ t -> val e = t as {}; wire.writeU8(1u); {} }})",
-            name, ok_encoder.encode_expr, err_type, err_encoder.encode_expr
+            "when (val result = {}) {{ is RiffResult.Ok -> run {{ val okVal = result.value; wire.writeU8(0u); {} }}; is RiffResult.Err -> run {{ val e = result.error; wire.writeU8(1u); {} }} }}",
+            name, ok_encoder.encode_expr, err_encoder.encode_expr
         ),
     }
 }

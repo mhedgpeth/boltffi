@@ -11,13 +11,13 @@ class {{ class_name }} private constructor(internal val handle: Long) : AutoClos
 {%- if ctor.wire_writers.is_empty() %}
         Native.{{ ctor.ffi_name }}({% for arg in ctor.native_args %}{{ arg }}{% if !loop.last %}, {% endif %}{% endfor %})
 {%- else %}
-        run {
+        kotlin.run {
 {%- for binding in ctor.wire_writers %}
             val {{ binding.binding_name }} = WireWriterPool.acquire({{ binding.size_expr }})
 {%- endfor %}
             try {
 {%- for binding in ctor.wire_writers %}
-                run {
+                kotlin.run {
                     val wire = {{ binding.binding_name }}.writer
                     {{ binding.encode_expr }}
                 }
@@ -37,13 +37,13 @@ class {{ class_name }} private constructor(internal val handle: Long) : AutoClos
 {%- if ctor.wire_writers.is_empty() %}
         Native.{{ ctor.ffi_name }}({% for arg in ctor.native_args %}{{ arg }}{% if !loop.last %}, {% endif %}{% endfor %})
 {%- else %}
-        run {
+        kotlin.run {
 {%- for binding in ctor.wire_writers %}
             val {{ binding.binding_name }} = WireWriterPool.acquire({{ binding.size_expr }})
 {%- endfor %}
             try {
 {%- for binding in ctor.wire_writers %}
-                run {
+                kotlin.run {
                     val wire = {{ binding.binding_name }}.writer
                     {{ binding.encode_expr }}
                 }
@@ -76,7 +76,7 @@ class {{ class_name }} private constructor(internal val handle: Long) : AutoClos
 {%- endfor %}
             try {
 {%- for binding in ctor.wire_writers %}
-                run {
+                kotlin.run {
                     val wire = {{ binding.binding_name }}.writer
                     {{ binding.encode_expr }}
                 }

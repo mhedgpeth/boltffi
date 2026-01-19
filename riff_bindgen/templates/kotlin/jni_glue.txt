@@ -1530,7 +1530,7 @@ static uint64_t {{ cb.trait_name }}_vtable_clone(uint64_t handle) {
 
 {%- for method in cb.sync_methods %}
 
-static void {{ cb.trait_name }}_vtable_{{ method.ffi_name }}(uint64_t handle{% for param in method.params %}, {{ param.c_type }} {{ param.ffi_name }}{% endfor %}{% if method.has_return %}, {{ method.c_return_type }}* out{% endif %}, FfiStatus* status) {
+static void {{ cb.trait_name }}_vtable_{{ method.ffi_name }}(uint64_t handle{% for param in method.c_params %}, {{ param.c_type }} {{ param.name }}{% endfor %}{% if method.has_return %}, {{ method.c_return_type }}* out{% endif %}, FfiStatus* status) {
     JNIEnv* env;
     int attached = 0;
     jint get_env_result = (*g_jvm)->GetEnv(g_jvm, (void**)&env, JNI_VERSION_1_6);
@@ -1544,11 +1544,14 @@ static void {{ cb.trait_name }}_vtable_{{ method.ffi_name }}(uint64_t handle{% f
         status->code = 1;
         return;
     }
+{%- for line in method.setup_lines %}
+    {{ line }}
+{%- endfor %}
 {%- if method.has_return %}
-    {{ method.jni_return_type }} _result = (*env)->CallStatic{{ method.jni_call_type }}Method(env, g_{{ cb.trait_name }}_callbacks_class, g_{{ cb.trait_name }}_{{ method.ffi_name }}_method, (jlong)handle{% for param in method.params %}, {{ param.jni_arg }}{% endfor %});
+    {{ method.jni_return_type }} _result = (*env)->CallStatic{{ method.jni_call_type }}Method(env, g_{{ cb.trait_name }}_callbacks_class, g_{{ cb.trait_name }}_{{ method.ffi_name }}_method, (jlong)handle{% for arg in method.jni_args %}, {{ arg }}{% endfor %});
     *out = ({{ method.c_return_type }})_result;
 {%- else %}
-    (*env)->CallStaticVoidMethod(env, g_{{ cb.trait_name }}_callbacks_class, g_{{ cb.trait_name }}_{{ method.ffi_name }}_method, (jlong)handle{% for param in method.params %}, {{ param.jni_arg }}{% endfor %});
+    (*env)->CallStaticVoidMethod(env, g_{{ cb.trait_name }}_callbacks_class, g_{{ cb.trait_name }}_{{ method.ffi_name }}_method, (jlong)handle{% for arg in method.jni_args %}, {{ arg }}{% endfor %});
 {%- endif %}
     status->code = 0;
     if (attached) (*g_jvm)->DetachCurrentThread(g_jvm);
@@ -1556,7 +1559,7 @@ static void {{ cb.trait_name }}_vtable_{{ method.ffi_name }}(uint64_t handle{% f
 {%- endfor %}
 {%- for method in cb.async_methods %}
 
-static void {{ cb.trait_name }}_vtable_{{ method.ffi_name }}(uint64_t handle{% for param in method.params %}, {{ param.c_type }} {{ param.ffi_name }}{% endfor %}, void (*callback)(uint64_t{% if method.has_return %}, {{ method.return_c_type }}{% endif %}, FfiStatus), uint64_t callback_data) {
+static void {{ cb.trait_name }}_vtable_{{ method.ffi_name }}(uint64_t handle{% for param in method.c_params %}, {{ param.c_type }} {{ param.name }}{% endfor %}, void (*callback)(uint64_t{% if method.has_return %}, {{ method.return_c_type }}{% endif %}, FfiStatus), uint64_t callback_data) {
     JNIEnv* env;
     int attached = 0;
     jint get_env_result = (*g_jvm)->GetEnv(g_jvm, (void**)&env, JNI_VERSION_1_6);
@@ -1564,7 +1567,10 @@ static void {{ cb.trait_name }}_vtable_{{ method.ffi_name }}(uint64_t handle{% f
         if ((*g_jvm)->AttachCurrentThread(g_jvm, (void**)&env, NULL) != JNI_OK) return;
         attached = 1;
     } else if (get_env_result != JNI_OK) return;
-    (*env)->CallStaticVoidMethod(env, g_{{ cb.trait_name }}_callbacks_class, g_{{ cb.trait_name }}_{{ method.ffi_name }}_method, (jlong)handle{% for param in method.params %}, {{ param.jni_arg }}{% endfor %}, (jlong)callback, (jlong)callback_data);
+{%- for line in method.setup_lines %}
+    {{ line }}
+{%- endfor %}
+    (*env)->CallStaticVoidMethod(env, g_{{ cb.trait_name }}_callbacks_class, g_{{ cb.trait_name }}_{{ method.ffi_name }}_method, (jlong)handle{% for arg in method.jni_args %}, {{ arg }}{% endfor %}, (jlong)callback, (jlong)callback_data);
     if (attached) (*g_jvm)->DetachCurrentThread(g_jvm);
 }
 {%- endfor %}

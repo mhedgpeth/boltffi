@@ -16,6 +16,7 @@ use crate::model::{
 pub struct TypeRegistry {
     enums: HashSet<String>,
     records: HashSet<String>,
+    classes: HashSet<String>,
 }
 
 impl TypeRegistry {
@@ -31,12 +32,22 @@ impl TypeRegistry {
         self.records.insert(name);
     }
 
-    pub fn classify_named_type(&self, name: &str) -> MType {
+    pub fn register_class(&mut self, name: String) {
+        self.classes.insert(name);
+    }
+
+    pub fn classify_named_type(&self, name: &str) -> Option<MType> {
         if self.enums.contains(name) {
-            MType::Enum(name.to_string())
-        } else {
-            MType::Record(name.to_string())
+            return Some(MType::Enum(name.to_string()));
         }
+
+        if self.records.contains(name) {
+            return Some(MType::Record(name.to_string()));
+        }
+
+        self.classes
+            .contains(name)
+            .then(|| MType::Object(name.to_string()))
     }
 }
 
@@ -170,6 +181,15 @@ impl SourceScanner {
                     {
                         self.type_registry
                             .register_enum(item_enum.ident.to_string());
+                    }
+                }
+                Item::Impl(item_impl) => {
+                    if has_attribute(&item_impl.attrs, "ffi_class") || has_attribute(&item_impl.attrs, "export") {
+                        if let Type::Path(type_path) = item_impl.self_ty.as_ref()
+                            && let Some(seg) = type_path.path.segments.last()
+                        {
+                            self.type_registry.register_class(seg.ident.to_string());
+                        }
                     }
                 }
                 _ => {}
@@ -546,8 +566,26 @@ impl SourceScanner {
             syn::ReturnType::Type(_, ty) => {
                 if let syn::Type::Path(type_path) = ty.as_ref() {
                     let last_segment = type_path.path.segments.last();
-                    last_segment
+                    let direct = last_segment
                         .map(|s| s.ident == "Self" || s.ident == class_name)
+                        .unwrap_or(false);
+                    if direct {
+                        return true;
+                    }
+
+                    last_segment
+                        .filter(|segment| segment.ident == "Arc" || segment.ident == "Box")
+                        .and_then(|segment| match &segment.arguments {
+                            syn::PathArguments::AngleBracketed(args) => args.args.first(),
+                            _ => None,
+                        })
+                        .and_then(|arg| match arg {
+                            syn::GenericArgument::Type(syn::Type::Path(inner_path)) => {
+                                inner_path.path.segments.last()
+                            }
+                            _ => None,
+                        })
+                        .map(|seg| seg.ident == "Self" || seg.ident == class_name)
                         .unwrap_or(false)
                 } else {
                     false
@@ -837,6 +875,13 @@ fn rust_type_to_ffi_type(ty: &Type, registry: &TypeRegistry) -> Option<MType> {
                 return Some(MType::BoxedTrait(seg.ident.to_string()));
             }
 
+            if (ident == "Arc" || ident == "Box")
+                && let syn::PathArguments::AngleBracketed(args) = &last_segment.arguments
+                && let Some(syn::GenericArgument::Type(inner_ty)) = args.args.first()
+            {
+                return rust_type_to_ffi_type(inner_ty, registry);
+            }
+
             if ident == "Vec" {
                 if let syn::PathArguments::AngleBracketed(args) = &last_segment.arguments
                     && let Some(syn::GenericArgument::Type(inner_ty)) = args.args.first()
@@ -995,7 +1040,11 @@ fn string_to_ffi_type(s: &str, registry: &TypeRegistry) -> Option<MType> {
                 err: Box::new(err),
             })
         }
-        s => Some(registry.classify_named_type(s)),
+        s => registry.classify_named_type(s).or_else(|| match s {
+            "UtcDateTime" | "DateTime" | "chrono::DateTime" => Some(MType::Primitive(Primitive::I64)),
+            "Length" | "uom::si::f64::Length" => Some(MType::Primitive(Primitive::F64)),
+            _ => None,
+        }),
     }
 }
 

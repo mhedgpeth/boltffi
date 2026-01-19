@@ -1,4 +1,4 @@
-use heck::{ToLowerCamelCase, ToUpperCamelCase};
+use heck::{ToLowerCamelCase, ToShoutySnakeCase, ToUpperCamelCase};
 use riff_ffi_rules::naming;
 
 pub struct NamingConvention;
@@ -24,7 +24,7 @@ impl NamingConvention {
     }
 
     pub fn enum_entry_name(name: &str) -> String {
-        name.to_uppercase()
+        name.to_shouty_snake_case()
     }
 
     pub fn escape_keyword(name: &str) -> String {

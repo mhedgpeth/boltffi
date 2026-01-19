@@ -88,7 +88,7 @@ impl Kotlin {
 
         module.enums.iter().for_each(|enumeration| {
             declarations.push(Self::render_enum_with_module(enumeration, module));
-            if enumeration.is_data_enum() || enumeration.is_error {
+            if Self::should_generate_fixed_enum_codec(enumeration) {
                 declarations.push(Self::render_data_enum_codec(enumeration));
             }
         });
@@ -316,30 +316,73 @@ impl Kotlin {
     }
 
     fn find_blittable_vec_param_records(module: &Module) -> std::collections::HashSet<&str> {
-        module
+        let types_from_functions = module
             .functions
             .iter()
-            .flat_map(|func| func.inputs.iter())
-            .filter_map(|param| match &param.param_type {
-                Type::Vec(inner) | Type::Slice(inner) => match inner.as_ref() {
-                    Type::Record(record_name) => {
-                        let is_blittable = module
-                            .records
-                            .iter()
-                            .find(|record| &record.name == record_name)
-                            .map(|record| record.is_blittable())
-                            .unwrap_or(false);
-                        if is_blittable {
-                            Some(record_name.as_str())
-                        } else {
-                            None
-                        }
-                    }
-                    _ => None,
-                },
+            .flat_map(|function| function.inputs.iter())
+            .map(|param| &param.param_type);
+
+        let types_from_methods = module
+            .classes
+            .iter()
+            .flat_map(|class| class.methods.iter())
+            .flat_map(|method| method.inputs.iter())
+            .map(|param| &param.param_type);
+
+        let types_from_ctors = module
+            .classes
+            .iter()
+            .flat_map(|class| class.constructors.iter())
+            .flat_map(|ctor| ctor.inputs.iter())
+            .map(|param| &param.param_type);
+
+        let types_from_traits = module
+            .callback_traits
+            .iter()
+            .flat_map(|callback_trait| callback_trait.methods.iter())
+            .flat_map(|method| method.inputs.iter())
+            .map(|param| &param.param_type);
+
+        let types_from_records = module
+            .records
+            .iter()
+            .flat_map(|record| record.fields.iter())
+            .map(|field| &field.field_type);
+
+        let types_from_enums = module
+            .enums
+            .iter()
+            .flat_map(|enumeration| enumeration.variants.iter())
+            .flat_map(|variant| variant.fields.iter())
+            .map(|field| &field.field_type);
+
+        types_from_functions
+            .chain(types_from_methods)
+            .chain(types_from_ctors)
+            .chain(types_from_traits)
+            .chain(types_from_records)
+            .chain(types_from_enums)
+            .filter_map(|ty| match ty {
+                Type::Vec(inner) | Type::Slice(inner) => inner.as_ref().record_name(),
                 _ => None,
             })
+            .filter(|record_name| {
+                module
+                    .records
+                    .iter()
+                    .find(|record| record.name == *record_name)
+                    .is_some_and(|record| record.is_blittable())
+            })
             .collect()
+    }
+
+    fn should_generate_fixed_enum_codec(enumeration: &Enumeration) -> bool {
+        enumeration.is_data_enum()
+            && enumeration
+                .variants
+                .iter()
+                .flat_map(|variant| variant.fields.iter())
+                .all(|field| matches!(field.field_type, Type::Primitive(_)))
     }
 
     fn find_async_return_records(module: &Module) -> HashSet<&str> {
@@ -709,7 +752,7 @@ mod tests {
         assert!(output.contains("@Throws(FfiException::class)"));
         assert!(output.contains("fun tryParse(input: String): Long"));
         assert!(output.contains("readResult"));
-        assert!(output.contains("getOrThrow()"));
+        assert!(output.contains("unwrapOrThrow"));
     }
 
     #[test]
