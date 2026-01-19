@@ -3,17 +3,59 @@
  * {{ d }}
  */
 {%- when None %}{% endmatch %}
-class {{ class_name }} private constructor(private val handle: Long) : AutoCloseable {
+class {{ class_name }} private constructor(internal val handle: Long) : AutoCloseable {
     private val closed = AtomicBoolean(false)
 {%- for ctor in constructors %}{% if !ctor.is_factory %}
 
-    constructor({% for param in ctor.params %}{{ param.name }}: {{ param.kotlin_type }}{% if !loop.last %}, {% endif %}{% endfor %}) : this(
-        Native.{{ ctor.ffi_name }}({% for param in ctor.params %}{{ param.conversion }}{% if !loop.last %}, {% endif %}{% endfor %})
+    constructor({% for param in ctor.signature_params %}{{ param.name }}: {{ param.kotlin_type }}{% if !loop.last %}, {% endif %}{% endfor %}) : this(
+{%- if ctor.wire_writers.is_empty() %}
+        Native.{{ ctor.ffi_name }}({% for arg in ctor.native_args %}{{ arg }}{% if !loop.last %}, {% endif %}{% endfor %})
+{%- else %}
+        run {
+{%- for binding in ctor.wire_writers %}
+            val {{ binding.binding_name }} = WireWriterPool.acquire({{ binding.size_expr }})
+{%- endfor %}
+            try {
+{%- for binding in ctor.wire_writers %}
+                run {
+                    val wire = {{ binding.binding_name }}.writer
+                    {{ binding.encode_expr }}
+                }
+{%- endfor %}
+                Native.{{ ctor.ffi_name }}({% for arg in ctor.native_args %}{{ arg }}{% if !loop.last %}, {% endif %}{% endfor %})
+            } finally {
+{%- for binding_name in ctor.wire_writer_closes %}
+                {{ binding_name }}.close()
+{%- endfor %}
+            }
+        }
+{%- endif %}
     )
-{%- else if !use_companion_methods && !ctor.params.is_empty() %}
+{%- else if !use_companion_methods && !ctor.signature_params.is_empty() %}
 
-    constructor({% for param in ctor.params %}{{ param.name }}: {{ param.kotlin_type }}{% if !loop.last %}, {% endif %}{% endfor %}) : this(
-        Native.{{ ctor.ffi_name }}({% for param in ctor.params %}{{ param.conversion }}{% if !loop.last %}, {% endif %}{% endfor %})
+    constructor({% for param in ctor.signature_params %}{{ param.name }}: {{ param.kotlin_type }}{% if !loop.last %}, {% endif %}{% endfor %}) : this(
+{%- if ctor.wire_writers.is_empty() %}
+        Native.{{ ctor.ffi_name }}({% for arg in ctor.native_args %}{{ arg }}{% if !loop.last %}, {% endif %}{% endfor %})
+{%- else %}
+        run {
+{%- for binding in ctor.wire_writers %}
+            val {{ binding.binding_name }} = WireWriterPool.acquire({{ binding.size_expr }})
+{%- endfor %}
+            try {
+{%- for binding in ctor.wire_writers %}
+                run {
+                    val wire = {{ binding.binding_name }}.writer
+                    {{ binding.encode_expr }}
+                }
+{%- endfor %}
+                Native.{{ ctor.ffi_name }}({% for arg in ctor.native_args %}{{ arg }}{% if !loop.last %}, {% endif %}{% endfor %})
+            } finally {
+{%- for binding_name in ctor.wire_writer_closes %}
+                {{ binding_name }}.close()
+{%- endfor %}
+            }
+        }
+{%- endif %}
     )
 {%- endif %}{% endfor %}
 
@@ -24,9 +66,28 @@ class {{ class_name }} private constructor(private val handle: Long) : AutoClose
 {%- if has_factory_ctors %}
 
     companion object {
-{%- for ctor in constructors %}{% if ctor.is_factory && (use_companion_methods || ctor.params.is_empty()) %}
-        fun {{ ctor.name }}({% for param in ctor.params %}{{ param.name }}: {{ param.kotlin_type }}{% if !loop.last %}, {% endif %}{% endfor %}): {{ class_name }} {
-            return {{ class_name }}(Native.{{ ctor.ffi_name }}({% for param in ctor.params %}{{ param.conversion }}{% if !loop.last %}, {% endif %}{% endfor %}))
+{%- for ctor in constructors %}{% if ctor.is_factory && (use_companion_methods || ctor.signature_params.is_empty()) %}
+        fun {{ ctor.name }}({% for param in ctor.signature_params %}{{ param.name }}: {{ param.kotlin_type }}{% if !loop.last %}, {% endif %}{% endfor %}): {{ class_name }} {
+{%- if ctor.wire_writers.is_empty() %}
+            return {{ class_name }}(Native.{{ ctor.ffi_name }}({% for arg in ctor.native_args %}{{ arg }}{% if !loop.last %}, {% endif %}{% endfor %}))
+{%- else %}
+{%- for binding in ctor.wire_writers %}
+            val {{ binding.binding_name }} = WireWriterPool.acquire({{ binding.size_expr }})
+{%- endfor %}
+            try {
+{%- for binding in ctor.wire_writers %}
+                run {
+                    val wire = {{ binding.binding_name }}.writer
+                    {{ binding.encode_expr }}
+                }
+{%- endfor %}
+                return {{ class_name }}(Native.{{ ctor.ffi_name }}({% for arg in ctor.native_args %}{{ arg }}{% if !loop.last %}, {% endif %}{% endfor %}))
+            } finally {
+{%- for binding_name in ctor.wire_writer_closes %}
+                {{ binding_name }}.close()
+{%- endfor %}
+            }
+{%- endif %}
         }
 {%- endif %}{% endfor %}
     }

@@ -1,8 +1,8 @@
 use riff_ffi_rules::naming;
 
 use crate::model::{
-    CallContract, Class, Method, Module, ParamTransport, Parameter, PassThroughType, ReturnType,
-    Type,
+    CallContract, Class, ConstructorParam, Method, Module, ParamTransport, Parameter,
+    PassThroughType, ReturnType, Type,
 };
 
 use super::marshal::ParamConversion;
@@ -143,8 +143,8 @@ impl WireFunctionPlan {
         }
     }
 
-    fn supports_param_type(param_type: &Type, module: &Module) -> bool {
-        PassThroughType::try_from_model(param_type).is_some()
+    pub fn supports_param_type(param_type: &Type, module: &Module) -> bool {
+        PassThroughType::try_from_param_model(param_type).is_some()
             || Self::supports_wire_type(param_type, module)
     }
 
@@ -263,12 +263,91 @@ impl WireFunctionPlan {
     }
 
     pub fn jni_param_type_for_wire_param(param_type: &Type) -> String {
-        let pass_through = PassThroughType::try_from_model(param_type).is_some();
+        let pass_through = PassThroughType::try_from_param_model(param_type).is_some();
         if pass_through {
             TypeMapper::jni_type(param_type)
         } else {
             "ByteBuffer".into()
         }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ConstructorCallPlan {
+    pub signature_params: Vec<SignatureParamSpec>,
+    pub wire_writers: Vec<WireWriterBinding>,
+    pub wire_writer_closes: Vec<String>,
+    pub native_args: Vec<String>,
+}
+
+impl ConstructorCallPlan {
+    pub fn try_for_constructor(inputs: &[ConstructorParam], module: &Module) -> Option<Self> {
+        let is_supported = inputs
+            .iter()
+            .map(|param| &param.param_type)
+            .all(|ty| WireFunctionPlan::supports_param_type(ty, module));
+        if !is_supported {
+            return None;
+        }
+
+        let signature_params = inputs
+            .iter()
+            .map(|param| {
+                let param_name = NamingConvention::param_name(&param.name);
+                let kotlin_type = TypeMapper::map_type(&param.param_type);
+                SignatureParamSpec {
+                    name: param_name,
+                    kotlin_type,
+                }
+            })
+            .collect();
+
+        let (wire_writers, native_args) = inputs
+            .iter()
+            .map(|param| {
+                let param_name = NamingConvention::param_name(&param.name);
+                match ParamTransport::for_type(&param.param_type, module) {
+                    ParamTransport::PassThrough(_) => (
+                        None,
+                        ParamConversion::to_ffi(&param_name, &param.param_type, module),
+                    ),
+                    ParamTransport::WireEncoded(_) => {
+                        let encoder = wire::encode_type(&param.param_type, &param_name, module);
+                        let binding_name = format!("wire_writer_{}", param_name);
+                        (
+                            Some(WireWriterBinding {
+                                binding_name: binding_name.clone(),
+                                size_expr: encoder.size_expr,
+                                encode_expr: encoder.encode_expr,
+                            }),
+                            format!("{}.buffer", binding_name),
+                        )
+                    }
+                }
+            })
+            .fold(
+                (Vec::new(), Vec::new()),
+                |(mut wire_writers, mut native_args), (maybe_wire_writer, native_arg)| {
+                    if let Some(wire_writer) = maybe_wire_writer {
+                        wire_writers.push(wire_writer);
+                    }
+                    native_args.push(native_arg);
+                    (wire_writers, native_args)
+                },
+            );
+
+        let wire_writer_closes = wire_writers
+            .iter()
+            .map(|binding| binding.binding_name.clone())
+            .rev()
+            .collect();
+
+        Some(Self {
+            signature_params,
+            wire_writers,
+            wire_writer_closes,
+            native_args,
+        })
     }
 }
 
@@ -296,10 +375,15 @@ impl AsyncCallPlan {
     pub fn supports_call(inputs: &[Parameter], returns: &ReturnType, module: &Module) -> bool {
         let inputs_supported = inputs.iter().all(|param| {
             let ty = &param.param_type;
-            !matches!(
-                ty,
-                Type::Closure(_) | Type::Object(_) | Type::BoxedTrait(_) | Type::MutSlice(_)
-            ) && WireFunctionPlan::supports_param_type(ty, module)
+            let is_disallowed = match ty {
+                Type::Closure(_) | Type::Object(_) | Type::BoxedTrait(_) | Type::MutSlice(_) => true,
+                Type::Option(inner) => {
+                    matches!(inner.as_ref(), Type::Object(_) | Type::BoxedTrait(_))
+                }
+                _ => false,
+            };
+
+            !is_disallowed && WireFunctionPlan::supports_param_type(ty, module)
         });
 
         inputs_supported && Self::supports_return_type(returns, module)

@@ -9,9 +9,9 @@ use crate::model::{
     Primitive, Record, RecordField, ReturnType, TraitMethod, TraitMethodParam, Type,
 };
 
-use super::call_plan::{AsyncCallPlan, WireFunctionPlan};
+use super::call_plan::{AsyncCallPlan, ConstructorCallPlan, WireFunctionPlan};
 use super::layout::{KotlinBufferRead, KotlinBufferWrite};
-use super::marshal::{OptionView, ParamConversion};
+use super::marshal::OptionView;
 use super::primitives;
 use super::return_abi::ReturnAbi;
 use super::{FactoryStyle, KotlinOptions, NamingConvention, TypeMapper};
@@ -603,12 +603,6 @@ impl RecordWriterTemplate {
     }
 }
 
-pub struct ParamView {
-    pub name: String,
-    pub kotlin_type: String,
-    pub conversion: String,
-}
-
 pub struct SignatureParamView {
     pub name: String,
     pub kotlin_type: String,
@@ -765,7 +759,10 @@ pub struct ClassTemplate {
 pub struct ConstructorView {
     pub name: String,
     pub ffi_name: String,
-    pub params: Vec<ParamView>,
+    pub signature_params: Vec<SignatureParamView>,
+    pub native_args: Vec<String>,
+    pub wire_writers: Vec<WireWriterView>,
+    pub wire_writer_closes: Vec<String>,
     pub is_factory: bool,
 }
 
@@ -788,36 +785,39 @@ impl ClassTemplate {
         let constructors: Vec<ConstructorView> = class
             .constructors
             .iter()
-            .filter(|ctor| {
-                ctor.inputs
-                    .iter()
-                    .all(|param| matches!(&param.param_type, Type::Primitive(_)))
-            })
-            .map(|ctor| {
+            .filter_map(|ctor| {
+                let plan = ConstructorCallPlan::try_for_constructor(&ctor.inputs, module)?;
                 let is_factory = !ctor.is_default();
                 let ffi_name = if is_factory {
                     naming::method_ffi_name(&class.name, &ctor.name)
                 } else {
                     format!("{}_new", ffi_prefix)
                 };
-                ConstructorView {
+
+                Some(ConstructorView {
                     name: NamingConvention::method_name(&ctor.name),
                     ffi_name,
                     is_factory,
-                    params: ctor
-                        .inputs
-                        .iter()
-                        .map(|param| ParamView {
-                            name: NamingConvention::param_name(&param.name),
-                            kotlin_type: TypeMapper::map_type(&param.param_type),
-                            conversion: ParamConversion::to_ffi(
-                                &NamingConvention::param_name(&param.name),
-                                &param.param_type,
-                                module,
-                            ),
+                    signature_params: plan
+                        .signature_params
+                        .into_iter()
+                        .map(|param| SignatureParamView {
+                            name: param.name,
+                            kotlin_type: param.kotlin_type,
                         })
                         .collect(),
-                }
+                    native_args: plan.native_args,
+                    wire_writers: plan
+                        .wire_writers
+                        .into_iter()
+                        .map(|binding| WireWriterView {
+                            binding_name: binding.binding_name,
+                            size_expr: binding.size_expr,
+                            encode_expr: binding.encode_expr,
+                        })
+                        .collect(),
+                    wire_writer_closes: plan.wire_writer_closes,
+                })
             })
             .collect();
 
@@ -843,7 +843,7 @@ impl ClassTemplate {
         } else {
             constructors
                 .iter()
-                .any(|c| c.is_factory && c.params.is_empty())
+                .any(|c| c.is_factory && c.signature_params.is_empty())
         };
 
         Self {
@@ -1023,15 +1023,13 @@ pub struct NativeParamView {
 }
 
 pub struct NativeClassView {
-    pub ffi_new: String,
     pub ffi_free: String,
-    pub ctor_params: Vec<NativeParamView>,
-    pub factory_ctors: Vec<NativeFactoryCtorView>,
+    pub ctors: Vec<NativeCtorView>,
     pub sync_methods: Vec<NativeSyncMethodView>,
     pub async_methods: Vec<NativeAsyncMethodView>,
 }
 
-pub struct NativeFactoryCtorView {
+pub struct NativeCtorView {
     pub ffi_name: String,
     pub params: Vec<NativeParamView>,
 }
@@ -1135,39 +1133,24 @@ impl NativeTemplate {
             .map(|class| {
                 let ffi_prefix = naming::class_ffi_prefix(&class.name);
 
-                let ctor_params: Vec<NativeParamView> = class
+                let ctors: Vec<NativeCtorView> = class
                     .constructors
                     .iter()
-                    .find(|c| c.is_default())
-                    .map(|ctor| {
-                        ctor.inputs
-                            .iter()
-                            .filter(|param| matches!(&param.param_type, Type::Primitive(_)))
-                            .map(|p| NativeParamView {
-                                name: NamingConvention::param_name(&p.name),
-                                jni_type: TypeMapper::jni_type(&p.param_type),
-                            })
-                            .collect()
-                    })
-                    .unwrap_or_default();
-
-                let factory_ctors: Vec<NativeFactoryCtorView> = class
-                    .constructors
-                    .iter()
-                    .filter(|c| !c.is_default())
-                    .filter(|c| {
-                        c.inputs
-                            .iter()
-                            .all(|p| matches!(&p.param_type, Type::Primitive(_)))
-                    })
-                    .map(|ctor| NativeFactoryCtorView {
-                        ffi_name: naming::method_ffi_name(&class.name, &ctor.name),
+                    .filter(|ctor| ConstructorCallPlan::try_for_constructor(&ctor.inputs, module).is_some())
+                    .map(|ctor| NativeCtorView {
+                        ffi_name: if ctor.is_default() {
+                            format!("{}_new", ffi_prefix)
+                        } else {
+                            naming::method_ffi_name(&class.name, &ctor.name)
+                        },
                         params: ctor
                             .inputs
                             .iter()
-                            .map(|p| NativeParamView {
-                                name: NamingConvention::param_name(&p.name),
-                                jni_type: TypeMapper::jni_type(&p.param_type),
+                            .map(|param| NativeParamView {
+                                name: NamingConvention::param_name(&param.name),
+                                jni_type: WireFunctionPlan::jni_param_type_for_wire_param(
+                                    &param.param_type,
+                                ),
                             })
                             .collect(),
                     })
@@ -1242,10 +1225,8 @@ impl NativeTemplate {
                     .collect();
 
                 NativeClassView {
-                    ffi_new: format!("{}_new", ffi_prefix),
                     ffi_free: format!("{}_free", ffi_prefix),
-                    ctor_params,
-                    factory_ctors,
+                    ctors,
                     sync_methods,
                     async_methods: methods,
                 }

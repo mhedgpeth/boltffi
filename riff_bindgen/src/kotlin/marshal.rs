@@ -627,6 +627,22 @@ impl ParamConversion {
                     )
                 })
                 .unwrap_or_else(|| format!("{}.handle", param_name)),
+            Type::Option(inner)
+                if matches!(inner.as_ref(), Type::Object(_) | Type::BoxedTrait(_)) =>
+            {
+                match inner.as_ref() {
+                    Type::Object(_) => format!("({}?.handle ?: 0L)", param_name),
+                    Type::BoxedTrait(name) => {
+                        let class_name = NamingConvention::class_name(name);
+                        if module.callback_traits.iter().any(|t| t.name == *name) {
+                            format!("({}?.let {{ {}Bridge.create(it) }} ?: 0L)", param_name, class_name)
+                        } else {
+                            format!("({}?.handle ?: 0L)", param_name)
+                        }
+                    }
+                    _ => param_name.to_string(),
+                }
+            }
             Type::Vec(inner) | Type::Slice(inner) => match inner.as_ref() {
                 Type::Record(name) => {
                     format!(
@@ -887,6 +903,14 @@ pub struct ClosureParamInfo {
 }
 
 impl JniParamInfo {
+    fn is_handle_type(ty: &Type) -> bool {
+        match ty {
+            Type::Object(_) | Type::BoxedTrait(_) => true,
+            Type::Option(inner) => matches!(inner.as_ref(), Type::Object(_) | Type::BoxedTrait(_)),
+            _ => false,
+        }
+    }
+
     pub fn from_param(name: &str, ty: &Type) -> Self {
         let array_info = Self::extract_array_info(ty);
 
@@ -912,7 +936,7 @@ impl JniParamInfo {
             name: name.to_string(),
             jni_type: TypeMapper::c_jni_type(ty),
             is_string: matches!(ty, Type::String),
-            is_handle: matches!(ty, Type::Object(_) | Type::BoxedTrait(_)),
+            is_handle: Self::is_handle_type(ty),
             is_wire_param: false,
             array_primitive: array_info.primitive,
             array_is_mutable: array_info.is_mutable,
@@ -948,7 +972,7 @@ impl JniParamInfo {
             name: name.to_string(),
             jni_type,
             is_string: matches!(ty, Type::String),
-            is_handle: matches!(ty, Type::Object(_) | Type::BoxedTrait(_)),
+            is_handle: Self::is_handle_type(ty),
             is_wire_param,
             array_primitive: array_info.primitive,
             array_is_mutable: array_info.is_mutable,
@@ -1027,7 +1051,9 @@ impl JniParamInfo {
             Type::Vec(inner) | Type::Slice(inner) | Type::MutSlice(inner) => {
                 !matches!(inner.as_ref(), Type::Primitive(_))
             }
-            Type::Option(_) => true,
+            Type::Option(inner) => {
+                !matches!(inner.as_ref(), Type::Object(_) | Type::BoxedTrait(_))
+            }
             _ => false,
         }
     }

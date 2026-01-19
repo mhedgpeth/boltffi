@@ -47,7 +47,7 @@ pub enum ParamTransport {
 
 impl ParamTransport {
     pub fn for_type(ty: &Type, module: &Module) -> Self {
-        PassThroughType::try_from_model(ty)
+        PassThroughType::try_from_param_model(ty)
             .map(Self::PassThrough)
             .unwrap_or_else(|| Self::WireEncoded(AbiType::from_model(ty, module)))
     }
@@ -112,6 +112,17 @@ impl PassThroughType {
             | Type::Enum(_)
             | Type::Option(_)
             | Type::Result { .. } => None,
+        }
+    }
+
+    pub fn try_from_param_model(ty: &Type) -> Option<Self> {
+        match ty {
+            Type::Option(inner)
+                if matches!(inner.as_ref(), Type::Object(_) | Type::BoxedTrait(_)) =>
+            {
+                Some(Self::Handle)
+            }
+            _ => Self::try_from_model(ty),
         }
     }
 }

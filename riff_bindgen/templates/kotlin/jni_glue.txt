@@ -1178,22 +1178,9 @@ JNIEXPORT {{ func.jni_return }} JNICALL {{ func.jni_name }}(JNIEnv *env, jclass 
 {%- endfor %}
 
 {%- for class in classes %}
-{%- for ctor in class.constructors %}
+{%- for ctor in class.ctors %}
 
-JNIEXPORT jlong JNICALL {{ ctor.jni_name }}(JNIEnv *env, jclass cls{{ ctor.jni_params }}) {
-{%- for param in ctor.params %}
-{%- if param.is_string %}
-    const char* _{{ param.name }}_c = {{ param.name }} ? (*env)->GetStringUTFChars(env, {{ param.name }}, NULL) : NULL;
-{%- endif %}
-{%- endfor %}
-    void* _handle = {{ ctor.ffi_name }}({% for param in ctor.params %}{{ param.ffi_arg() }}{% if !loop.last %}, {% endif %}{% endfor %});
-{%- for param in ctor.params %}
-{%- if param.is_string %}
-    if ({{ param.name }}) (*env)->ReleaseStringUTFChars(env, {{ param.name }}, _{{ param.name }}_c);
-{%- endif %}
-{%- endfor %}
-    return (jlong)_handle;
-}
+{{ ctor }}
 {%- endfor %}
 
 JNIEXPORT void JNICALL Java_{{ class.jni_prefix }}_Native_{{ class.jni_ffi_prefix }}_1free(JNIEnv *env, jclass cls, jlong handle) {

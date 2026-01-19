@@ -537,7 +537,7 @@ mod tests {
         let module = Module::new("test");
         let output = Kotlin::render_class(&sensor_class, &module, &KotlinOptions::default());
         assert!(output.contains("class Sensor"));
-        assert!(output.contains("private val handle: Long"));
+        assert!(output.contains("internal val handle: Long"));
         assert!(output.contains("override fun close()"));
         assert!(output.contains("fun getReading()"));
     }

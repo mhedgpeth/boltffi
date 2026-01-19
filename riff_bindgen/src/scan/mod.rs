@@ -563,19 +563,18 @@ impl SourceScanner {
             .sig
             .inputs
             .iter()
-            .filter_map(|arg| {
-                if let syn::FnArg::Typed(pat_type) = arg {
+            .map(|arg| match arg {
+                syn::FnArg::Typed(pat_type) => {
                     let param_name = match pat_type.pat.as_ref() {
                         syn::Pat::Ident(ident) => ident.ident.to_string(),
                         _ => return None,
                     };
                     let param_type = rust_type_to_ffi_type(&pat_type.ty, &self.type_registry)?;
                     Some((param_name, param_type))
-                } else {
-                    None
                 }
+                syn::FnArg::Receiver(_) => None,
             })
-            .collect();
+            .collect::<Option<Vec<_>>>()?;
 
         Some(ScannedConstructor { name, params })
     }
@@ -693,7 +692,14 @@ impl SourceScanner {
 }
 
 fn has_attribute(attrs: &[Attribute], name: &str) -> bool {
-    attrs.iter().any(|attr| attr.path().is_ident(name))
+    attrs.iter().any(|attr| {
+        attr.path().is_ident(name)
+            || attr
+                .path()
+                .segments
+                .last()
+                .is_some_and(|segment| segment.ident == name)
+    })
 }
 
 fn has_repr_c(attrs: &[Attribute]) -> bool {
@@ -812,6 +818,16 @@ fn rust_type_to_ffi_type(ty: &Type, registry: &TypeRegistry) -> Option<MType> {
             let ident = last_segment.ident.to_string();
 
             if ident == "Box"
+                && let syn::PathArguments::AngleBracketed(args) = &last_segment.arguments
+                && let Some(syn::GenericArgument::Type(Type::TraitObject(trait_obj))) =
+                    args.args.first()
+                && let Some(syn::TypeParamBound::Trait(trait_bound)) = trait_obj.bounds.first()
+                && let Some(seg) = trait_bound.path.segments.last()
+            {
+                return Some(MType::BoxedTrait(seg.ident.to_string()));
+            }
+
+            if ident == "Arc"
                 && let syn::PathArguments::AngleBracketed(args) = &last_segment.arguments
                 && let Some(syn::GenericArgument::Type(Type::TraitObject(trait_obj))) =
                     args.args.first()

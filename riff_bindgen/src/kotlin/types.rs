@@ -94,6 +94,9 @@ impl TypeMapper {
                 Type::Record(_) => "ByteBuffer".into(),
                 _ => "Long".into(),
             },
+            Type::Option(inner) if matches!(inner.as_ref(), Type::Object(_) | Type::BoxedTrait(_)) => {
+                "Long".into()
+            }
             Type::Option(inner) => format!("{}?", Self::jni_type(inner)),
             Type::Result { ok, .. } => Self::jni_type(ok),
             Type::Closure(sig) => format!("{}Callback", sig.signature_id()),

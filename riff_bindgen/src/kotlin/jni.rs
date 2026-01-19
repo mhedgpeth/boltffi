@@ -9,8 +9,8 @@ use super::marshal::{JniParamInfo, JniReturnKind, OptionView, ResultView};
 use super::primitives;
 use super::return_abi::ReturnAbi;
 use crate::model::{
-    CallbackTrait, Class, ClosureSignature, Function, Method, Module, Primitive, ReturnType,
-    TraitMethod, TraitMethodParam, Type,
+    CallbackTrait, Class, ClosureSignature, Constructor, Function, Method, Module, Primitive,
+    ReturnType, TraitMethod, TraitMethodParam, Type,
 };
 
 #[derive(Template)]
@@ -106,6 +106,54 @@ impl JniWireMethodTemplate {
             jni_params,
             params,
             return_abi,
+        }
+    }
+}
+
+#[derive(Template)]
+#[template(path = "kotlin/jni_wire_ctor.txt", escape = "none")]
+pub struct JniWireCtorTemplate {
+    pub ffi_name: String,
+    pub jni_name: String,
+    pub jni_params: String,
+    pub params: Vec<JniParamInfo>,
+}
+
+impl JniWireCtorTemplate {
+    pub fn from_constructor(class: &Class, ctor: &Constructor, jni_prefix: &str, module: &Module) -> Self {
+        let ffi_prefix = naming::class_ffi_prefix(&class.name);
+        let ffi_name = if ctor.is_default() {
+            format!("{}_new", ffi_prefix)
+        } else {
+            naming::method_ffi_name(&class.name, &ctor.name)
+        };
+
+        let jni_name = format!("Java_{}_Native_{}", jni_prefix, ffi_name.replace('_', "_1"));
+
+        let params: Vec<JniParamInfo> = ctor
+            .inputs
+            .iter()
+            .map(|param| JniParamInfo::from_param_with_module(&param.name, &param.param_type, module))
+            .collect();
+
+        let jni_params = if params.is_empty() {
+            String::new()
+        } else {
+            format!(
+                ", {}",
+                params
+                    .iter()
+                    .map(|param| param.jni_param_decl())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+        };
+
+        Self {
+            ffi_name,
+            jni_name,
+            jni_params,
+            params,
         }
     }
 }
@@ -415,16 +463,9 @@ pub struct JniClassView {
     pub ffi_prefix: String,
     pub jni_ffi_prefix: String,
     pub jni_prefix: String,
-    pub constructors: Vec<JniCtorView>,
+    pub ctors: Vec<String>,
     pub wire_methods: Vec<String>,
     pub async_methods: Vec<JniAsyncFunctionView>,
-}
-
-pub struct JniCtorView {
-    pub ffi_name: String,
-    pub jni_name: String,
-    pub jni_params: String,
-    pub params: Vec<JniParamInfo>,
 }
 
 pub struct JniGenerator;
@@ -1103,47 +1144,18 @@ impl JniGlueTemplate {
     fn map_class(class: &Class, _prefix: &str, jni_prefix: &str, module: &Module) -> JniClassView {
         let ffi_prefix = naming::class_ffi_prefix(&class.name);
 
-        let constructors: Vec<JniCtorView> = class
+        let ctors: Vec<String> = class
             .constructors
             .iter()
             .filter(|ctor| {
                 ctor.inputs
                     .iter()
-                    .all(|param| matches!(&param.param_type, Type::Primitive(_)))
+                    .all(|param| WireFunctionPlan::supports_param_type(&param.param_type, module))
             })
             .map(|ctor| {
-                let ffi_name = if ctor.is_default() {
-                    format!("{}_new", ffi_prefix)
-                } else {
-                    naming::method_ffi_name(&class.name, &ctor.name)
-                };
-                let jni_name =
-                    format!("Java_{}_Native_{}", jni_prefix, ffi_name.replace('_', "_1"));
-                let params: Vec<JniParamInfo> = ctor
-                    .inputs
-                    .iter()
-                    .map(|param| {
-                        JniParamInfo::from_param_with_module(&param.name, &param.param_type, module)
-                    })
-                    .collect();
-                let jni_params = if params.is_empty() {
-                    String::new()
-                } else {
-                    format!(
-                        ", {}",
-                        params
-                            .iter()
-                            .map(|p| p.jni_param_decl())
-                            .collect::<Vec<_>>()
-                            .join(", ")
-                    )
-                };
-                JniCtorView {
-                    ffi_name,
-                    jni_name,
-                    jni_params,
-                    params,
-                }
+                JniWireCtorTemplate::from_constructor(class, ctor, jni_prefix, module)
+                    .render()
+                    .expect("JNI ctor template render failed")
             })
             .collect();
 
@@ -1172,7 +1184,7 @@ impl JniGlueTemplate {
             ffi_prefix: ffi_prefix.clone(),
             jni_ffi_prefix: ffi_prefix.replace('_', "_1"),
             jni_prefix: jni_prefix.to_string(),
-            constructors,
+            ctors,
             wire_methods,
             async_methods,
         }
