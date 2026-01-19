@@ -1,7 +1,9 @@
 use std::process::Command;
 
+use crate::android::AndroidToolchain;
 use crate::config::Config;
-use crate::target::RustTarget;
+use crate::error::{CliError, Result};
+use crate::target::{Platform, RustTarget};
 
 #[derive(Default)]
 pub struct BuildOptions {
@@ -24,26 +26,36 @@ impl<'a> Builder<'a> {
         Self { config, options }
     }
 
-    pub fn build_targets(&self, targets: &[RustTarget]) -> Vec<BuildResult> {
+    pub fn build_targets(&self, targets: &[RustTarget]) -> Result<Vec<BuildResult>> {
+        let android_toolchain = targets
+            .iter()
+            .any(|target| target.platform() == Platform::Android)
+            .then(|| AndroidToolchain::discover(self.config.android.min_sdk, self.config.android.ndk_version.as_deref()))
+            .transpose()?;
+
         targets
             .iter()
-            .map(|target| self.build_single_target(target))
+            .map(|target| self.build_single_target(target, android_toolchain.as_ref()))
             .collect()
     }
 
-    pub fn build_ios(&self) -> Vec<BuildResult> {
+    pub fn build_ios(&self) -> Result<Vec<BuildResult>> {
         self.build_targets(RustTarget::ALL_IOS)
     }
 
-    pub fn build_android(&self) -> Vec<BuildResult> {
+    pub fn build_android(&self) -> Result<Vec<BuildResult>> {
         self.build_targets(RustTarget::ALL_ANDROID)
     }
 
-    pub fn build_macos(&self) -> Vec<BuildResult> {
+    pub fn build_macos(&self) -> Result<Vec<BuildResult>> {
         self.build_targets(RustTarget::ALL_MACOS)
     }
 
-    fn build_single_target(&self, target: &RustTarget) -> BuildResult {
+    fn build_single_target(
+        &self,
+        target: &RustTarget,
+        android_toolchain: Option<&AndroidToolchain>,
+    ) -> Result<BuildResult> {
         let mut cmd = Command::new("cargo");
         cmd.arg("build");
 
@@ -59,12 +71,18 @@ impl<'a> Builder<'a> {
             cmd.arg("-p").arg(self.config.library_name());
         }
 
+        if target.platform() == Platform::Android {
+            android_toolchain
+                .ok_or(CliError::AndroidNdkNotFound)
+                .and_then(|toolchain| toolchain.configure_cargo_for_target(&mut cmd, target))?;
+        }
+
         let success = cmd.status().map(|status| status.success()).unwrap_or(false);
 
-        BuildResult {
+        Ok(BuildResult {
             target: target.clone(),
             success,
-        }
+        })
     }
 }
 pub fn count_successful(results: &[BuildResult]) -> usize {

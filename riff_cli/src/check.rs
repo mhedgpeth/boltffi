@@ -1,5 +1,6 @@
 use std::process::Command;
 
+use crate::android::AndroidNdk;
 use crate::error::{CliError, Result};
 use crate::target::RustTarget;
 
@@ -100,14 +101,9 @@ fn check_tool_exists(tool: &str) -> bool {
 }
 
 fn find_android_ndk() -> Option<String> {
-    std::env::var("ANDROID_NDK_HOME")
+    AndroidNdk::discover(None)
         .ok()
-        .or_else(|| {
-            std::env::var("ANDROID_HOME")
-                .ok()
-                .map(|home| format!("{}/ndk", home))
-        })
-        .and_then(|path| std::path::Path::new(&path).exists().then_some(path))
+        .map(|ndk| ndk.root().display().to_string())
 }
 
 pub fn install_missing_targets(targets: &[String]) -> Result<()> {

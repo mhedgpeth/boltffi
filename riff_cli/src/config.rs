@@ -362,6 +362,14 @@ impl Config {
         self.android.kotlin.library_name.as_deref()
     }
 
+    pub fn android_jni_library_name(&self) -> String {
+        self.android
+            .kotlin
+            .library_name
+            .clone()
+            .unwrap_or_else(|| format!("{}_jni", self.library_name()))
+    }
+
     pub fn android_kotlin_output(&self) -> PathBuf {
         self.android
             .kotlin

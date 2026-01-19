@@ -179,7 +179,7 @@ fn pack_android(config: &Config, options: PackAndroidOptions) -> Result<()> {
         });
     }
 
-    let packager = AndroidPackager::new(config, android_libraries);
+    let packager = AndroidPackager::new(config, android_libraries, options.release);
     let output = run_step("Packaging jniLibs", || packager.package())?;
 
     println!("Created: {}", output.jnilibs_path.display());
@@ -198,9 +198,9 @@ fn build_apple_targets(config: &Config, release: bool) -> Result<()> {
     };
     let builder = Builder::new(config, build_options);
 
-    let mut results = builder.build_ios();
+    let mut results = builder.build_ios()?;
     if config.apple.include_macos {
-        results.extend(builder.build_macos());
+        results.extend(builder.build_macos()?);
     }
 
     if all_successful(&results) {
@@ -221,7 +221,7 @@ fn build_android_targets(config: &Config, release: bool) -> Result<()> {
         package: Some(config.library_name().to_string()),
     };
     let builder = Builder::new(config, build_options);
-    let results = builder.build_android();
+    let results = builder.build_android()?;
 
     if all_successful(&results) {
         return Ok(());

@@ -1,3 +1,4 @@
+mod android;
 mod build;
 mod check;
 mod commands;

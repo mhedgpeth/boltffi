@@ -55,6 +55,15 @@ pub enum CliError {
     #[error("file not found: {0}")]
     FileNotFound(PathBuf),
 
+    #[error("android ndk not found (set ANDROID_NDK_HOME or ANDROID_HOME/ANDROID_SDK_ROOT)")]
+    AndroidNdkNotFound,
+
+    #[error("invalid android ndk at {path}")]
+    AndroidNdkInvalid { path: PathBuf },
+
+    #[error("android ndk toolchain not found at {path}")]
+    AndroidToolchainNotFound { path: PathBuf },
+
     #[error("unsupported language: {0}")]
     UnsupportedLanguage(String),
 

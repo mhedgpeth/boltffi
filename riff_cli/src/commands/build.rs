@@ -29,22 +29,22 @@ pub fn run_build(config: &Config, options: BuildCommandOptions) -> Result<Vec<Bu
     let results = match options.platform {
         BuildPlatform::Apple => {
             println!("Building for Apple ({})...", profile);
-            builder.build_ios()
+            builder.build_ios()?
         }
         BuildPlatform::Android => {
             println!("Building for Android ({})...", profile);
-            builder.build_android()
+            builder.build_android()?
         }
         BuildPlatform::MacOs => {
             println!("Building for macOS ({})...", profile);
-            builder.build_macos()
+            builder.build_macos()?
         }
         BuildPlatform::All => {
             println!("Building all targets ({})...", profile);
-            let mut all_results = builder.build_ios();
-            all_results.extend(builder.build_android());
+            let mut all_results = builder.build_ios()?;
+            all_results.extend(builder.build_android()?);
             if config.apple.include_macos {
-                all_results.extend(builder.build_macos());
+                all_results.extend(builder.build_macos()?);
             }
             all_results
         }

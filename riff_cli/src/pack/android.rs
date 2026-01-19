@@ -1,5 +1,7 @@
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
+use crate::android::AndroidToolchain;
 use crate::config::Config;
 use crate::error::{CliError, Result};
 use crate::target::{BuiltLibrary, Platform};
@@ -7,6 +9,7 @@ use crate::target::{BuiltLibrary, Platform};
 pub struct AndroidPackager<'a> {
     config: &'a Config,
     libraries: Vec<BuiltLibrary>,
+    release: bool,
 }
 
 pub struct AndroidOutput {
@@ -15,8 +18,12 @@ pub struct AndroidOutput {
 }
 
 impl<'a> AndroidPackager<'a> {
-    pub fn new(config: &'a Config, libraries: Vec<BuiltLibrary>) -> Self {
-        Self { config, libraries }
+    pub fn new(config: &'a Config, libraries: Vec<BuiltLibrary>, release: bool) -> Self {
+        Self {
+            config,
+            libraries,
+            release,
+        }
     }
 
     pub fn package(self) -> Result<AndroidOutput> {
@@ -29,6 +36,8 @@ impl<'a> AndroidPackager<'a> {
         }
 
         let jnilibs_path = self.config.android_pack_output();
+        let android_toolchain =
+            AndroidToolchain::discover(self.config.android.min_sdk, self.config.android.ndk_version.as_deref())?;
 
         std::fs::create_dir_all(&jnilibs_path).map_err(|source| {
             CliError::CreateDirectoryFailed {
@@ -37,9 +46,24 @@ impl<'a> AndroidPackager<'a> {
             }
         })?;
 
+        let jni_glue_path = self.android_jni_glue_path()?;
+        let header_include_dir = self.config.android_header_output();
+        let header_path = header_include_dir.join(format!("{}.h", self.config.library_name()));
+        if !header_path.exists() {
+            return Err(CliError::FileNotFound(header_path));
+        }
+
         let copied_libraries = android_libs
             .iter()
-            .map(|lib| self.copy_to_jnilibs(lib, &jnilibs_path))
+            .map(|lib| {
+                self.link_shared_library(
+                    lib,
+                    &jnilibs_path,
+                    &android_toolchain,
+                    &jni_glue_path,
+                    &header_include_dir,
+                )
+            })
             .collect::<Result<Vec<_>>>()?;
 
         Ok(AndroidOutput {
@@ -55,7 +79,21 @@ impl<'a> AndroidPackager<'a> {
             .collect()
     }
 
-    fn copy_to_jnilibs(&self, library: &BuiltLibrary, jnilibs_path: &Path) -> Result<PathBuf> {
+    fn android_jni_glue_path(&self) -> Result<PathBuf> {
+        let jni_glue_path = self.config.android_kotlin_output().join("jni").join("jni_glue.c");
+        jni_glue_path.exists().then_some(jni_glue_path.clone()).ok_or_else(|| {
+            CliError::FileNotFound(jni_glue_path)
+        })
+    }
+
+    fn link_shared_library(
+        &self,
+        library: &BuiltLibrary,
+        jnilibs_path: &Path,
+        android_toolchain: &AndroidToolchain,
+        jni_glue_path: &Path,
+        header_include_dir: &Path,
+    ) -> Result<PathBuf> {
         let abi = library.target.architecture().android_abi();
         let abi_dir = jnilibs_path.join(abi);
 
@@ -64,15 +102,57 @@ impl<'a> AndroidPackager<'a> {
             source,
         })?;
 
-        let lib_name = self.config.library_name();
+        let lib_name = self.config.android_jni_library_name();
         let dest_path = abi_dir.join(format!("lib{}.so", lib_name));
-
-        std::fs::copy(&library.path, &dest_path).map_err(|source| CliError::CopyFailed {
-            from: library.path.clone(),
-            to: dest_path.clone(),
+        let build_dir = PathBuf::from("target")
+            .join("riff")
+            .join("android")
+            .join(library.target.triple())
+            .join(if self.release { "release" } else { "debug" });
+        std::fs::create_dir_all(&build_dir).map_err(|source| CliError::CreateDirectoryFailed {
+            path: build_dir.clone(),
             source,
         })?;
 
+        let clang = android_toolchain.clang_for_target(&library.target)?;
+        let object_path = build_dir.join("jni_glue.o");
+
+        let mut compile = Command::new(&clang);
+        compile
+            .arg("-c")
+            .arg("-fPIC")
+            .arg(if self.release { "-O3" } else { "-O0" })
+            .arg("-I")
+            .arg(header_include_dir)
+            .arg(jni_glue_path)
+            .arg("-o")
+            .arg(&object_path);
+        run_command(compile)?;
+
+        let mut link = Command::new(&clang);
+        link.arg("-shared")
+            .arg("-o")
+            .arg(&dest_path)
+            .arg(&object_path)
+            .arg(&library.path);
+        run_command(link)?;
+
         Ok(dest_path)
     }
+}
+
+fn run_command(mut command: Command) -> Result<()> {
+    let command_string = format!("{:?}", command);
+    let status = command.status().map_err(|_| CliError::CommandFailed {
+        command: command_string.clone(),
+        status: None,
+    })?;
+
+    status
+        .success()
+        .then_some(())
+        .ok_or(CliError::CommandFailed {
+            command: command_string,
+            status: status.code(),
+        })
 }
