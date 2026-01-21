@@ -3,12 +3,20 @@ use crate::wire::constants::*;
 #[cfg(feature = "chrono")]
 use chrono::{DateTime, Utc};
 
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+#[cfg(feature = "uuid")]
+use uuid::Uuid;
+
 #[cfg(feature = "uom")]
 use uom::si::{
     f64::{Length, Velocity},
     length::meter,
     velocity::kilometer_per_hour,
 };
+
+#[cfg(feature = "url")]
+use url::Url;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DecodeError {
@@ -101,13 +109,75 @@ impl WireDecode for String {
     }
 }
 
+impl WireDecode for Duration {
+    #[inline]
+    fn decode_from(buf: &[u8]) -> DecodeResult<Self> {
+        let (seconds, seconds_used) = u64::decode_from(buf)?;
+        let (nanos, nanos_used) = u32::decode_from(buf.get(seconds_used..).ok_or(DecodeError::BufferTooSmall)?)?;
+        if nanos >= 1_000_000_000 {
+            return Err(DecodeError::InvalidValue);
+        }
+        Ok((Duration::new(seconds, nanos), seconds_used + nanos_used))
+    }
+}
+
+impl WireDecode for SystemTime {
+    #[inline]
+    fn decode_from(buf: &[u8]) -> DecodeResult<Self> {
+        let (seconds, seconds_used) = i64::decode_from(buf)?;
+        let (nanos, nanos_used) = u32::decode_from(buf.get(seconds_used..).ok_or(DecodeError::BufferTooSmall)?)?;
+        if nanos >= 1_000_000_000 {
+            return Err(DecodeError::InvalidValue);
+        }
+
+        let nanos_per_second = 1_000_000_000i128;
+        let total_nanos = (seconds as i128) * nanos_per_second + (nanos as i128);
+
+        let system_time = if total_nanos >= 0 {
+            let duration = Duration::new((total_nanos / nanos_per_second) as u64, (total_nanos % nanos_per_second) as u32);
+            UNIX_EPOCH + duration
+        } else {
+            let abs_total_nanos = (-total_nanos) as u128;
+            let abs_seconds = (abs_total_nanos / (nanos_per_second as u128)) as u64;
+            let abs_nanos = (abs_total_nanos % (nanos_per_second as u128)) as u32;
+            UNIX_EPOCH - Duration::new(abs_seconds, abs_nanos)
+        };
+
+        Ok((system_time, seconds_used + nanos_used))
+    }
+}
+
+#[cfg(feature = "uuid")]
+impl WireDecode for Uuid {
+    #[inline]
+    fn decode_from(buf: &[u8]) -> DecodeResult<Self> {
+        let (hi, hi_used) = u64::decode_from(buf)?;
+        let (lo, lo_used) = u64::decode_from(buf.get(hi_used..).ok_or(DecodeError::BufferTooSmall)?)?;
+        let mut bytes = [0u8; 16];
+        bytes[..8].copy_from_slice(&hi.to_be_bytes());
+        bytes[8..].copy_from_slice(&lo.to_be_bytes());
+        Ok((Uuid::from_bytes(bytes), hi_used + lo_used))
+    }
+}
+
+#[cfg(feature = "url")]
+impl WireDecode for Url {
+    #[inline]
+    fn decode_from(buf: &[u8]) -> DecodeResult<Self> {
+        let (string, used) = String::decode_from(buf)?;
+        let url = Url::parse(&string).map_err(|_| DecodeError::InvalidValue)?;
+        Ok((url, used))
+    }
+}
+
 #[cfg(feature = "chrono")]
 impl WireDecode for DateTime<Utc> {
     #[inline]
     fn decode_from(buf: &[u8]) -> DecodeResult<Self> {
-        let (millis, used) = i64::decode_from(buf)?;
-        let date_time = DateTime::from_timestamp_millis(millis).ok_or(DecodeError::InvalidValue)?;
-        Ok((date_time, used))
+        let (seconds, seconds_used) = i64::decode_from(buf)?;
+        let (nanos, nanos_used) = u32::decode_from(buf.get(seconds_used..).ok_or(DecodeError::BufferTooSmall)?)?;
+        let date_time = DateTime::from_timestamp(seconds, nanos).ok_or(DecodeError::InvalidValue)?;
+        Ok((date_time, seconds_used + nanos_used))
     }
 }
 

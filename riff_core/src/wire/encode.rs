@@ -3,12 +3,20 @@ use crate::wire::constants::*;
 #[cfg(feature = "chrono")]
 use chrono::{DateTime, Utc};
 
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+#[cfg(feature = "uuid")]
+use uuid::Uuid;
+
 #[cfg(feature = "uom")]
 use uom::si::{
     f64::{Length, Velocity},
     length::meter,
     velocity::kilometer_per_hour,
 };
+
+#[cfg(feature = "url")]
+use url::Url;
 
 pub trait WireSize {
     fn is_fixed_size() -> bool
@@ -178,6 +186,121 @@ impl WireEncode for String {
     }
 }
 
+impl WireSize for Duration {
+    #[inline]
+    fn is_fixed_size() -> bool {
+        true
+    }
+
+    #[inline]
+    fn fixed_size() -> Option<usize> {
+        Some(12)
+    }
+
+    #[inline]
+    fn wire_size(&self) -> usize {
+        12
+    }
+}
+
+impl WireEncode for Duration {
+    #[inline]
+    fn encode_to(&self, buf: &mut [u8]) -> usize {
+        let seconds = self.as_secs();
+        let nanos = self.subsec_nanos();
+        seconds.encode_to(&mut buf[..8]);
+        nanos.encode_to(&mut buf[8..12]);
+        12
+    }
+}
+
+impl WireSize for SystemTime {
+    #[inline]
+    fn is_fixed_size() -> bool {
+        true
+    }
+
+    #[inline]
+    fn fixed_size() -> Option<usize> {
+        Some(12)
+    }
+
+    #[inline]
+    fn wire_size(&self) -> usize {
+        12
+    }
+}
+
+impl WireEncode for SystemTime {
+    #[inline]
+    fn encode_to(&self, buf: &mut [u8]) -> usize {
+        let nanos_per_second = 1_000_000_000i128;
+        let total_nanos: i128 = match self.duration_since(UNIX_EPOCH) {
+            Ok(duration) => {
+                (duration.as_secs() as i128) * nanos_per_second + (duration.subsec_nanos() as i128)
+            }
+            Err(error) => {
+                let duration = error.duration();
+                -((duration.as_secs() as i128) * nanos_per_second + (duration.subsec_nanos() as i128))
+            }
+        };
+
+        let seconds = total_nanos.div_euclid(nanos_per_second) as i64;
+        let nanos = total_nanos.rem_euclid(nanos_per_second) as u32;
+
+        seconds.encode_to(&mut buf[..8]);
+        nanos.encode_to(&mut buf[8..12]);
+        12
+    }
+}
+
+#[cfg(feature = "uuid")]
+impl WireSize for Uuid {
+    #[inline]
+    fn is_fixed_size() -> bool {
+        true
+    }
+
+    #[inline]
+    fn fixed_size() -> Option<usize> {
+        Some(16)
+    }
+
+    #[inline]
+    fn wire_size(&self) -> usize {
+        16
+    }
+}
+
+#[cfg(feature = "uuid")]
+impl WireEncode for Uuid {
+    #[inline]
+    fn encode_to(&self, buf: &mut [u8]) -> usize {
+        let bytes = self.as_bytes();
+        let hi = u64::from_be_bytes(bytes[..8].try_into().expect("uuid hi bytes"));
+        let lo = u64::from_be_bytes(bytes[8..].try_into().expect("uuid lo bytes"));
+        hi.encode_to(&mut buf[..8]);
+        lo.encode_to(&mut buf[8..16]);
+        16
+    }
+}
+
+#[cfg(feature = "url")]
+impl WireSize for Url {
+    #[inline]
+    fn wire_size(&self) -> usize {
+        self.as_str().wire_size()
+    }
+}
+
+#[cfg(feature = "url")]
+impl WireEncode for Url {
+    #[inline]
+    fn encode_to(&self, buf: &mut [u8]) -> usize {
+        self.as_str().encode_to(buf)
+    }
+}
+
 #[cfg(feature = "chrono")]
 impl WireSize for DateTime<Utc> {
     #[inline]
@@ -187,12 +310,12 @@ impl WireSize for DateTime<Utc> {
 
     #[inline]
     fn fixed_size() -> Option<usize> {
-        Some(8)
+        Some(12)
     }
 
     #[inline]
     fn wire_size(&self) -> usize {
-        8
+        12
     }
 }
 
@@ -200,7 +323,11 @@ impl WireSize for DateTime<Utc> {
 impl WireEncode for DateTime<Utc> {
     #[inline]
     fn encode_to(&self, buf: &mut [u8]) -> usize {
-        self.timestamp_millis().encode_to(buf)
+        let seconds = self.timestamp();
+        let nanos = self.timestamp_subsec_nanos();
+        seconds.encode_to(&mut buf[..8]);
+        nanos.encode_to(&mut buf[8..12]);
+        12
     }
 }
 
