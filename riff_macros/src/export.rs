@@ -3,6 +3,7 @@ use quote::quote;
 use riff_ffi_rules::naming;
 use syn::ItemFn;
 
+use crate::callback_registry;
 use crate::custom_types;
 use crate::params::{FfiParams, transform_params, transform_params_async};
 use crate::returns::{
@@ -71,6 +72,10 @@ pub fn ffi_export_impl(item: TokenStream) -> TokenStream {
         Ok(registry) => registry,
         Err(error) => return error.to_compile_error().into(),
     };
+    let callback_registry = match callback_registry::registry_for_current_crate() {
+        Ok(registry) => registry,
+        Err(error) => return error.to_compile_error().into(),
+    };
 
     let fn_name = &input.sig.ident;
     let fn_inputs = &input.sig.inputs;
@@ -79,7 +84,7 @@ pub fn ffi_export_impl(item: TokenStream) -> TokenStream {
     let is_async = input.sig.asyncness.is_some();
 
     if is_async {
-        return generate_async_export(&input, &custom_types);
+        return generate_async_export(&input, &custom_types, &callback_registry);
     }
 
     let export_name = format!("{}_{}", naming::ffi_prefix(), fn_name);
@@ -89,7 +94,7 @@ pub fn ffi_export_impl(item: TokenStream) -> TokenStream {
         ffi_params,
         conversions,
         call_args,
-    } = transform_params(fn_inputs, &custom_types);
+    } = transform_params(fn_inputs, &custom_types, &callback_registry);
 
     let has_params = !ffi_params.is_empty();
     let has_conversions = !conversions.is_empty();
@@ -230,6 +235,7 @@ pub fn ffi_export_impl(item: TokenStream) -> TokenStream {
 fn generate_async_export(
     input: &ItemFn,
     custom_types: &custom_types::CustomTypeRegistry,
+    callback_registry: &callback_registry::CallbackTraitRegistry,
 ) -> TokenStream {
     let fn_name = &input.sig.ident;
     let fn_inputs = &input.sig.inputs;
@@ -244,7 +250,7 @@ fn generate_async_export(
     let cancel_ident = syn::Ident::new(&format!("{}_cancel", base_name), fn_name.span());
     let free_ident = syn::Ident::new(&format!("{}_free", base_name), fn_name.span());
 
-    let params = transform_params_async(fn_inputs, custom_types);
+    let params = transform_params_async(fn_inputs, custom_types, callback_registry);
     let return_abi = classify_async_return_abi(fn_output);
 
     let ffi_return_type = get_async_ffi_return_type(&return_abi);

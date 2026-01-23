@@ -1,12 +1,15 @@
+use proc_macro2::Span;
 use quote::quote;
 use syn::{FnArg, Pat};
 
+use crate::callback_registry::CallbackTraitRegistry;
 use crate::custom_types::{
     CustomTypeRegistry, contains_custom_types, from_wire_expr_owned, to_wire_expr_owned,
     wire_type_for,
 };
 use crate::util::{
-    ParamTransform, classify_param_transform, is_primitive_vec_inner, len_ident, ptr_ident,
+    ParamTransform, classify_param_transform, foreign_trait_path, is_primitive_vec_inner,
+    len_ident, ptr_ident,
 };
 
 pub struct FfiParams {
@@ -15,9 +18,48 @@ pub struct FfiParams {
     pub call_args: Vec<proc_macro2::TokenStream>,
 }
 
+struct ImplTraitResolution {
+    foreign_type: proc_macro2::TokenStream,
+    error: Option<proc_macro2::TokenStream>,
+}
+
+fn impl_trait_resolution(
+    trait_path: &syn::Path,
+    callback_registry: &CallbackTraitRegistry,
+) -> ImplTraitResolution {
+    if let Some(resolution) = callback_registry.resolve(trait_path) {
+        let foreign_path = resolution.foreign_path;
+        if resolution.is_object_safe {
+            return ImplTraitResolution {
+                foreign_type: quote! {
+                    <dyn #trait_path as ::riff::__private::CallbackForeignType>::Foreign
+                },
+                error: None,
+            };
+        }
+        return ImplTraitResolution {
+            foreign_type: quote! { #foreign_path },
+            error: None,
+        };
+    }
+
+    let foreign_path = foreign_trait_path(trait_path);
+    let trait_name = quote!(#trait_path).to_string();
+    let message = format!(
+        "riff: cannot resolve callback trait `impl {}`. If this is a cross-crate async callback, use the full module path or make the trait object-safe with #[async_trait], e.g. `impl crate::path::to::{}` or `Box<dyn {}>`.",
+        trait_name, trait_name, trait_name
+    );
+    let message_lit = syn::LitStr::new(&message, Span::call_site());
+    ImplTraitResolution {
+        foreign_type: quote! { #foreign_path },
+        error: Some(quote! { compile_error!(#message_lit); }),
+    }
+}
+
 pub fn transform_params(
     inputs: &syn::punctuated::Punctuated<FnArg, syn::Token![,]>,
     custom_types: &CustomTypeRegistry,
+    callback_registry: &CallbackTraitRegistry,
 ) -> FfiParams {
     inputs
         .iter()
@@ -329,6 +371,24 @@ pub fn transform_params(
 
                     acc.call_args.push(quote! { #name });
                 }
+                ParamTransform::ImplTrait(trait_path) => {
+                    let resolution = impl_trait_resolution(&trait_path, callback_registry);
+                    if let Some(error) = resolution.error {
+                        acc.conversions.push(error);
+                    }
+                    let foreign_type = resolution.foreign_type;
+
+                    acc.ffi_params.push(quote! { #name: ::riff::__private::CallbackHandle });
+
+                    acc.conversions.push(quote! {
+                        assert!(!#name.is_null(), concat!(stringify!(#name), ": null callback handle"));
+                        let #name = unsafe {
+                            <#foreign_type as ::riff::__private::FromCallbackHandle>::box_from_callback_handle(#name)
+                        };
+                    });
+
+                    acc.call_args.push(quote! { *#name });
+                }
                 ParamTransform::PassThrough => {
                     let ty = &pat_type.ty;
                     acc.ffi_params.push(quote! { #name: #ty });
@@ -351,6 +411,7 @@ pub struct AsyncFfiParams {
 pub fn transform_params_async(
     inputs: &syn::punctuated::Punctuated<FnArg, syn::Token![,]>,
     custom_types: &CustomTypeRegistry,
+    callback_registry: &CallbackTraitRegistry,
 ) -> AsyncFfiParams {
     inputs
         .iter()
@@ -584,6 +645,26 @@ pub fn transform_params_async(
                     acc.move_vars.push(name.clone());
                     acc.call_args.push(quote! { #name });
                 }
+                ParamTransform::ImplTrait(trait_path) => {
+                    let resolution = impl_trait_resolution(&trait_path, callback_registry);
+                    if let Some(error) = resolution.error {
+                        acc.pre_spawn.push(error);
+                    }
+                    let foreign_type = resolution.foreign_type;
+                    let boxed_name = syn::Ident::new(&format!("{}_boxed", name), name.span());
+
+                    acc.ffi_params.push(quote! { #name: ::riff::__private::CallbackHandle });
+
+                    acc.pre_spawn.push(quote! {
+                        assert!(!#name.is_null(), concat!(stringify!(#name), ": null callback handle"));
+                        let #boxed_name = unsafe {
+                            <#foreign_type as ::riff::__private::FromCallbackHandle>::box_from_callback_handle(#name)
+                        };
+                    });
+
+                    acc.move_vars.push(boxed_name.clone());
+                    acc.call_args.push(quote! { *#boxed_name });
+                }
                 ParamTransform::PassThrough => {
                     let ty = &pat_type.ty;
                     acc.ffi_params.push(quote! { #name: #ty });
@@ -599,6 +680,7 @@ pub fn transform_params_async(
 pub fn transform_method_params(
     inputs: impl Iterator<Item = syn::FnArg>,
     custom_types: &CustomTypeRegistry,
+    callback_registry: &CallbackTraitRegistry,
 ) -> FfiParams {
     inputs
         .filter_map(|arg| match arg {
@@ -909,6 +991,24 @@ pub fn transform_method_params(
 
                     acc.call_args.push(quote! { #name });
                 }
+                ParamTransform::ImplTrait(trait_path) => {
+                    let resolution = impl_trait_resolution(&trait_path, callback_registry);
+                    if let Some(error) = resolution.error {
+                        acc.conversions.push(error);
+                    }
+                    let foreign_type = resolution.foreign_type;
+
+                    acc.ffi_params.push(quote! { #name: ::riff::__private::CallbackHandle });
+
+                    acc.conversions.push(quote! {
+                        assert!(!#name.is_null(), concat!(stringify!(#name), ": null callback handle"));
+                        let #name = unsafe {
+                            <#foreign_type as ::riff::__private::FromCallbackHandle>::box_from_callback_handle(#name)
+                        };
+                    });
+
+                    acc.call_args.push(quote! { *#name });
+                }
                 ParamTransform::PassThrough => {
                     let ty = &pat_type.ty;
                     acc.ffi_params.push(quote! { #name: #ty });
@@ -923,6 +1023,7 @@ pub fn transform_method_params(
 pub fn transform_method_params_async(
     inputs: impl Iterator<Item = syn::FnArg>,
     custom_types: &CustomTypeRegistry,
+    callback_registry: &CallbackTraitRegistry,
 ) -> AsyncFfiParams {
     inputs
         .filter_map(|arg| match arg {
@@ -1127,6 +1228,26 @@ pub fn transform_method_params_async(
 
                     acc.move_vars.push(name.clone());
                     acc.call_args.push(quote! { #name });
+                }
+                ParamTransform::ImplTrait(trait_path) => {
+                    let resolution = impl_trait_resolution(&trait_path, callback_registry);
+                    if let Some(error) = resolution.error {
+                        acc.pre_spawn.push(error);
+                    }
+                    let foreign_type = resolution.foreign_type;
+                    let boxed_name = syn::Ident::new(&format!("{}_boxed", name), name.span());
+
+                    acc.ffi_params.push(quote! { #name: ::riff::__private::CallbackHandle });
+
+                    acc.pre_spawn.push(quote! {
+                        assert!(!#name.is_null(), concat!(stringify!(#name), ": null callback handle"));
+                        let #boxed_name = unsafe {
+                            <#foreign_type as ::riff::__private::FromCallbackHandle>::box_from_callback_handle(#name)
+                        };
+                    });
+
+                    acc.move_vars.push(boxed_name.clone());
+                    acc.call_args.push(quote! { *#boxed_name });
                 }
                 ParamTransform::PassThrough => {
                     let ty = &pat_type.ty;

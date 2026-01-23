@@ -3,6 +3,7 @@ use quote::quote;
 use riff_ffi_rules::naming;
 use syn::{FnArg, ReturnType, Type};
 
+use crate::callback_registry;
 use crate::custom_types;
 use crate::params::{FfiParams, transform_method_params, transform_method_params_async};
 use crate::returns::{
@@ -15,6 +16,10 @@ pub fn ffi_class_impl(item: TokenStream) -> TokenStream {
     let input = syn::parse_macro_input!(item as syn::ItemImpl);
 
     let custom_types = match custom_types::registry_for_current_crate() {
+        Ok(registry) => registry,
+        Err(error) => return error.to_compile_error().into(),
+    };
+    let callback_registry = match callback_registry::registry_for_current_crate() {
         Ok(registry) => registry,
         Err(error) => return error.to_compile_error().into(),
     };
@@ -59,6 +64,7 @@ pub fn ffi_class_impl(item: TokenStream) -> TokenStream {
                             &type_name_str,
                             method,
                             &custom_types,
+                            &callback_registry,
                         );
                     }
                     return generate_method_export(
@@ -66,6 +72,7 @@ pub fn ffi_class_impl(item: TokenStream) -> TokenStream {
                         &type_name_str,
                         method,
                         &custom_types,
+                        &callback_registry,
                     );
                 }
             }
@@ -191,6 +198,7 @@ fn generate_factory_constructor_export(
     class_name: &str,
     method: &syn::ImplItemFn,
     custom_types: &custom_types::CustomTypeRegistry,
+    callback_registry: &callback_registry::CallbackTraitRegistry,
 ) -> Option<proc_macro2::TokenStream> {
     let method_name = &method.sig.ident;
     let export_name_str = if method_name == "new" {
@@ -205,7 +213,7 @@ fn generate_factory_constructor_export(
         ffi_params,
         conversions,
         call_args,
-    } = transform_method_params(inputs, custom_types);
+    } = transform_method_params(inputs, custom_types, callback_registry);
 
     let call_expr = quote! { #type_name::#method_name(#(#call_args),*) };
 
@@ -272,6 +280,7 @@ fn generate_method_export(
     class_name: &str,
     method: &syn::ImplItemFn,
     custom_types: &custom_types::CustomTypeRegistry,
+    callback_registry: &callback_registry::CallbackTraitRegistry,
 ) -> Option<proc_macro2::TokenStream> {
     let method_name = &method.sig.ident;
     let export_name = syn::Ident::new(
@@ -293,9 +302,16 @@ fn generate_method_export(
                 class_name,
                 method,
                 custom_types,
+                callback_registry,
             );
         }
-        return generate_static_method_export(type_name, class_name, method, custom_types);
+        return generate_static_method_export(
+            type_name,
+            class_name,
+            method,
+            custom_types,
+            callback_registry,
+        );
     }
 
     let other_inputs = method.sig.inputs.iter().skip(1).cloned();
@@ -303,7 +319,7 @@ fn generate_method_export(
         ffi_params,
         conversions,
         call_args,
-    } = transform_method_params(other_inputs, custom_types);
+    } = transform_method_params(other_inputs, custom_types, callback_registry);
 
     let has_conversions = !conversions.is_empty();
 
@@ -403,6 +419,7 @@ fn generate_static_method_export(
     class_name: &str,
     method: &syn::ImplItemFn,
     custom_types: &custom_types::CustomTypeRegistry,
+    callback_registry: &callback_registry::CallbackTraitRegistry,
 ) -> Option<proc_macro2::TokenStream> {
     let method_name = &method.sig.ident;
     let export_name = syn::Ident::new(
@@ -415,7 +432,7 @@ fn generate_static_method_export(
         ffi_params,
         conversions,
         call_args,
-    } = transform_method_params(all_inputs, custom_types);
+    } = transform_method_params(all_inputs, custom_types, callback_registry);
 
     let has_conversions = !conversions.is_empty();
     let call_expr = quote! { #type_name::#method_name(#(#call_args),*) };
@@ -515,6 +532,7 @@ fn generate_async_method_export(
     class_name: &str,
     method: &syn::ImplItemFn,
     custom_types: &custom_types::CustomTypeRegistry,
+    callback_registry: &callback_registry::CallbackTraitRegistry,
 ) -> Option<proc_macro2::TokenStream> {
     let method_name = &method.sig.ident;
     let method_name_str = method_name.to_string();
@@ -538,7 +556,7 @@ fn generate_async_method_export(
     let free_ident = syn::Ident::new(&format!("{}_free", base_name), method_name.span());
 
     let other_inputs = method.sig.inputs.iter().skip(1).cloned();
-    let params = transform_method_params_async(other_inputs, custom_types);
+    let params = transform_method_params_async(other_inputs, custom_types, callback_registry);
 
     let fn_output = &method.sig.output;
     let return_abi = classify_async_return_abi(fn_output);
