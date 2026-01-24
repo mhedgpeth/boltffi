@@ -2,6 +2,7 @@
 
 pub mod build;
 pub mod cheader;
+pub mod ir;
 pub mod kotlin;
 pub mod model;
 pub mod scan;
