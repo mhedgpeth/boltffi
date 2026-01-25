@@ -389,8 +389,10 @@ impl ResultView {
             Type::Vec(inner) => match inner.as_ref() {
                 Type::Primitive(p) => ResultOkKind::VecPrimitive {
                     primitive: *p,
-                    len_fn: riff_ffi_rules::naming::function_ffi_vec_len(func_name),
-                    copy_fn: riff_ffi_rules::naming::function_ffi_vec_copy_into(func_name),
+                    len_fn: riff_ffi_rules::naming::function_ffi_vec_len(func_name)
+                        .into_string(),
+                    copy_fn: riff_ffi_rules::naming::function_ffi_vec_copy_into(func_name)
+                        .into_string(),
                 },
                 Type::Record(name) => {
                     let struct_size = module
@@ -402,8 +404,10 @@ impl ResultView {
                     ResultOkKind::VecRecord {
                         name: NamingConvention::class_name(name),
                         struct_size,
-                        len_fn: riff_ffi_rules::naming::function_ffi_vec_len(func_name),
-                        copy_fn: riff_ffi_rules::naming::function_ffi_vec_copy_into(func_name),
+                        len_fn: riff_ffi_rules::naming::function_ffi_vec_len(func_name)
+                            .into_string(),
+                        copy_fn: riff_ffi_rules::naming::function_ffi_vec_copy_into(func_name)
+                            .into_string(),
                     }
                 }
                 _ => ResultOkKind::Void,
@@ -749,11 +753,12 @@ impl JniReturnKind {
                 jni_type: TypeMapper::c_jni_type(&Type::Primitive(*primitive)),
             },
             Some(Type::String) => Self::String {
-                ffi_name: riff_ffi_rules::naming::function_ffi_name(func_name),
+                ffi_name: riff_ffi_rules::naming::function_ffi_name(func_name).into_string(),
             },
             Some(Type::Vec(_)) => Self::Vec {
-                len_fn: riff_ffi_rules::naming::function_ffi_vec_len(func_name),
-                copy_fn: riff_ffi_rules::naming::function_ffi_vec_copy_into(func_name),
+                len_fn: riff_ffi_rules::naming::function_ffi_vec_len(func_name).into_string(),
+                copy_fn: riff_ffi_rules::naming::function_ffi_vec_copy_into(func_name)
+                    .into_string(),
             },
             Some(Type::Enum(_)) => Self::CStyleEnum,
             _ => Self::Void,
@@ -923,7 +928,7 @@ impl JniParamInfo {
                         .iter()
                         .any(|t| t.name == *name)
                         .then(|| HandleKind::Callback {
-                            create_fn: naming::callback_create_fn(name),
+                            create_fn: naming::callback_create_fn(name).into_string(),
                         })
                 })
                 .unwrap_or(HandleKind::Opaque),
@@ -932,13 +937,13 @@ impl JniParamInfo {
                 Type::BoxedTrait(name) => module
                     .and_then(|module| {
                         module
-                            .callback_traits
-                            .iter()
-                            .any(|t| t.name == *name)
-                            .then(|| HandleKind::Callback {
-                                create_fn: naming::callback_create_fn(name),
-                            })
-                    })
+                        .callback_traits
+                        .iter()
+                        .any(|t| t.name == *name)
+                        .then(|| HandleKind::Callback {
+                            create_fn: naming::callback_create_fn(name).into_string(),
+                        })
+                })
                     .unwrap_or(HandleKind::Opaque),
                 _ => HandleKind::None,
             },

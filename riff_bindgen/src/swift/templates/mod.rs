@@ -50,7 +50,7 @@ impl MethodContext {
             module,
         );
         Self {
-            ffi_name: naming::method_ffi_name(&class.name, &method.name),
+            ffi_name: naming::method_ffi_name(&class.name, &method.name).into_string(),
             wrappers_open: call_builder.build_wrappers_open(),
             wrappers_open_throwing: call_builder.build_wrappers_open_throwing(),
             wrappers_close: call_builder.build_wrappers_close(),
@@ -67,7 +67,7 @@ impl MethodContext {
             module,
         );
         Self {
-            ffi_name: naming::method_ffi_name(&class.name, &method.name),
+            ffi_name: naming::method_ffi_name(&class.name, &method.name).into_string(),
             wrappers_open: call_builder.build_wrappers_open(),
             wrappers_open_throwing: call_builder.build_wrappers_open_throwing(),
             wrappers_close: call_builder.build_wrappers_close(),

@@ -29,7 +29,7 @@ impl ClassTemplate {
             doc: class.doc.clone(),
             deprecated: class.deprecated.is_some(),
             deprecated_message: class.deprecated.as_ref().and_then(|d| d.message.clone()),
-            ffi_free: naming::class_ffi_free(&class.name),
+            ffi_free: naming::class_ffi_free(&class.name).into_string(),
             constructors: class
                 .constructors
                 .iter()
@@ -49,9 +49,9 @@ impl ClassTemplate {
                         doc: ctor.doc.clone(),
                         name: NamingConvention::method_name(&ctor.name),
                         ffi_name: if is_factory {
-                            naming::method_ffi_name(&class.name, &ctor.name)
+                            naming::method_ffi_name(&class.name, &ctor.name).into_string()
                         } else {
-                            naming::class_ffi_new(&class.name)
+                            naming::class_ffi_new(&class.name).into_string()
                         },
                         is_failable: ctor.is_fallible,
                         is_factory,

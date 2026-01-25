@@ -95,8 +95,14 @@ mod tests {
         let module = create_test_module();
         let class = module.find_class("Sensor").unwrap();
 
-        assert_eq!(naming::class_ffi_new(&class.name), "riff_sensor_new");
-        assert_eq!(naming::class_ffi_free(&class.name), "riff_sensor_free");
+        assert_eq!(
+            naming::class_ffi_new(&class.name).as_str(),
+            "riff_sensor_new"
+        );
+        assert_eq!(
+            naming::class_ffi_free(&class.name).as_str(),
+            "riff_sensor_free"
+        );
     }
 
     #[test]
@@ -111,11 +117,11 @@ mod tests {
             .unwrap();
 
         assert_eq!(
-            naming::method_ffi_name(&class.name, &method.name),
+            naming::method_ffi_name(&class.name, &method.name).as_str(),
             "riff_sensor_predict_next"
         );
         assert_eq!(
-            naming::method_ffi_poll(&class.name, &method.name),
+            naming::method_ffi_poll(&class.name, &method.name).as_str(),
             "riff_sensor_predict_next_poll"
         );
     }

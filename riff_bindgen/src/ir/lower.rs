@@ -1,6 +1,12 @@
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 
+use riff_ffi_rules::naming;
+
+use crate::ir::callback_plan::{
+    CallbackInvocationPlan, CallbackMethodPlan, CallbackParamPlan, CallbackParamStrategy,
+    CallbackReturnPlan,
+};
 use crate::ir::codec::{
     BlittableField, CodecPlan, EncodedField, EnumLayout, RecordLayout, VariantLayout,
     VariantPayloadLayout, VecLayout,
@@ -147,12 +153,120 @@ impl<'c> Lowerer<'c> {
                 };
 
                 CallPlan {
-                    target: CallTarget::VtableField(method.id.clone()),
+                    target: CallTarget::VtableField(naming::vtable_field_name(method.id.as_str())),
                     params,
                     kind,
                 }
             })
             .collect()
+    }
+
+    pub fn lower_callback_invocation(
+        &self,
+        callback: &CallbackTraitDef,
+    ) -> CallbackInvocationPlan {
+        let vtable_type = naming::callback_vtable_name(callback.id.as_str());
+        let register_fn = naming::callback_register_fn(callback.id.as_str());
+        let create_fn = naming::callback_create_fn(callback.id.as_str());
+        let methods = callback
+            .methods
+            .iter()
+            .map(|method| {
+                let params = method
+                    .params
+                    .iter()
+                    .map(|p| self.lower_callback_param(p))
+                    .collect();
+
+                let returns = self.lower_callback_return(&method.returns, method.is_async);
+                let vtable_field = naming::vtable_field_name(method.id.as_str());
+
+                CallbackMethodPlan {
+                    id: method.id.clone(),
+                    vtable_field,
+                    params,
+                    returns,
+                    is_async: method.is_async,
+                }
+            })
+            .collect();
+
+        CallbackInvocationPlan {
+            callback_id: callback.id.clone(),
+            vtable_type,
+            register_fn,
+            create_fn,
+            methods,
+        }
+    }
+
+    fn lower_callback_param(&self, param: &ParamDef) -> CallbackParamPlan {
+        let strategy = match &param.type_expr {
+            TypeExpr::Primitive(p) => CallbackParamStrategy::Direct(DirectPlan {
+                abi_type: primitive_to_abi(*p),
+            }),
+            _ => CallbackParamStrategy::Encoded {
+                codec: self.build_codec(&param.type_expr),
+            },
+        };
+
+        CallbackParamPlan {
+            name: param.name.clone(),
+            strategy,
+        }
+    }
+
+    fn lower_callback_return(&self, returns: &ReturnDef, is_async: bool) -> CallbackReturnPlan {
+        match returns {
+            ReturnDef::Void => {
+                if is_async {
+                    CallbackReturnPlan::Async {
+                        completion_codec: None,
+                    }
+                } else {
+                    CallbackReturnPlan::Void
+                }
+            }
+            ReturnDef::Value(ty) => {
+                if is_async {
+                    CallbackReturnPlan::Async {
+                        completion_codec: Some(self.build_codec(ty)),
+                    }
+                } else if matches!(ty, TypeExpr::Primitive(_)) {
+                    CallbackReturnPlan::Direct(DirectPlan {
+                        abi_type: self.type_to_abi(ty),
+                    })
+                } else {
+                    CallbackReturnPlan::Encoded {
+                        codec: self.build_codec(ty),
+                    }
+                }
+            }
+            ReturnDef::Result { ok, err } => {
+                if is_async {
+                    CallbackReturnPlan::Async {
+                        completion_codec: Some(CodecPlan::Result {
+                            ok: Box::new(self.build_codec(ok)),
+                            err: Box::new(self.build_codec(err)),
+                        }),
+                    }
+                } else {
+                    CallbackReturnPlan::Encoded {
+                        codec: CodecPlan::Result {
+                            ok: Box::new(self.build_codec(ok)),
+                            err: Box::new(self.build_codec(err)),
+                        },
+                    }
+                }
+            }
+        }
+    }
+
+    fn type_to_abi(&self, ty: &TypeExpr) -> AbiType {
+        match ty {
+            TypeExpr::Primitive(p) => primitive_to_abi(*p),
+            _ => AbiType::Pointer,
+        }
     }
 
     fn build_async_plan(&self, returns: &ReturnDef) -> AsyncPlan {
@@ -487,28 +601,26 @@ impl<'c> Lowerer<'c> {
         size
     }
 
-    fn function_symbol(&self, id: &FunctionId) -> String {
-        format!("{}_{}", self.contract.package.name, id.as_str())
+    fn function_symbol(&self, id: &FunctionId) -> naming::Name<naming::GlobalSymbol> {
+        naming::function_ffi_name(id.as_str())
     }
 
-    fn method_symbol(&self, class_id: &ClassId, method_id: &MethodId) -> String {
-        format!(
-            "{}_{}_{}",
-            self.contract.package.name,
-            class_id.as_str(),
-            method_id.as_str()
-        )
+    fn method_symbol(
+        &self,
+        class_id: &ClassId,
+        method_id: &MethodId,
+    ) -> naming::Name<naming::GlobalSymbol> {
+        naming::method_ffi_name(class_id.as_str(), method_id.as_str())
     }
 
-    fn constructor_symbol(&self, class_id: &ClassId, name: Option<&MethodId>) -> String {
+    fn constructor_symbol(
+        &self,
+        class_id: &ClassId,
+        name: Option<&MethodId>,
+    ) -> naming::Name<naming::GlobalSymbol> {
         match name {
-            Some(n) => format!(
-                "{}_{}_{}",
-                self.contract.package.name,
-                class_id.as_str(),
-                n.as_str()
-            ),
-            None => format!("{}_{}_new", self.contract.package.name, class_id.as_str()),
+            Some(n) => naming::method_ffi_name(class_id.as_str(), n.as_str()),
+            None => naming::class_ffi_new(class_id.as_str()),
         }
     }
 }
@@ -607,6 +719,12 @@ pub fn lower_contract(contract: &FfiContract) -> LoweredContract {
         .map(|cb| (cb.id.clone(), lowerer.lower_callback(cb)))
         .collect();
 
+    let callback_invocations = contract
+        .catalog
+        .all_callbacks()
+        .map(|cb| (cb.id.clone(), lowerer.lower_callback_invocation(cb)))
+        .collect();
+
     let record_codecs = contract
         .catalog
         .all_records()
@@ -634,6 +752,7 @@ pub fn lower_contract(contract: &FfiContract) -> LoweredContract {
         methods,
         constructors,
         callbacks,
+        callback_invocations,
         record_codecs,
         enum_codecs,
     }
@@ -644,6 +763,7 @@ pub struct LoweredContract {
     pub methods: HashMap<(ClassId, MethodId), CallPlan>,
     pub constructors: HashMap<(ClassId, usize), CallPlan>,
     pub callbacks: HashMap<CallbackId, Vec<CallPlan>>,
+    pub callback_invocations: HashMap<CallbackId, CallbackInvocationPlan>,
     pub record_codecs: HashMap<RecordId, CodecPlan>,
     pub enum_codecs: HashMap<EnumId, CodecPlan>,
 }
@@ -656,6 +776,7 @@ mod tests {
         CallbackMethodDef, ClassDef, ConstructorDef, FieldDef, FunctionDef, MethodDef, ParamDef,
         ParamPassing, Receiver, RecordDef, ReturnDef,
     };
+    use riff_ffi_rules::naming;
     use crate::ir::ids::{
         CallbackId, ClassId, FieldName, FunctionId, MethodId, ParamName, RecordId,
     };
@@ -1011,7 +1132,10 @@ mod tests {
 
         let plan = lowerer.lower_function(&func);
 
-        assert!(matches!(&plan.target, CallTarget::GlobalSymbol(s) if s == "test_greet"));
+        assert!(matches!(
+            &plan.target,
+            CallTarget::GlobalSymbol(s) if s.as_str() == naming::function_ffi_name("greet").as_str()
+        ));
         assert_eq!(plan.params.len(), 1);
         assert!(matches!(plan.kind, CallPlanKind::Sync { .. }));
     }
@@ -1194,7 +1318,7 @@ mod tests {
         assert_eq!(plans.len(), 1);
         assert!(matches!(
             &plans[0].target,
-            CallTarget::VtableField(id) if id.as_str() == "on_event"
+            CallTarget::VtableField(id) if id.as_str() == naming::vtable_field_name("on_event").as_str()
         ));
     }
 
@@ -1626,7 +1750,10 @@ mod tests {
 
         match &plan.target {
             CallTarget::GlobalSymbol(s) => {
-                assert_eq!(s, "test_Service_start");
+                assert_eq!(
+                    s.as_str(),
+                    naming::method_ffi_name("Service", "start").as_str()
+                );
             }
             _ => panic!("expected GlobalSymbol"),
         }
@@ -1656,7 +1783,9 @@ mod tests {
         };
         let plan = lowerer.lower_constructor(class, &default_ctor);
         match &plan.target {
-            CallTarget::GlobalSymbol(s) => assert_eq!(s, "test_Factory_new"),
+            CallTarget::GlobalSymbol(s) => {
+                assert_eq!(s.as_str(), naming::class_ffi_new("Factory").as_str())
+            }
             _ => panic!("expected GlobalSymbol"),
         }
 
@@ -1669,7 +1798,12 @@ mod tests {
         };
         let plan = lowerer.lower_constructor(class, &named_ctor);
         match &plan.target {
-            CallTarget::GlobalSymbol(s) => assert_eq!(s, "test_Factory_with_config"),
+            CallTarget::GlobalSymbol(s) => {
+                assert_eq!(
+                    s.as_str(),
+                    naming::method_ffi_name("Factory", "with_config").as_str()
+                )
+            }
             _ => panic!("expected GlobalSymbol"),
         }
     }

@@ -2,6 +2,58 @@ pub const FFI_PREFIX: &str = "riff";
 
 pub mod naming {
     use super::FFI_PREFIX;
+    use std::fmt;
+    use std::marker::PhantomData;
+
+    #[derive(Clone, Debug, Eq, Hash, PartialEq)]
+    pub struct Name<K>(String, PhantomData<K>);
+
+    impl<K> Name<K> {
+        pub fn new(value: String) -> Self {
+            Self(value, PhantomData)
+        }
+
+        pub fn as_str(&self) -> &str {
+            self.0.as_str()
+        }
+
+        pub fn into_string(self) -> String {
+            self.0
+        }
+    }
+
+    impl<K> fmt::Display for Name<K> {
+        fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+            formatter.write_str(self.as_str())
+        }
+    }
+
+    impl<K> AsRef<str> for Name<K> {
+        fn as_ref(&self) -> &str {
+            self.as_str()
+        }
+    }
+
+    impl<K> From<Name<K>> for String {
+        fn from(name: Name<K>) -> Self {
+            name.0
+        }
+    }
+
+    #[derive(Clone, Debug, Eq, Hash, PartialEq)]
+    pub struct GlobalSymbol;
+    #[derive(Clone, Debug, Eq, Hash, PartialEq)]
+    pub struct VtableField;
+    #[derive(Clone, Debug, Eq, Hash, PartialEq)]
+    pub struct VtableType;
+    #[derive(Clone, Debug, Eq, Hash, PartialEq)]
+    pub struct RegisterFn;
+    #[derive(Clone, Debug, Eq, Hash, PartialEq)]
+    pub struct CreateFn;
+    #[derive(Clone, Debug, Eq, Hash, PartialEq)]
+    pub struct ForeignType;
+    #[derive(Clone, Debug, Eq, Hash, PartialEq)]
+    pub struct ClassPrefix;
 
     pub fn ffi_prefix() -> &'static str {
         FFI_PREFIX
@@ -54,112 +106,160 @@ pub mod naming {
         result
     }
 
-    pub fn class_ffi_prefix(class_name: &str) -> String {
-        format!("{}_{}", FFI_PREFIX, to_snake_case(class_name))
+    pub fn class_ffi_prefix(class_name: &str) -> Name<ClassPrefix> {
+        Name::new(format!("{}_{}", FFI_PREFIX, to_snake_case(class_name)))
     }
 
-    pub fn class_ffi_new(class_name: &str) -> String {
-        format!("{}_new", class_ffi_prefix(class_name))
+    pub fn class_ffi_new(class_name: &str) -> Name<GlobalSymbol> {
+        Name::new(format!("{}_new", class_ffi_prefix(class_name)))
     }
 
-    pub fn class_ffi_free(class_name: &str) -> String {
-        format!("{}_free", class_ffi_prefix(class_name))
+    pub fn class_ffi_free(class_name: &str) -> Name<GlobalSymbol> {
+        Name::new(format!("{}_free", class_ffi_prefix(class_name)))
     }
 
-    pub fn method_ffi_name(class_name: &str, method_name: &str) -> String {
-        format!("{}_{}", class_ffi_prefix(class_name), method_name)
+    pub fn method_ffi_name(class_name: &str, method_name: &str) -> Name<GlobalSymbol> {
+        Name::new(format!(
+            "{}_{}",
+            class_ffi_prefix(class_name),
+            method_name
+        ))
     }
 
-    pub fn method_ffi_poll(class_name: &str, method_name: &str) -> String {
-        format!("{}_poll", method_ffi_name(class_name, method_name))
+    pub fn method_ffi_poll(class_name: &str, method_name: &str) -> Name<GlobalSymbol> {
+        Name::new(format!("{}_poll", method_ffi_name(class_name, method_name)))
     }
 
-    pub fn method_ffi_complete(class_name: &str, method_name: &str) -> String {
-        format!("{}_complete", method_ffi_name(class_name, method_name))
+    pub fn method_ffi_complete(class_name: &str, method_name: &str) -> Name<GlobalSymbol> {
+        Name::new(format!(
+            "{}_complete",
+            method_ffi_name(class_name, method_name)
+        ))
     }
 
-    pub fn method_ffi_cancel(class_name: &str, method_name: &str) -> String {
-        format!("{}_cancel", method_ffi_name(class_name, method_name))
+    pub fn method_ffi_cancel(class_name: &str, method_name: &str) -> Name<GlobalSymbol> {
+        Name::new(format!(
+            "{}_cancel",
+            method_ffi_name(class_name, method_name)
+        ))
     }
 
-    pub fn method_ffi_free(class_name: &str, method_name: &str) -> String {
-        format!("{}_free", method_ffi_name(class_name, method_name))
+    pub fn method_ffi_free(class_name: &str, method_name: &str) -> Name<GlobalSymbol> {
+        Name::new(format!("{}_free", method_ffi_name(class_name, method_name)))
     }
 
-    pub fn function_ffi_name(func_name: &str) -> String {
-        format!("{}_{}", FFI_PREFIX, func_name)
+    pub fn function_ffi_name(func_name: &str) -> Name<GlobalSymbol> {
+        Name::new(format!("{}_{}", FFI_PREFIX, func_name))
     }
 
-    pub fn function_ffi_poll(func_name: &str) -> String {
-        format!("{}_poll", function_ffi_name(func_name))
+    pub fn function_ffi_poll(func_name: &str) -> Name<GlobalSymbol> {
+        Name::new(format!("{}_poll", function_ffi_name(func_name)))
     }
 
-    pub fn function_ffi_complete(func_name: &str) -> String {
-        format!("{}_complete", function_ffi_name(func_name))
+    pub fn function_ffi_complete(func_name: &str) -> Name<GlobalSymbol> {
+        Name::new(format!("{}_complete", function_ffi_name(func_name)))
     }
 
-    pub fn function_ffi_cancel(func_name: &str) -> String {
-        format!("{}_cancel", function_ffi_name(func_name))
+    pub fn function_ffi_cancel(func_name: &str) -> Name<GlobalSymbol> {
+        Name::new(format!("{}_cancel", function_ffi_name(func_name)))
     }
 
-    pub fn function_ffi_free(func_name: &str) -> String {
-        format!("{}_free", function_ffi_name(func_name))
+    pub fn function_ffi_free(func_name: &str) -> Name<GlobalSymbol> {
+        Name::new(format!("{}_free", function_ffi_name(func_name)))
     }
 
-    pub fn function_ffi_vec_len(func_name: &str) -> String {
-        format!("{}{}", function_ffi_name(func_name), vec_len_suffix())
+    pub fn function_ffi_vec_len(func_name: &str) -> Name<GlobalSymbol> {
+        Name::new(format!(
+            "{}{}",
+            function_ffi_name(func_name),
+            vec_len_suffix()
+        ))
     }
 
-    pub fn function_ffi_vec_copy_into(func_name: &str) -> String {
-        format!("{}{}", function_ffi_name(func_name), vec_copy_into_suffix())
+    pub fn function_ffi_vec_copy_into(func_name: &str) -> Name<GlobalSymbol> {
+        Name::new(format!(
+            "{}{}",
+            function_ffi_name(func_name),
+            vec_copy_into_suffix()
+        ))
     }
 
-    pub fn stream_ffi_subscribe(class_name: &str, stream_name: &str) -> String {
+    pub fn stream_ffi_subscribe(class_name: &str, stream_name: &str) -> Name<GlobalSymbol> {
         method_ffi_name(class_name, stream_name)
     }
 
-    pub fn stream_ffi_pop_batch(class_name: &str, stream_name: &str) -> String {
-        format!("{}_pop_batch", method_ffi_name(class_name, stream_name))
+    pub fn stream_ffi_pop_batch(class_name: &str, stream_name: &str) -> Name<GlobalSymbol> {
+        Name::new(format!(
+            "{}_pop_batch",
+            method_ffi_name(class_name, stream_name)
+        ))
     }
 
-    pub fn stream_ffi_wait(class_name: &str, stream_name: &str) -> String {
-        format!("{}_wait", method_ffi_name(class_name, stream_name))
+    pub fn stream_ffi_wait(class_name: &str, stream_name: &str) -> Name<GlobalSymbol> {
+        Name::new(format!(
+            "{}_wait",
+            method_ffi_name(class_name, stream_name)
+        ))
     }
 
-    pub fn stream_ffi_poll(class_name: &str, stream_name: &str) -> String {
-        format!("{}_poll", method_ffi_name(class_name, stream_name))
+    pub fn stream_ffi_poll(class_name: &str, stream_name: &str) -> Name<GlobalSymbol> {
+        Name::new(format!(
+            "{}_poll",
+            method_ffi_name(class_name, stream_name)
+        ))
     }
 
-    pub fn stream_ffi_unsubscribe(class_name: &str, stream_name: &str) -> String {
-        format!("{}_unsubscribe", method_ffi_name(class_name, stream_name))
+    pub fn stream_ffi_unsubscribe(
+        class_name: &str,
+        stream_name: &str,
+    ) -> Name<GlobalSymbol> {
+        Name::new(format!(
+            "{}_unsubscribe",
+            method_ffi_name(class_name, stream_name)
+        ))
     }
 
-    pub fn stream_ffi_free(class_name: &str, stream_name: &str) -> String {
-        format!("{}_free", method_ffi_name(class_name, stream_name))
+    pub fn stream_ffi_free(class_name: &str, stream_name: &str) -> Name<GlobalSymbol> {
+        Name::new(format!(
+            "{}_free",
+            method_ffi_name(class_name, stream_name)
+        ))
     }
 
-    pub fn trait_ffi_free(trait_name: &str) -> String {
-        format!("{}_{}_free", FFI_PREFIX, to_snake_case(trait_name))
+    pub fn trait_ffi_free(trait_name: &str) -> Name<GlobalSymbol> {
+        Name::new(format!(
+            "{}_{}_free",
+            FFI_PREFIX,
+            to_snake_case(trait_name)
+        ))
     }
 
-    pub fn callback_vtable_name(trait_name: &str) -> String {
-        format!("{}VTable", trait_name)
+    pub fn callback_vtable_name(trait_name: &str) -> Name<VtableType> {
+        Name::new(format!("{}VTable", trait_name))
     }
 
-    pub fn callback_foreign_name(trait_name: &str) -> String {
-        format!("Foreign{}", trait_name)
+    pub fn callback_foreign_name(trait_name: &str) -> Name<ForeignType> {
+        Name::new(format!("Foreign{}", trait_name))
     }
 
-    pub fn callback_register_fn(trait_name: &str) -> String {
-        format!(
+    pub fn callback_register_fn(trait_name: &str) -> Name<RegisterFn> {
+        Name::new(format!(
             "{}_register_{}_vtable",
             FFI_PREFIX,
             to_snake_case(trait_name)
-        )
+        ))
     }
 
-    pub fn callback_create_fn(trait_name: &str) -> String {
-        format!("{}_create_{}_handle", FFI_PREFIX, to_snake_case(trait_name))
+    pub fn callback_create_fn(trait_name: &str) -> Name<CreateFn> {
+        Name::new(format!(
+            "{}_create_{}_handle",
+            FFI_PREFIX,
+            to_snake_case(trait_name)
+        ))
+    }
+
+    pub fn vtable_field_name(method_name: &str) -> Name<VtableField> {
+        Name::new(to_snake_case(method_name))
     }
 
     pub fn module_name(crate_name: &str) -> String {
@@ -187,8 +287,8 @@ pub mod naming {
     }
 
     #[deprecated(note = "use function_ffi_name instead")]
-    pub fn ffi_function_name(module_prefix: &str, func_name: &str) -> String {
-        format!("{}_{}", module_prefix, func_name)
+    pub fn ffi_function_name(module_prefix: &str, func_name: &str) -> Name<GlobalSymbol> {
+        Name::new(format!("{}_{}", module_prefix, func_name))
     }
 }
 

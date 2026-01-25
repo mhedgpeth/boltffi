@@ -34,7 +34,10 @@ pub fn ffi_class_impl(item: TokenStream) -> TokenStream {
     };
 
     let type_name_str = type_name.to_string();
-    let free_ident = syn::Ident::new(&naming::class_ffi_free(&type_name_str), type_name.span());
+    let free_ident = syn::Ident::new(
+        naming::class_ffi_free(&type_name_str).as_str(),
+        type_name.span(),
+    );
 
     let method_exports: Vec<_> = input
         .items
@@ -193,12 +196,12 @@ fn generate_factory_constructor_export(
     custom_types: &custom_types::CustomTypeRegistry,
 ) -> Option<proc_macro2::TokenStream> {
     let method_name = &method.sig.ident;
-    let export_name_str = if method_name == "new" {
+    let export_name = if method_name == "new" {
         naming::class_ffi_new(class_name)
     } else {
         naming::method_ffi_name(class_name, &method_name.to_string())
     };
-    let export_name = syn::Ident::new(&export_name_str, method_name.span());
+    let export_name = syn::Ident::new(export_name.as_str(), method_name.span());
 
     let inputs = method.sig.inputs.iter().cloned();
     let FfiParams {
@@ -275,7 +278,7 @@ fn generate_method_export(
 ) -> Option<proc_macro2::TokenStream> {
     let method_name = &method.sig.ident;
     let export_name = syn::Ident::new(
-        &naming::method_ffi_name(class_name, &method_name.to_string()),
+        naming::method_ffi_name(class_name, &method_name.to_string()).as_str(),
         method_name.span(),
     );
 
@@ -406,7 +409,7 @@ fn generate_static_method_export(
 ) -> Option<proc_macro2::TokenStream> {
     let method_name = &method.sig.ident;
     let export_name = syn::Ident::new(
-        &naming::method_ffi_name(class_name, &method_name.to_string()),
+        naming::method_ffi_name(class_name, &method_name.to_string()).as_str(),
         method_name.span(),
     );
 
@@ -531,7 +534,7 @@ fn generate_async_method_export(
     }
 
     let base_name = naming::method_ffi_name(class_name, &method_name_str);
-    let entry_ident = syn::Ident::new(&base_name, method_name.span());
+    let entry_ident = syn::Ident::new(base_name.as_str(), method_name.span());
     let poll_ident = syn::Ident::new(&format!("{}_poll", base_name), method_name.span());
     let complete_ident = syn::Ident::new(&format!("{}_complete", base_name), method_name.span());
     let cancel_ident = syn::Ident::new(&format!("{}_cancel", base_name), method_name.span());
@@ -659,27 +662,27 @@ fn generate_stream_exports(
     let stream_name = method_name.to_string();
 
     let subscribe_ident = syn::Ident::new(
-        &naming::stream_ffi_subscribe(class_name, &stream_name),
+        naming::stream_ffi_subscribe(class_name, &stream_name).as_str(),
         method_name.span(),
     );
     let pop_batch_ident = syn::Ident::new(
-        &naming::stream_ffi_pop_batch(class_name, &stream_name),
+        naming::stream_ffi_pop_batch(class_name, &stream_name).as_str(),
         method_name.span(),
     );
     let wait_ident = syn::Ident::new(
-        &naming::stream_ffi_wait(class_name, &stream_name),
+        naming::stream_ffi_wait(class_name, &stream_name).as_str(),
         method_name.span(),
     );
     let poll_ident = syn::Ident::new(
-        &naming::stream_ffi_poll(class_name, &stream_name),
+        naming::stream_ffi_poll(class_name, &stream_name).as_str(),
         method_name.span(),
     );
     let unsubscribe_ident = syn::Ident::new(
-        &naming::stream_ffi_unsubscribe(class_name, &stream_name),
+        naming::stream_ffi_unsubscribe(class_name, &stream_name).as_str(),
         method_name.span(),
     );
     let free_ident = syn::Ident::new(
-        &naming::stream_ffi_free(class_name, &stream_name),
+        naming::stream_ffi_free(class_name, &stream_name).as_str(),
         method_name.span(),
     );
 

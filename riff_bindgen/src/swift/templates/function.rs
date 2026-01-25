@@ -44,7 +44,7 @@ impl FunctionTemplate {
             &func_name_pascal,
         );
 
-        let ffi_name = naming::function_ffi_name(&function.name);
+        let ffi_name = naming::function_ffi_name(&function.name).into_string();
         let call_builder = SyncCallBuilder::new(false).with_params(
             function
                 .non_callback_params()
@@ -86,10 +86,10 @@ impl FunctionTemplate {
             throws: function.throws() || ret.is_result,
             has_callbacks: params_info.has_callbacks,
             callbacks: params_info.callbacks,
-            ffi_poll: naming::function_ffi_poll(&function.name),
-            ffi_complete: naming::function_ffi_complete(&function.name),
-            ffi_free: naming::function_ffi_free(&function.name),
-            ffi_cancel: naming::function_ffi_cancel(&function.name),
+            ffi_poll: naming::function_ffi_poll(&function.name).into_string(),
+            ffi_complete: naming::function_ffi_complete(&function.name).into_string(),
+            ffi_free: naming::function_ffi_free(&function.name).into_string(),
+            ffi_cancel: naming::function_ffi_cancel(&function.name).into_string(),
             wrappers_open: call_builder.build_wrappers_open(),
             wrappers_open_throwing: call_builder.build_wrappers_open_throwing(),
             wrappers_close: call_builder.build_wrappers_close(),

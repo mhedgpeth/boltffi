@@ -52,11 +52,11 @@ impl CallbackTraitTemplate {
             protocol_name: trait_name.clone(),
             wrapper_class: format!("{}Wrapper", trait_name),
             vtable_var: format!("{}VTableInstance", to_camel_case(trait_name)),
-            vtable_type: naming::callback_vtable_name(trait_name),
+            vtable_type: naming::callback_vtable_name(trait_name).into_string(),
             bridge_name: format!("{}Bridge", trait_name),
-            foreign_type: naming::callback_foreign_name(trait_name),
-            register_fn: naming::callback_register_fn(trait_name),
-            create_fn: naming::callback_create_fn(trait_name),
+            foreign_type: naming::callback_foreign_name(trait_name).into_string(),
+            register_fn: naming::callback_register_fn(trait_name).into_string(),
+            create_fn: naming::callback_create_fn(trait_name).into_string(),
             methods: callback_trait
                 .methods
                 .iter()
@@ -64,7 +64,7 @@ impl CallbackTraitTemplate {
                     let has_return = method.has_return();
                     TraitMethodView {
                         swift_name: NamingConvention::method_name(&method.name),
-                        ffi_name: naming::to_snake_case(&method.name),
+                        ffi_name: naming::vtable_field_name(&method.name).into_string(),
                         params: method
                             .inputs
                             .iter()

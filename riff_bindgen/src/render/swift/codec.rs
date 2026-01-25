@@ -1,6 +1,7 @@
+use riff_ffi_rules::naming::to_upper_camel_case as pascal_case;
+
 use crate::ir::codec::{CodecPlan, EnumLayout, RecordLayout, VecLayout};
 use crate::ir::types::PrimitiveType;
-use crate::render::naming::pascal_case;
 
 const OFFSET_VAR: &str = "pos";
 

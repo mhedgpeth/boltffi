@@ -109,7 +109,7 @@ impl NamingConvention {
     }
 
     pub fn class_ffi_prefix(_module_prefix: &str, class_name: &str) -> String {
-        naming::class_ffi_prefix(class_name)
+        naming::class_ffi_prefix(class_name).into_string()
     }
 
     pub fn module_name(crate_name: &str) -> String {

@@ -1,5 +1,7 @@
+use riff_ffi_rules::naming::{GlobalSymbol, Name, VtableField};
+
 use crate::ir::codec::CodecPlan;
-use crate::ir::ids::{CallbackId, ClassId, MethodId, ParamName};
+use crate::ir::ids::{CallbackId, ClassId, ParamName};
 
 #[derive(Debug, Clone)]
 pub struct CallPlan {
@@ -10,8 +12,8 @@ pub struct CallPlan {
 
 #[derive(Debug, Clone)]
 pub enum CallTarget {
-    GlobalSymbol(String),
-    VtableField(MethodId),
+    GlobalSymbol(Name<GlobalSymbol>),
+    VtableField(Name<VtableField>),
 }
 
 #[derive(Debug, Clone)]

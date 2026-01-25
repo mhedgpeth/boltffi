@@ -1,19 +1,21 @@
 use crate::ir::codec::CodecPlan;
-use crate::ir::ids::{CallbackId, MethodId, ParamName, QualifiedName};
-use crate::ir::ops::{ReadOp, WriteOp};
+use crate::ir::ids::{CallbackId, MethodId, ParamName};
 use crate::ir::plan::DirectPlan;
+use riff_ffi_rules::naming::{CreateFn, Name, RegisterFn, VtableField, VtableType};
 
 #[derive(Debug, Clone)]
 pub struct CallbackInvocationPlan {
     pub callback_id: CallbackId,
-    pub foreign_type_name: QualifiedName,
+    pub vtable_type: Name<VtableType>,
+    pub register_fn: Name<RegisterFn>,
+    pub create_fn: Name<CreateFn>,
     pub methods: Vec<CallbackMethodPlan>,
 }
 
 #[derive(Debug, Clone)]
 pub struct CallbackMethodPlan {
     pub id: MethodId,
-    pub ffi_symbol: String,
+    pub vtable_field: Name<VtableField>,
     pub params: Vec<CallbackParamPlan>,
     pub returns: CallbackReturnPlan,
     pub is_async: bool,
@@ -28,13 +30,13 @@ pub struct CallbackParamPlan {
 #[derive(Debug, Clone)]
 pub enum CallbackParamStrategy {
     Direct(DirectPlan),
-    Encoded { write_ops: Vec<WriteOp> },
+    Encoded { codec: CodecPlan },
 }
 
 #[derive(Debug, Clone)]
 pub enum CallbackReturnPlan {
     Void,
     Direct(DirectPlan),
-    Decoded { read_ops: Vec<ReadOp> },
-    Async { completion_codec: CodecPlan },
+    Encoded { codec: CodecPlan },
+    Async { completion_codec: Option<CodecPlan> },
 }

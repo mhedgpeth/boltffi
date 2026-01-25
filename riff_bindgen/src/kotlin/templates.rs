@@ -1121,7 +1121,7 @@ impl ClassTemplate {
                 let plan = ConstructorCallPlan::try_for_constructor(&ctor.inputs, module)?;
                 let is_factory = !ctor.is_default();
                 let ffi_name = if is_factory {
-                    naming::method_ffi_name(&class.name, &ctor.name)
+                    naming::method_ffi_name(&class.name, &ctor.name).into_string()
                 } else {
                     format!("{}_new", ffi_prefix)
                 };
@@ -1225,7 +1225,7 @@ impl WireMethodTemplate {
 
         Self {
             method_name: NamingConvention::method_name(&method.name),
-            ffi_name: naming::method_ffi_name(&class.name, &method.name),
+            ffi_name: naming::method_ffi_name(&class.name, &method.name).into_string(),
             signature_params: plan
                 .signature_params
                 .into_iter()
@@ -1409,7 +1409,7 @@ impl NativeTemplate {
                     || (!func.is_async && Self::is_primitive_return(func))
             })
             .map(|func| {
-                let ffi_name = naming::function_ffi_name(&func.name);
+                let ffi_name = naming::function_ffi_name(&func.name).into_string();
                 let (has_out_param, out_type, return_jni_type) =
                     Self::analyze_return(&func.returns, module);
                 let return_abi = ReturnAbi::from_return_type(&func.returns, module);
@@ -1439,10 +1439,10 @@ impl NativeTemplate {
                     out_type,
                     return_jni_type: return_jni_type.clone(),
                     is_async: func.is_async,
-                    ffi_poll: naming::function_ffi_poll(&func.name),
-                    ffi_complete: naming::function_ffi_complete(&func.name),
-                    ffi_cancel: naming::function_ffi_cancel(&func.name),
-                    ffi_free: naming::function_ffi_free(&func.name),
+                    ffi_poll: naming::function_ffi_poll(&func.name).into_string(),
+                    ffi_complete: naming::function_ffi_complete(&func.name).into_string(),
+                    ffi_cancel: naming::function_ffi_cancel(&func.name).into_string(),
+                    ffi_free: naming::function_ffi_free(&func.name).into_string(),
                     complete_return_jni_type,
                 }
             })
@@ -1455,7 +1455,7 @@ impl NativeTemplate {
             .map(|func| {
                 let return_abi = ReturnAbi::from_return_type(&func.returns, module);
                 NativeWireFunctionView {
-                    ffi_name: naming::function_ffi_name(&func.name),
+                    ffi_name: naming::function_ffi_name(&func.name).into_string(),
                     params: func
                         .inputs
                         .iter()
@@ -1487,7 +1487,7 @@ impl NativeTemplate {
                         ffi_name: if ctor.is_default() {
                             format!("{}_new", ffi_prefix)
                         } else {
-                            naming::method_ffi_name(&class.name, &ctor.name)
+                            naming::method_ffi_name(&class.name, &ctor.name).into_string()
                         },
                         params: ctor
                             .inputs
@@ -1510,7 +1510,8 @@ impl NativeTemplate {
                         AsyncCallPlan::supports_call(&method.inputs, &method.returns, module)
                     })
                     .map(|method| {
-                        let method_ffi = naming::method_ffi_name(&class.name, &method.name);
+                        let method_ffi =
+                            naming::method_ffi_name(&class.name, &method.name).into_string();
                         let (has_out_param, out_type, _return_jni_type) =
                             Self::analyze_return(&method.returns, module);
                         let return_abi = ReturnAbi::from_return_type(&method.returns, module);
@@ -1536,10 +1537,14 @@ impl NativeTemplate {
                             out_type,
                             return_jni_type: complete_return_jni_type,
                             is_async: method.is_async,
-                            ffi_poll: naming::method_ffi_poll(&class.name, &method.name),
-                            ffi_complete: naming::method_ffi_complete(&class.name, &method.name),
-                            ffi_cancel: naming::method_ffi_cancel(&class.name, &method.name),
-                            ffi_free: naming::method_ffi_free(&class.name, &method.name),
+                            ffi_poll: naming::method_ffi_poll(&class.name, &method.name)
+                                .into_string(),
+                            ffi_complete: naming::method_ffi_complete(&class.name, &method.name)
+                                .into_string(),
+                            ffi_cancel: naming::method_ffi_cancel(&class.name, &method.name)
+                                .into_string(),
+                            ffi_free: naming::method_ffi_free(&class.name, &method.name)
+                                .into_string(),
                             include_handle: !method.is_static(),
                         }
                     })
@@ -1555,7 +1560,8 @@ impl NativeTemplate {
                     .map(|method| {
                         let return_abi = ReturnAbi::from_return_type(&method.returns, module);
                         NativeSyncMethodView {
-                            ffi_name: naming::method_ffi_name(&class.name, &method.name),
+                            ffi_name: naming::method_ffi_name(&class.name, &method.name)
+                                .into_string(),
                             params: method
                                 .inputs
                                 .iter()
@@ -1799,9 +1805,9 @@ impl CallbackTraitTemplate {
             handle_map_name: format!("{}HandleMap", interface_name),
             callbacks_object: format!("{}Callbacks", interface_name),
             bridge_name: format!("{}Bridge", interface_name),
-            vtable_type: naming::callback_vtable_name(trait_name),
-            register_fn: naming::callback_register_fn(trait_name),
-            create_fn: naming::callback_create_fn(trait_name),
+            vtable_type: naming::callback_vtable_name(trait_name).into_string(),
+            register_fn: naming::callback_register_fn(trait_name).into_string(),
+            create_fn: naming::callback_create_fn(trait_name).into_string(),
             sync_methods,
             async_methods,
             has_async,
@@ -1812,7 +1818,7 @@ impl CallbackTraitTemplate {
         let return_info = Self::build_return_info(&method.returns);
         SyncMethodView {
             name: NamingConvention::method_name(&method.name),
-            ffi_name: naming::to_snake_case(&method.name),
+            ffi_name: naming::vtable_field_name(&method.name).into_string(),
             params: Self::build_params(&method.inputs, module),
             return_info,
         }
@@ -1823,7 +1829,7 @@ impl CallbackTraitTemplate {
         let invoker_suffix = Self::async_invoker_suffix(&method.returns);
         AsyncMethodView {
             name: NamingConvention::method_name(&method.name),
-            ffi_name: naming::to_snake_case(&method.name),
+            ffi_name: naming::vtable_field_name(&method.name).into_string(),
             params: Self::build_params(&method.inputs, module),
             return_info,
             invoker_name: format!("invokeAsyncCallback{}", invoker_suffix),

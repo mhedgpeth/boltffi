@@ -61,7 +61,7 @@ impl WireFunctionPlan {
         module: &Module,
     ) -> Self {
         let contract = CallContract::for_function(inputs, returns, module);
-        let ffi_name = naming::function_ffi_name(function_name);
+        let ffi_name = naming::function_ffi_name(function_name).into_string();
         let return_abi = ReturnAbi::from_return_type(returns, module);
 
         let signature_params = inputs
@@ -504,11 +504,11 @@ impl AsyncCallPlan {
 
         Self {
             func_name: NamingConvention::method_name(function_name),
-            ffi_name: naming::function_ffi_name(function_name),
-            ffi_poll: naming::function_ffi_poll(function_name),
-            ffi_complete: naming::function_ffi_complete(function_name),
-            ffi_cancel: naming::function_ffi_cancel(function_name),
-            ffi_free: naming::function_ffi_free(function_name),
+            ffi_name: naming::function_ffi_name(function_name).into_string(),
+            ffi_poll: naming::function_ffi_poll(function_name).into_string(),
+            ffi_complete: naming::function_ffi_complete(function_name).into_string(),
+            ffi_cancel: naming::function_ffi_cancel(function_name).into_string(),
+            ffi_free: naming::function_ffi_free(function_name).into_string(),
             signature_params,
             wire_writers,
             wire_writer_closes,
@@ -590,11 +590,12 @@ impl AsyncCallPlan {
 
         Self {
             func_name: NamingConvention::method_name(&method.name),
-            ffi_name: naming::method_ffi_name(&class.name, &method.name),
-            ffi_poll: naming::method_ffi_poll(&class.name, &method.name),
-            ffi_complete: naming::method_ffi_complete(&class.name, &method.name),
-            ffi_cancel: naming::method_ffi_cancel(&class.name, &method.name),
-            ffi_free: naming::method_ffi_free(&class.name, &method.name),
+            ffi_name: naming::method_ffi_name(&class.name, &method.name).into_string(),
+            ffi_poll: naming::method_ffi_poll(&class.name, &method.name).into_string(),
+            ffi_complete: naming::method_ffi_complete(&class.name, &method.name)
+                .into_string(),
+            ffi_cancel: naming::method_ffi_cancel(&class.name, &method.name).into_string(),
+            ffi_free: naming::method_ffi_free(&class.name, &method.name).into_string(),
             signature_params,
             wire_writers,
             wire_writer_closes,

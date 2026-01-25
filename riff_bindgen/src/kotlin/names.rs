@@ -120,7 +120,7 @@ impl NamingConvention {
     }
 
     pub fn class_ffi_prefix(class_name: &str) -> String {
-        naming::class_ffi_prefix(class_name)
+        naming::class_ffi_prefix(class_name).into_string()
     }
 
     pub fn ffi_module_name(crate_name: &str) -> String {

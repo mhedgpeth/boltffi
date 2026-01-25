@@ -143,10 +143,10 @@ impl AsyncMethodBodyTemplate {
         let ctx = MethodContext::from_method(method, class, module, !method.is_static());
         Self {
             ffi_name: ctx.ffi_name,
-            ffi_poll: naming::method_ffi_poll(&class.name, &method.name),
-            ffi_complete: naming::method_ffi_complete(&class.name, &method.name),
-            ffi_cancel: naming::method_ffi_cancel(&class.name, &method.name),
-            ffi_free: naming::method_ffi_free(&class.name, &method.name),
+            ffi_poll: naming::method_ffi_poll(&class.name, &method.name).into_string(),
+            ffi_complete: naming::method_ffi_complete(&class.name, &method.name).into_string(),
+            ffi_cancel: naming::method_ffi_cancel(&class.name, &method.name).into_string(),
+            ffi_free: naming::method_ffi_free(&class.name, &method.name).into_string(),
             prefix: naming::ffi_prefix().to_string(),
             wrappers_open: ctx.wrappers_open,
             wrappers_close: ctx.wrappers_close,
@@ -187,10 +187,10 @@ impl AsyncThrowingMethodBodyTemplate {
         let ctx = MethodContext::from_method(method, class, module, !method.is_static());
         Self {
             ffi_name: ctx.ffi_name,
-            ffi_poll: naming::method_ffi_poll(&class.name, &method.name),
-            ffi_complete: naming::method_ffi_complete(&class.name, &method.name),
-            ffi_cancel: naming::method_ffi_cancel(&class.name, &method.name),
-            ffi_free: naming::method_ffi_free(&class.name, &method.name),
+            ffi_poll: naming::method_ffi_poll(&class.name, &method.name).into_string(),
+            ffi_complete: naming::method_ffi_complete(&class.name, &method.name).into_string(),
+            ffi_cancel: naming::method_ffi_cancel(&class.name, &method.name).into_string(),
+            ffi_free: naming::method_ffi_free(&class.name, &method.name).into_string(),
             prefix: naming::ffi_prefix().to_string(),
             wrappers_open: ctx.wrappers_open,
             wrappers_close: ctx.wrappers_close,

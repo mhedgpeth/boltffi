@@ -389,7 +389,7 @@ static inline uint64_t {prefix}_atomic_u64_load(uint64_t* slot) {{
     }
 
     fn generate_trait_method_field(method: &TraitMethod, module: &Module) -> String {
-        let method_snake = naming::to_snake_case(&method.name);
+        let method_snake = naming::vtable_field_name(&method.name);
         let mut params = vec!["uint64_t handle".to_string()];
 
         for param in &method.inputs {
@@ -417,7 +417,11 @@ static inline uint64_t {prefix}_atomic_u64_load(uint64_t* slot) {{
             params.push("FfiStatus *status".to_string());
         }
 
-        format!("  void (*{})({});", method_snake, params.join(", "))
+        format!(
+            "  void (*{})({});",
+            method_snake.as_str(),
+            params.join(", ")
+        )
     }
 
     fn trait_callback_return_params(ty: &Type) -> String {
@@ -487,9 +491,9 @@ static inline uint64_t {prefix}_atomic_u64_load(uint64_t* slot) {{
         let params = Self::build_params(&func.inputs, module);
 
         if func.is_async {
-            Self::generate_async_function(&ffi_name, &params, &func.returns)
+            Self::generate_async_function(ffi_name.as_str(), &params, &func.returns)
         } else {
-            Self::generate_sync_function(&ffi_name, &params, &func.returns, module)
+            Self::generate_sync_function(ffi_name.as_str(), &params, &func.returns, module)
         }
     }
 
@@ -685,7 +689,7 @@ static inline uint64_t {prefix}_atomic_u64_load(uint64_t* slot) {{
             let ffi_name = if ctor.is_default() {
                 format!("{}_new", class_prefix)
             } else {
-                naming::method_ffi_name(&class.name, &ctor.name)
+                naming::method_ffi_name(&class.name, &ctor.name).into_string()
             };
             if ctor.inputs.is_empty() {
                 out.push_str(&format!("struct {} * {}(void);\n", class.name, ffi_name));

@@ -75,7 +75,7 @@ pub struct JniWireMethodTemplate {
 
 impl JniWireMethodTemplate {
     pub fn from_method(class: &Class, method: &Method, jni_prefix: &str, module: &Module) -> Self {
-        let ffi_name = naming::method_ffi_name(&class.name, &method.name);
+        let ffi_name = naming::method_ffi_name(&class.name, &method.name).into_string();
         let jni_name = format!("Java_{}_Native_{}", jni_prefix, ffi_name.replace('_', "_1"));
 
         let params: Vec<JniParamInfo> = method
@@ -132,7 +132,7 @@ impl JniWireCtorTemplate {
         let ffi_name = if ctor.is_default() {
             format!("{}_new", ffi_prefix)
         } else {
-            naming::method_ffi_name(&class.name, &ctor.name)
+            naming::method_ffi_name(&class.name, &ctor.name).into_string()
         };
 
         let jni_name = format!("Java_{}_Native_{}", jni_prefix, ffi_name.replace('_', "_1"));
@@ -745,8 +745,8 @@ impl JniGlueTemplate {
 
         JniCallbackTraitView {
             trait_name: trait_name.clone(),
-            vtable_type: naming::callback_vtable_name(&callback_trait.name),
-            register_fn: naming::callback_register_fn(&callback_trait.name),
+            vtable_type: naming::callback_vtable_name(&callback_trait.name).into_string(),
+            register_fn: naming::callback_register_fn(&callback_trait.name).into_string(),
             callbacks_class: format!("{}/{}", package_path, callbacks_class),
             sync_methods,
             async_methods,
@@ -754,7 +754,7 @@ impl JniGlueTemplate {
     }
 
     fn map_sync_callback_method(method: &TraitMethod) -> JniCallbackMethodView {
-        let ffi_name = naming::to_snake_case(&method.name);
+        let ffi_name = naming::vtable_field_name(&method.name).into_string();
         let has_return = method.has_return();
 
         let (jni_return_type, jni_call_type, c_return_type) = method
@@ -805,7 +805,7 @@ impl JniGlueTemplate {
         _trait_name: &str,
         jni_prefix: &str,
     ) -> JniAsyncCallbackMethodView {
-        let ffi_name = naming::to_snake_case(&method.name);
+        let ffi_name = naming::vtable_field_name(&method.name).into_string();
         let has_return = method.has_return();
 
         let return_c_type = method
@@ -974,7 +974,7 @@ impl JniGlueTemplate {
         jni_prefix: &str,
         module: &Module,
     ) -> JniAsyncFunctionView {
-        let ffi_name = naming::function_ffi_name(&func.name);
+        let ffi_name = naming::function_ffi_name(&func.name).into_string();
         let jni_func_name = ffi_name.replace('_', "_1");
 
         let params: Vec<JniParamInfo> = func
@@ -991,10 +991,10 @@ impl JniGlueTemplate {
 
         JniAsyncFunctionView {
             ffi_name: ffi_name.clone(),
-            ffi_poll: naming::function_ffi_poll(&func.name),
-            ffi_complete: naming::function_ffi_complete(&func.name),
-            ffi_cancel: naming::function_ffi_cancel(&func.name),
-            ffi_free: naming::function_ffi_free(&func.name),
+            ffi_poll: naming::function_ffi_poll(&func.name).into_string(),
+            ffi_complete: naming::function_ffi_complete(&func.name).into_string(),
+            ffi_cancel: naming::function_ffi_cancel(&func.name).into_string(),
+            ffi_free: naming::function_ffi_free(&func.name).into_string(),
             jni_create_name: format!("Java_{}_Native_{}", jni_prefix, jni_func_name),
             jni_poll_name: format!("Java_{}_Native_{}_1poll", jni_prefix, jni_func_name),
             jni_complete_name: format!("Java_{}_Native_{}_1complete", jni_prefix, jni_func_name),
@@ -1326,8 +1326,8 @@ impl JniGlueTemplate {
             .collect();
 
         JniClassView {
-            ffi_prefix: ffi_prefix.clone(),
-            jni_ffi_prefix: ffi_prefix.replace('_', "_1"),
+            ffi_prefix: ffi_prefix.to_string(),
+            jni_ffi_prefix: ffi_prefix.to_string().replace('_', "_1"),
             jni_prefix: jni_prefix.to_string(),
             ctors,
             wire_methods,
@@ -1341,7 +1341,7 @@ impl JniGlueTemplate {
         jni_prefix: &str,
         module: &Module,
     ) -> JniAsyncFunctionView {
-        let ffi_name = naming::method_ffi_name(class_name, &method.name);
+        let ffi_name = naming::method_ffi_name(class_name, &method.name).into_string();
         let jni_func_name = ffi_name.replace('_', "_1");
 
         let params: Vec<JniParamInfo> = method
@@ -1358,10 +1358,10 @@ impl JniGlueTemplate {
 
         JniAsyncFunctionView {
             ffi_name: ffi_name.clone(),
-            ffi_poll: naming::method_ffi_poll(class_name, &method.name),
-            ffi_complete: naming::method_ffi_complete(class_name, &method.name),
-            ffi_cancel: naming::method_ffi_cancel(class_name, &method.name),
-            ffi_free: naming::method_ffi_free(class_name, &method.name),
+            ffi_poll: naming::method_ffi_poll(class_name, &method.name).into_string(),
+            ffi_complete: naming::method_ffi_complete(class_name, &method.name).into_string(),
+            ffi_cancel: naming::method_ffi_cancel(class_name, &method.name).into_string(),
+            ffi_free: naming::method_ffi_free(class_name, &method.name).into_string(),
             jni_create_name: format!("Java_{}_Native_{}", jni_prefix, jni_func_name),
             jni_poll_name: format!("Java_{}_Native_{}_1poll", jni_prefix, jni_func_name),
             jni_complete_name: format!("Java_{}_Native_{}_1complete", jni_prefix, jni_func_name),
