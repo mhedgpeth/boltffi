@@ -25,7 +25,7 @@ pub fn encode_blittable_slice<T: Blittable>(slice: &[T], buf: &mut [u8]) -> usiz
         return VEC_COUNT_SIZE;
     }
 
-    let byte_count = slice.len() * std::mem::size_of::<T>();
+    let byte_count = std::mem::size_of_val(slice);
     unsafe {
         std::ptr::copy_nonoverlapping(
             slice.as_ptr() as *const u8,
@@ -38,7 +38,7 @@ pub fn encode_blittable_slice<T: Blittable>(slice: &[T], buf: &mut [u8]) -> usiz
 
 #[inline]
 pub fn blittable_slice_wire_size<T: Blittable>(slice: &[T]) -> usize {
-    VEC_COUNT_SIZE + slice.len() * std::mem::size_of::<T>()
+    VEC_COUNT_SIZE + std::mem::size_of_val(slice)
 }
 
 #[inline]

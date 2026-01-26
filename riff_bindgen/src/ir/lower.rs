@@ -1506,7 +1506,7 @@ mod tests {
     }
 
     #[test]
-    fn param_strategy_string_is_buffer() {
+    fn param_strategy_string_is_string() {
         let contract = test_contract();
         let lowerer = lowerer_for_contract(&contract);
 
@@ -1514,8 +1514,7 @@ mod tests {
 
         assert!(matches!(
             strategy,
-            ParamStrategy::Buffer {
-                element_abi: AbiType::U8,
+            ParamStrategy::String {
                 mutability: Mutability::Shared
             }
         ));
@@ -2166,14 +2165,10 @@ mod tests {
         let strategy = lowerer.param_strategy(&TypeExpr::String, &ParamPassing::RefMut);
 
         match strategy {
-            ParamStrategy::Buffer {
-                element_abi,
-                mutability,
-            } => {
-                assert_eq!(element_abi, AbiType::U8);
+            ParamStrategy::String { mutability } => {
                 assert_eq!(mutability, Mutability::Mutable);
             }
-            _ => panic!("expected Buffer"),
+            _ => panic!("expected String"),
         }
     }
 
