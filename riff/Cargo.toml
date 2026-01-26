@@ -14,5 +14,8 @@ url = ["riff_core/url"]
 riff_core = { path = "../riff_core" }
 riff_macros = { path = "../riff_macros" }
 
+[dev-dependencies]
+tokio = { version = "1", features = ["rt", "macros"] }
+
 [lints]
 workspace = true

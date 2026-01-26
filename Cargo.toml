@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["riff", "riff_core", "riff_macros", "riff_bindgen", "riff_cli", "riff_ffi_rules", "riff_verify"]
+members = ["riff", "riff_core", "riff_macros", "riff_bindgen", "riff_cli", "riff_ffi_rules", "riff_verify", "riff_tests"]
 exclude = ["bench_demo/rust-riff", "bench_demo/rust-uniffi"]
 
 [workspace.package]

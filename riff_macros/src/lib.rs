@@ -2,6 +2,7 @@ use proc_macro::TokenStream;
 use quote::quote;
 use syn::{DeriveInput, ItemFn, parse_macro_input};
 
+mod callback_registry;
 mod callback_trait;
 mod class;
 mod custom_ffi;
