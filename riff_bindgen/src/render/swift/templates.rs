@@ -237,9 +237,7 @@ mod tests {
     use super::*;
     use crate::ir::codec::VecLayout;
     use crate::ir::ids::RecordId;
-    use crate::ir::ops::{
-        OffsetExpr, ReadOp, ReadSeq, SizeExpr, WireShape, WriteOp, WriteSeq,
-    };
+    use crate::ir::ops::{OffsetExpr, ReadOp, ReadSeq, SizeExpr, WireShape, WriteOp, WriteSeq};
     use crate::ir::types::{PrimitiveType, TypeExpr};
     use crate::render::swift::plan::{
         SwiftAsyncResult, SwiftCallback, SwiftCallbackMethod, SwiftCallbackParam, SwiftClass,
@@ -292,7 +290,9 @@ mod tests {
     fn read_string(offset_expr: OffsetExpr) -> ReadSeq {
         ReadSeq {
             size: SizeExpr::Runtime,
-            ops: vec![ReadOp::String { offset: offset_expr }],
+            ops: vec![ReadOp::String {
+                offset: offset_expr,
+            }],
             shape: WireShape::Value,
         }
     }
@@ -313,7 +313,9 @@ mod tests {
     fn read_bytes(offset_expr: OffsetExpr) -> ReadSeq {
         ReadSeq {
             size: SizeExpr::Runtime,
-            ops: vec![ReadOp::Bytes { offset: offset_expr }],
+            ops: vec![ReadOp::Bytes {
+                offset: offset_expr,
+            }],
             shape: WireShape::Value,
         }
     }
@@ -380,10 +382,7 @@ mod tests {
         element_type: &TypeExpr,
         layout: VecLayout,
     ) -> WriteSeq {
-        let size = if matches!(
-            element_type,
-            TypeExpr::Primitive(PrimitiveType::U8)
-        ) {
+        let size = if matches!(element_type, TypeExpr::Primitive(PrimitiveType::U8)) {
             SizeExpr::Sum(vec![
                 SizeExpr::Fixed(4),
                 SizeExpr::BytesLen(value.to_string()),

@@ -41,9 +41,7 @@ impl From<&CodecPlan> for TypeExpr {
             CodecPlan::String => TypeExpr::String,
             CodecPlan::Bytes => TypeExpr::Bytes,
             CodecPlan::Builtin(id) => TypeExpr::Builtin(id.clone()),
-            CodecPlan::Option(inner) => {
-                TypeExpr::Option(Box::new(TypeExpr::from(inner.as_ref())))
-            }
+            CodecPlan::Option(inner) => TypeExpr::Option(Box::new(TypeExpr::from(inner.as_ref()))),
             CodecPlan::Vec { element, .. } => {
                 TypeExpr::Vec(Box::new(TypeExpr::from(element.as_ref())))
             }

@@ -5,23 +5,6 @@ use riff_ffi_rules::naming::{
 
 use std::collections::HashMap;
 
-use crate::ir::abi::{
-    AbiCall, AbiCallbackInvocation, AbiContract, AbiEnum, AbiEnumField, AbiEnumPayload,
-    AbiEnumVariant, AbiParam, AbiRecord, AbiStream, AsyncResultTransport, CallId, CallMode,
-    ErrorTransport, ParamRole, ReturnTransport, StreamItemTransport,
-};
-use crate::ir::ops::{
-    FieldReadOp, FieldWriteOp, OffsetExpr, ReadOp, ReadSeq, SizeExpr, WireShape, WriteOp,
-    WriteSeq,
-};
-use crate::ir::contract::FfiContract;
-use crate::ir::definitions::{
-    CallbackKind, ConstructorDef, ParamDef, Receiver, ReturnDef, StreamDef, StreamMode,
-};
-use crate::ir::ids::{CallbackId, ClassId, EnumId, FieldName, ParamName, RecordId};
-use crate::ir::plan::AbiType;
-use crate::ir::plan::{CallbackStyle, Mutability};
-use crate::ir::types::TypeExpr;
 use super::emit;
 use super::plan::{
     SwiftAsyncConversion, SwiftAsyncResult, SwiftCallMode, SwiftCallback, SwiftCallbackMethod,
@@ -30,6 +13,22 @@ use super::plan::{
     SwiftModule, SwiftParam, SwiftRecord, SwiftReturn, SwiftStream, SwiftStreamMode, SwiftVariant,
     SwiftVariantPayload,
 };
+use crate::ir::abi::{
+    AbiCall, AbiCallbackInvocation, AbiContract, AbiEnum, AbiEnumField, AbiEnumPayload,
+    AbiEnumVariant, AbiParam, AbiRecord, AbiStream, AsyncResultTransport, CallId, CallMode,
+    ErrorTransport, ParamRole, ReturnTransport, StreamItemTransport,
+};
+use crate::ir::contract::FfiContract;
+use crate::ir::definitions::{
+    CallbackKind, ConstructorDef, ParamDef, Receiver, ReturnDef, StreamDef, StreamMode,
+};
+use crate::ir::ids::{CallbackId, ClassId, EnumId, FieldName, ParamName, RecordId};
+use crate::ir::ops::{
+    FieldReadOp, FieldWriteOp, OffsetExpr, ReadOp, ReadSeq, SizeExpr, WireShape, WriteOp, WriteSeq,
+};
+use crate::ir::plan::AbiType;
+use crate::ir::plan::{CallbackStyle, Mutability};
+use crate::ir::types::TypeExpr;
 
 struct AbiIndex {
     calls: HashMap<CallId, usize>,
@@ -148,46 +147,46 @@ impl<'a> SwiftLowerer<'a> {
                 let abi_record = self.abi_index.record(self.abi, &def.id);
                 let decode_fields = self.record_decode_fields(abi_record);
                 let encode_fields = self.record_encode_fields(abi_record);
-                let fields = def
-                    .fields
-                    .iter()
-                    .map(|field| {
-                        let swift_name = camel_case(field.name.as_str());
-                        let decode = decode_fields
-                            .get(&field.name)
-                            .cloned()
-                            .unwrap_or_else(|| ReadSeq {
-                                size: SizeExpr::Fixed(0),
-                                ops: vec![],
-                                shape: WireShape::Value,
-                            });
-                        let old_base = format!("self.{}", field.name.as_str());
-                        let encode = encode_fields
-                            .get(&field.name)
-                            .cloned()
-                            .map(|seq| self.rebase_write_seq(&seq, &old_base, &swift_name))
-                            .unwrap_or_else(|| WriteSeq {
-                                size: SizeExpr::Fixed(0),
-                                ops: vec![],
-                                shape: WireShape::Value,
-                            });
-                        let c_offset = if abi_record.is_blittable {
-                            decode_fields
+                let fields =
+                    def.fields
+                        .iter()
+                        .map(|field| {
+                            let swift_name = camel_case(field.name.as_str());
+                            let decode =
+                                decode_fields.get(&field.name).cloned().unwrap_or_else(|| {
+                                    ReadSeq {
+                                        size: SizeExpr::Fixed(0),
+                                        ops: vec![],
+                                        shape: WireShape::Value,
+                                    }
+                                });
+                            let old_base = format!("self.{}", field.name.as_str());
+                            let encode = encode_fields
                                 .get(&field.name)
-                                .and_then(|seq| self.record_field_offset(seq))
-                        } else {
-                            None
-                        };
-                        SwiftField {
-                            swift_name,
-                            swift_type: emit::swift_type(&field.type_expr),
-                            default_expr: None,
-                            decode,
-                            encode,
-                            c_offset,
-                        }
-                    })
-                    .collect();
+                                .cloned()
+                                .map(|seq| self.rebase_write_seq(&seq, &old_base, &swift_name))
+                                .unwrap_or_else(|| WriteSeq {
+                                    size: SizeExpr::Fixed(0),
+                                    ops: vec![],
+                                    shape: WireShape::Value,
+                                });
+                            let c_offset = if abi_record.is_blittable {
+                                decode_fields
+                                    .get(&field.name)
+                                    .and_then(|seq| self.record_field_offset(seq))
+                            } else {
+                                None
+                            };
+                            SwiftField {
+                                swift_name,
+                                swift_type: emit::swift_type(&field.type_expr),
+                                default_expr: None,
+                                decode,
+                                encode,
+                                c_offset,
+                            }
+                        })
+                        .collect();
 
                 SwiftRecord {
                     class_name: self.swift_name_for_record(&def.id),
@@ -272,11 +271,7 @@ impl<'a> SwiftLowerer<'a> {
 
     fn lower_enum_field(&self, field: &AbiEnumField) -> SwiftField {
         let swift_name = camel_case(field.name.as_str());
-        let encode = self.rebase_write_seq(
-            &field.encode,
-            field.name.as_str(),
-            &swift_name,
-        );
+        let encode = self.rebase_write_seq(&field.encode, field.name.as_str(), &swift_name);
         SwiftField {
             swift_name,
             swift_type: emit::swift_type(&field.type_expr),
@@ -359,42 +354,39 @@ impl<'a> SwiftLowerer<'a> {
                     })
                     .collect();
 
-                let methods = def
-                    .methods
-                    .iter()
-                    .map(|method| {
-                        let call = self.abi_call(&CallId::Method {
-                            class_id: def.id.clone(),
-                            method_id: method.id.clone(),
-                        });
-                        let mode = self.lower_call_mode(call, &method.returns);
-                        let returns = match &call.mode {
-                            CallMode::Async(async_call) => {
-                                self.lower_return_def_for_async(&async_call.error, &method.returns)
-                            }
-                            CallMode::Sync => {
-                                self.swift_return_from_abi(
+                let methods =
+                    def.methods
+                        .iter()
+                        .map(|method| {
+                            let call = self.abi_call(&CallId::Method {
+                                class_id: def.id.clone(),
+                                method_id: method.id.clone(),
+                            });
+                            let mode = self.lower_call_mode(call, &method.returns);
+                            let returns = match &call.mode {
+                                CallMode::Async(async_call) => self
+                                    .lower_return_def_for_async(&async_call.error, &method.returns),
+                                CallMode::Sync => self.swift_return_from_abi(
                                     &call.return_,
                                     &call.error,
                                     &method.returns,
-                                )
-                            }
-                        };
+                                ),
+                            };
 
-                        SwiftMethod {
-                            name: camel_case(method.id.as_str()),
-                            mode,
-                            params: method
-                                .params
-                                .iter()
-                                .map(|p| self.lower_param(p, call))
-                                .collect(),
-                            returns,
-                            is_static: method.receiver == Receiver::Static,
-                            doc: method.doc.clone(),
-                        }
-                    })
-                    .collect();
+                            SwiftMethod {
+                                name: camel_case(method.id.as_str()),
+                                mode,
+                                params: method
+                                    .params
+                                    .iter()
+                                    .map(|p| self.lower_param(p, call))
+                                    .collect(),
+                                returns,
+                                is_static: method.receiver == Receiver::Static,
+                                doc: method.doc.clone(),
+                            }
+                        })
+                        .collect();
 
                 let streams = def
                     .streams
@@ -424,7 +416,12 @@ impl<'a> SwiftLowerer<'a> {
             .collect()
     }
 
-    fn lower_stream(&self, stream_def: &StreamDef, stream: &AbiStream, class_name: &str) -> SwiftStream {
+    fn lower_stream(
+        &self,
+        stream_def: &StreamDef,
+        stream: &AbiStream,
+        class_name: &str,
+    ) -> SwiftStream {
         let StreamItemTransport::WireEncoded { decode_ops } = &stream.item;
         let method_name_pascal = pascal_case(stream.stream_id.as_str());
 
@@ -539,11 +536,7 @@ impl<'a> SwiftLowerer<'a> {
     fn lower_callback_param(&self, def: &ParamDef, param: &AbiParam) -> SwiftCallbackParam {
         let label = camel_case(param.name.as_str());
         let (swift_type, ffi_args, decode_prelude) = match &param.role {
-            ParamRole::InDirect => (
-                emit::swift_type(&def.type_expr),
-                vec![label.clone()],
-                None,
-            ),
+            ParamRole::InDirect => (emit::swift_type(&def.type_expr), vec![label.clone()], None),
             ParamRole::InEncoded { decode_ops, .. } => {
                 let len_name = format!("{}Len", label);
                 let decode = emit::emit_read_inline(decode_ops, "pos");
@@ -641,11 +634,7 @@ impl<'a> SwiftLowerer<'a> {
             ParamRole::InEncoded { encode_ops, .. } => (
                 emit::swift_type(&param.type_expr),
                 SwiftConversion::ToWireBuffer {
-                    encode: self.rebase_write_seq(
-                        encode_ops,
-                        param.name.as_str(),
-                        &swift_name,
-                    ),
+                    encode: self.rebase_write_seq(encode_ops, param.name.as_str(), &swift_name),
                 },
             ),
             ParamRole::InHandle { class_id, nullable } => {
@@ -1069,7 +1058,11 @@ impl<'a> SwiftLowerer<'a> {
                 offset: self.rebase_offset_expr(offset, old_base, new_base),
                 layout: layout.clone(),
             },
-            ReadOp::Result { tag_offset, ok, err } => ReadOp::Result {
+            ReadOp::Result {
+                tag_offset,
+                ok,
+                err,
+            } => ReadOp::Result {
                 tag_offset: self.rebase_offset_expr(tag_offset, old_base, new_base),
                 ok: Box::new(self.rebase_read_seq(ok, old_base, new_base)),
                 err: Box::new(self.rebase_read_seq(err, old_base, new_base)),
@@ -1115,8 +1108,8 @@ impl<'a> SwiftLowerer<'a> {
     fn rebase_value(&self, value: &str, old_base: &str, new_base: &str) -> String {
         if value == old_base {
             new_base.to_string()
-        } else if value.starts_with(old_base) {
-            format!("{}{}", new_base, &value[old_base.len()..])
+        } else if let Some(suffix) = value.strip_prefix(old_base) {
+            format!("{}{}", new_base, suffix)
         } else {
             value.to_string()
         }
@@ -1198,7 +1191,12 @@ impl<'a> SwiftLowerer<'a> {
         let abi_params: Vec<&AbiParam> = abi_method
             .params
             .iter()
-            .filter(|param| matches!(param.role, ParamRole::InDirect | ParamRole::InEncoded { .. }))
+            .filter(|param| {
+                matches!(
+                    param.role,
+                    ParamRole::InDirect | ParamRole::InEncoded { .. }
+                )
+            })
             .collect();
         let trampoline_params: Vec<SwiftClosureTrampolineParam> = method
             .params
@@ -1232,8 +1230,7 @@ impl<'a> SwiftLowerer<'a> {
             ParamRole::InEncoded { decode_ops, .. } => {
                 let ptr_name = format!("ptr{}", idx);
                 let len_name = format!("len{}", idx);
-                let wire_buffer =
-                    format!("WireBuffer(ptr: {}!, len: Int({}))", ptr_name, len_name);
+                let wire_buffer = format!("WireBuffer(ptr: {}!, len: Int({}))", ptr_name, len_name);
                 let decode = emit::emit_read_value_at(decode_ops, "0");
                 let decode_expr = format!("{{ let wire = {}; return {} }}()", wire_buffer, decode);
                 SwiftClosureTrampolineParam {
@@ -1389,7 +1386,11 @@ impl<'a> SwiftLowerer<'a> {
         }
     }
 
-    fn lower_return_def_for_async(&self, error: &ErrorTransport, returns: &ReturnDef) -> SwiftReturn {
+    fn lower_return_def_for_async(
+        &self,
+        error: &ErrorTransport,
+        returns: &ReturnDef,
+    ) -> SwiftReturn {
         match error {
             ErrorTransport::None => SwiftReturn::Void,
             ErrorTransport::StatusCode => SwiftReturn::Throws {

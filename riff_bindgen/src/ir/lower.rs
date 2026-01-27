@@ -287,7 +287,10 @@ impl<'c> Lowerer<'c> {
             } => (
                 false,
                 match &enumeration.repr {
-                    EnumRepr::Data { variants: data_variants, .. } => {
+                    EnumRepr::Data {
+                        variants: data_variants,
+                        ..
+                    } => {
                         let layout_fields = variants
                             .iter()
                             .map(|variant| {
@@ -547,6 +550,7 @@ impl<'c> Lowerer<'c> {
         self.expand_decode_with_offset(codec, "pos")
     }
 
+    #[allow(clippy::only_used_in_recursion)]
     fn expand_decode_with_offset(&self, codec: &CodecPlan, base: &str) -> ReadSeq {
         let offset = OffsetExpr::Base;
         match codec {
@@ -574,7 +578,10 @@ impl<'c> Lowerer<'c> {
                 shape: WireShape::Value,
             },
             CodecPlan::Builtin(id) => {
-                let size = self.builtin_fixed_size(id).map(SizeExpr::Fixed).unwrap_or(SizeExpr::Runtime);
+                let size = self
+                    .builtin_fixed_size(id)
+                    .map(SizeExpr::Fixed)
+                    .unwrap_or(SizeExpr::Runtime);
                 ReadSeq {
                     size,
                     ops: vec![ReadOp::Builtin {
@@ -761,18 +768,19 @@ impl<'c> Lowerer<'c> {
             }
             CodecPlan::Vec { element, layout } => {
                 let element_seq = self.expand_encode(element, "item");
-                let size_expr = if matches!(element.as_ref(), CodecPlan::Primitive(PrimitiveType::U8)) {
-                    SizeExpr::Sum(vec![
-                        SizeExpr::Fixed(4),
-                        SizeExpr::BytesLen(value.to_string()),
-                    ])
-                } else {
-                    SizeExpr::VecSize {
-                        value: value.to_string(),
-                        inner: Box::new(element_seq.size.clone()),
-                        layout: layout.clone(),
-                    }
-                };
+                let size_expr =
+                    if matches!(element.as_ref(), CodecPlan::Primitive(PrimitiveType::U8)) {
+                        SizeExpr::Sum(vec![
+                            SizeExpr::Fixed(4),
+                            SizeExpr::BytesLen(value.to_string()),
+                        ])
+                    } else {
+                        SizeExpr::VecSize {
+                            value: value.to_string(),
+                            inner: Box::new(element_seq.size.clone()),
+                            layout: layout.clone(),
+                        }
+                    };
                 WriteSeq {
                     size: size_expr,
                     ops: vec![WriteOp::Vec {

@@ -126,14 +126,22 @@ pub fn emit_size_expr(size: &SizeExpr) -> String {
         SizeExpr::WireSize { value } => format!("{}.wireEncodedSize()", value),
         SizeExpr::BuiltinSize { id, value } => swift_builtin_size_expr(id, value),
         SizeExpr::Sum(parts) => {
-            let rendered = parts.iter().map(emit_size_expr).collect::<Vec<_>>().join(" + ");
+            let rendered = parts
+                .iter()
+                .map(emit_size_expr)
+                .collect::<Vec<_>>()
+                .join(" + ");
             format!("({})", rendered)
         }
         SizeExpr::OptionSize { value, inner } => {
             let inner_size = emit_size_expr(inner);
             format!("({}.map {{ v in 1 + {} }} ?? 1)", value, inner_size)
         }
-        SizeExpr::VecSize { value, inner, layout } => {
+        SizeExpr::VecSize {
+            value,
+            inner,
+            layout,
+        } => {
             let inner_size = emit_size_expr(inner);
             match layout {
                 VecLayout::Blittable { element_size } => {
@@ -296,7 +304,11 @@ fn emit_read_op(op: &ReadOp, base_name: &str, base_expr: &str) -> (String, ReadR
                 }
             }
         }
-        ReadOp::Result { tag_offset, ok, err } => {
+        ReadOp::Result {
+            tag_offset,
+            ok,
+            err,
+        } => {
             let offset_expr = emit_offset_expr(tag_offset, base_name, base_expr);
             let (ok_reader, ok_return) = emit_read_expr(ok, "pos", "$0");
             let ok_tuple = match ok_return {

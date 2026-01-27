@@ -16,8 +16,13 @@ pub enum SizeExpr {
     StringLen(String),
     BytesLen(String),
     ValueSize(String),
-    WireSize { value: String },
-    BuiltinSize { id: BuiltinId, value: String },
+    WireSize {
+        value: String,
+    },
+    BuiltinSize {
+        id: BuiltinId,
+        value: String,
+    },
     Sum(Vec<SizeExpr>),
     OptionSize {
         value: String,
