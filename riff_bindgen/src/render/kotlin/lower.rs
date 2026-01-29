@@ -1456,11 +1456,11 @@ impl<'a> KotlinLowerer<'a> {
                 role: JniParamRole::Direct {
                     jni_type: self.jni_type_for_abi(&param.ffi_type),
                 },
-                has_len_param: None,
+                len_companion: None,
             },
             ParamRole::InString { len_param } => JniParamMapping {
                 role: JniParamRole::StringParam,
-                has_len_param: Some(len_param.clone()),
+                len_companion: Some(len_param.clone()),
             },
             ParamRole::InBuffer {
                 element_abi,
@@ -1470,17 +1470,17 @@ impl<'a> KotlinLowerer<'a> {
                 role: JniParamRole::Buffer {
                     jni_type: self.jni_buffer_type(element_abi),
                 },
-                has_len_param: Some(len_param.clone()),
+                len_companion: Some(len_param.clone()),
             },
             ParamRole::InEncoded { len_param, .. } => JniParamMapping {
                 role: JniParamRole::Encoded,
-                has_len_param: Some(len_param.clone()),
+                len_companion: Some(len_param.clone()),
             },
             ParamRole::InHandle { nullable, .. } => JniParamMapping {
                 role: JniParamRole::Handle {
                     nullable: *nullable,
                 },
-                has_len_param: None,
+                len_companion: None,
             },
             ParamRole::InCallback {
                 callback_id,
@@ -1491,35 +1491,23 @@ impl<'a> KotlinLowerer<'a> {
                     callback_id: callback_id.clone(),
                     nullable: *nullable,
                 },
-                has_len_param: None,
+                len_companion: None,
             },
             ParamRole::OutBuffer { len_param, .. } => JniParamMapping {
                 role: JniParamRole::OutBuffer,
-                has_len_param: Some(len_param.clone()),
+                len_companion: Some(len_param.clone()),
             },
             ParamRole::OutDirect | ParamRole::OutLen { .. } | ParamRole::StatusOut => {
                 JniParamMapping {
                     role: JniParamRole::Hidden,
-                    has_len_param: None,
+                    len_companion: None,
                 }
             }
         }
     }
 
-    fn jni_type_for_mapping(&self, mapping: &JniParamMapping) -> String {
-        match &mapping.role {
-            JniParamRole::Direct { jni_type } | JniParamRole::Buffer { jni_type } => {
-                jni_type.clone()
-            }
-            JniParamRole::StringParam => "String".to_string(),
-            JniParamRole::Encoded | JniParamRole::OutBuffer => "ByteBuffer".to_string(),
-            JniParamRole::Handle { .. } | JniParamRole::Callback { .. } => "Long".to_string(),
-            JniParamRole::Hidden => "Unit".to_string(),
-        }
-    }
-
     fn jni_type_for_param(&self, param: &AbiParam) -> String {
-        self.jni_type_for_mapping(&self.jni_param_mapping(param))
+        self.jni_param_mapping(param).jni_type()
     }
 
     fn jni_buffer_type(&self, element_abi: &AbiType) -> String {
@@ -1879,28 +1867,36 @@ impl<'a> KotlinLowerer<'a> {
         }
     }
 
-    fn visible_native_params<'b>(&'b self, call: &'b AbiCall) -> Vec<&'b AbiParam> {
-        let len_params: HashSet<ParamName> = call
-            .params
-            .iter()
-            .filter_map(|param| self.jni_param_mapping(param).has_len_param)
-            .collect();
+    fn jni_param_mappings<'b>(&self, call: &'b AbiCall) -> Vec<(&'b AbiParam, JniParamMapping)> {
         call.params
             .iter()
-            .filter(|param| {
-                !len_params.contains(&param.name)
-                    && !matches!(self.jni_param_mapping(param).role, JniParamRole::Hidden)
-            })
+            .map(|param| (param, self.jni_param_mapping(param)))
+            .collect()
+    }
+
+    fn visible_native_params<'b>(&'b self, call: &'b AbiCall) -> Vec<&'b AbiParam> {
+        let mappings = self.jni_param_mappings(call);
+        let len_params: HashSet<&ParamName> = mappings
+            .iter()
+            .filter_map(|(_, m)| m.len_companion.as_ref())
+            .collect();
+        mappings
+            .iter()
+            .filter(|(param, mapping)| !len_params.contains(&param.name) && mapping.is_visible())
+            .map(|(param, _)| *param)
             .collect()
     }
 
     fn native_args_for_params(&self, call: &AbiCall, writers: &[KotlinWireWriter]) -> Vec<String> {
-        self.visible_native_params(call)
-            .into_iter()
-            .map(|param| {
-                let mapping = self.jni_param_mapping(param);
-                self.native_arg_for_mapping(param, &mapping, writers)
-            })
+        let mappings = self.jni_param_mappings(call);
+        let len_params: HashSet<&ParamName> = mappings
+            .iter()
+            .filter_map(|(_, m)| m.len_companion.as_ref())
+            .collect();
+        mappings
+            .iter()
+            .filter(|(param, mapping)| !len_params.contains(&param.name) && mapping.is_visible())
+            .map(|(param, mapping)| self.native_arg_for_mapping(param, mapping, writers))
             .collect()
     }
 
@@ -3016,5 +3012,23 @@ enum JniParamRole {
 
 struct JniParamMapping {
     role: JniParamRole,
-    has_len_param: Option<ParamName>,
+    len_companion: Option<ParamName>,
+}
+
+impl JniParamMapping {
+    fn is_visible(&self) -> bool {
+        !matches!(self.role, JniParamRole::Hidden)
+    }
+
+    fn jni_type(&self) -> String {
+        match &self.role {
+            JniParamRole::Direct { jni_type } | JniParamRole::Buffer { jni_type } => {
+                jni_type.clone()
+            }
+            JniParamRole::StringParam => "String".to_string(),
+            JniParamRole::Encoded | JniParamRole::OutBuffer => "ByteBuffer".to_string(),
+            JniParamRole::Handle { .. } | JniParamRole::Callback { .. } => "Long".to_string(),
+            JniParamRole::Hidden => "Unit".to_string(),
+        }
+    }
 }
