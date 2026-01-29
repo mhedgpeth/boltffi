@@ -95,7 +95,14 @@ pub fn emit_read_pair(seq: &ReadSeq, base_name: &str, base_expr: &str) -> String
             element,
             layout,
         } => {
-            let value = emit_read_vec_value(len_offset, element_type, element, layout, base_name, base_expr);
+            let value = emit_read_vec_value(
+                len_offset,
+                element_type,
+                element,
+                layout,
+                base_name,
+                base_expr,
+            );
             let offset_expr = emit_offset_expr(len_offset, base_name, base_expr);
             format!("{}.let {{ v -> v to (wire.pos - {}) }}", value, offset_expr)
         }
@@ -103,7 +110,9 @@ pub fn emit_read_pair(seq: &ReadSeq, base_name: &str, base_expr: &str) -> String
             let offset_expr = emit_offset_expr(offset, base_name, base_expr);
             format!(
                 "{}.decode(wire, {}).let {{ v -> v to (wire.pos - {}) }}",
-                id.as_str(), offset_expr, offset_expr
+                id.as_str(),
+                offset_expr,
+                offset_expr
             )
         }
         ReadOp::Enum { id, offset, layout } => {
@@ -121,7 +130,9 @@ pub fn emit_read_pair(seq: &ReadSeq, base_name: &str, base_expr: &str) -> String
                 EnumLayout::Data { .. } | EnumLayout::Recursive => {
                     format!(
                         "{}.decode(wire, {}).let {{ v -> v to (wire.pos - {}) }}",
-                        id.as_str(), offset_expr, offset_expr
+                        id.as_str(),
+                        offset_expr,
+                        offset_expr
                     )
                 }
             }
@@ -147,7 +158,9 @@ pub fn emit_read_pair(seq: &ReadSeq, base_name: &str, base_expr: &str) -> String
         ReadOp::Custom { id, .. } => {
             format!(
                 "{}.decode(wire, {}).let {{ v -> v to (wire.pos - {}) }}",
-                id.as_str(), base_expr, base_expr
+                id.as_str(),
+                base_expr,
+                base_expr
             )
         }
     }
@@ -174,7 +187,14 @@ pub fn emit_read_value(seq: &ReadSeq, base_name: &str, base_expr: &str) -> Strin
             element_type,
             element,
             layout,
-        } => emit_read_vec_value(len_offset, element_type, element, layout, base_name, base_expr),
+        } => emit_read_vec_value(
+            len_offset,
+            element_type,
+            element,
+            layout,
+            base_name,
+            base_expr,
+        ),
         ReadOp::Record { id, offset, .. } => {
             let offset_expr = emit_offset_expr(offset, base_name, base_expr);
             format!("{}.decode(wire, {})", id.as_str(), offset_expr)
@@ -203,9 +223,7 @@ pub fn emit_read_value(seq: &ReadSeq, base_name: &str, base_expr: &str) -> Strin
                 offset_expr, ok_reader, err_reader
             )
         }
-        ReadOp::Builtin { id, offset } => {
-            emit_read_builtin_value(id, offset, base_name, base_expr)
-        }
+        ReadOp::Builtin { id, offset } => emit_read_builtin_value(id, offset, base_name, base_expr),
         ReadOp::Custom { id, .. } => {
             format!("{}.decode(wire, {})", id.as_str(), base_expr)
         }
@@ -257,10 +275,7 @@ pub fn emit_advance_read(seq: &ReadSeq) -> String {
         ReadOp::Result { ok, err, .. } => {
             let ok_expr = emit_advance_read(ok);
             let err_expr = emit_advance_read(err);
-            format!(
-                "wire.advanceResult({{ {} }}, {{ {} }})",
-                ok_expr, err_expr
-            )
+            format!("wire.advanceResult({{ {} }}, {{ {} }})", ok_expr, err_expr)
         }
         ReadOp::Builtin { id, .. } => match id.as_str() {
             "Duration" => "wire.advanceDuration()".to_string(),
@@ -275,11 +290,7 @@ pub fn emit_advance_read(seq: &ReadSeq) -> String {
     }
 }
 
-fn emit_advance_vec(
-    element_type: &TypeExpr,
-    element: &ReadSeq,
-    layout: &VecLayout,
-) -> String {
+fn emit_advance_vec(element_type: &TypeExpr, element: &ReadSeq, layout: &VecLayout) -> String {
     match layout {
         VecLayout::Blittable { .. } => match element_type {
             TypeExpr::Primitive(primitive) => {
@@ -422,7 +433,12 @@ pub fn emit_inline_decode(seq: &ReadSeq, _local_name: &str, pos_var: &str) -> St
                     layout,
                 } => {
                     let value = emit_read_vec_value(
-                        len_offset, element_type, element, layout, pos_var, pos_var,
+                        len_offset,
+                        element_type,
+                        element,
+                        layout,
+                        pos_var,
+                        pos_var,
                     );
                     let is_primitive_blittable = matches!(
                         (layout, element_type),
@@ -580,7 +596,12 @@ fn emit_read_builtin_value(
     }
 }
 
-fn emit_read_builtin_size(id: &BuiltinId, offset: &OffsetExpr, base_name: &str, base_expr: &str) -> String {
+fn emit_read_builtin_size(
+    id: &BuiltinId,
+    offset: &OffsetExpr,
+    base_name: &str,
+    base_expr: &str,
+) -> String {
     let offset_expr = emit_offset_expr(offset, base_name, base_expr);
     match id.as_str() {
         "Duration" => "12".to_string(),
@@ -637,18 +658,12 @@ fn emit_read_vec_value(
             }
             _ => {
                 let reader = emit_element_reader(element);
-                format!(
-                    "wire.readListOf({}, {{ w, p -> {} }})",
-                    offset_expr, reader
-                )
+                format!("wire.readListOf({}, {{ w, p -> {} }})", offset_expr, reader)
             }
         },
         VecLayout::Encoded => {
             let reader = emit_element_reader(element);
-            format!(
-                "wire.readListOf({}, {{ w, p -> {} }})",
-                offset_expr, reader
-            )
+            format!("wire.readListOf({}, {{ w, p -> {} }})", offset_expr, reader)
         }
     }
 }
@@ -672,7 +687,9 @@ pub fn emit_element_reader(seq: &ReadSeq) -> String {
             };
             format!("w.{}(p).also {{ w.pos = p + {} }}", method, size)
         }
-        ReadOp::String { .. } => "w.readStringAt(p).also { w.pos = p + w.stringSize(p) }".to_string(),
+        ReadOp::String { .. } => {
+            "w.readStringAt(p).also { w.pos = p + w.stringSize(p) }".to_string()
+        }
         ReadOp::Bytes { .. } => "w.readBytesAt(p).also { w.pos = p + w.bytesSize(p) }".to_string(),
         ReadOp::Record { id, .. } => format!("{}.decode(w, p)", id.as_str()),
         ReadOp::Enum { id, layout, .. } => match layout {
@@ -692,7 +709,8 @@ pub fn emit_element_reader(seq: &ReadSeq) -> String {
             "Duration" => "w.readDuration(p).also { w.pos = p + 12 }".to_string(),
             "SystemTime" => "w.readInstant(p).also { w.pos = p + 12 }".to_string(),
             "Uuid" => "w.readUuid(p).also { w.pos = p + 16 }".to_string(),
-            "Url" => "java.net.URI.create(w.readStringAt(p)).also { w.pos = p + w.stringSize(p) }".to_string(),
+            "Url" => "java.net.URI.create(w.readStringAt(p)).also { w.pos = p + w.stringSize(p) }"
+                .to_string(),
             _ => "w.readStringAt(p).also { w.pos = p + w.stringSize(p) }".to_string(),
         },
         ReadOp::Option { .. } => emit_read_value(seq, "p", "p"),

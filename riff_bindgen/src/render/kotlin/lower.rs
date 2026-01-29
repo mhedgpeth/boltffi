@@ -18,12 +18,12 @@ use crate::ir::ids::{
 use crate::ir::ops::{FieldReadOp, OffsetExpr, ReadOp, ReadSeq, SizeExpr, WriteOp, WriteSeq};
 use crate::ir::plan::AbiType;
 use crate::ir::types::{PrimitiveType, TypeExpr};
-use crate::render::kotlin::{
-    FactoryStyle, KotlinApiStyle as KotlinInputApiStyle, KotlinOptions, NamingConvention,
-};
 use crate::render::kotlin::emit;
 use crate::render::kotlin::plan::*;
 use crate::render::kotlin::templates::{AsyncMethodTemplate, WireMethodTemplate};
+use crate::render::kotlin::{
+    FactoryStyle, KotlinApiStyle as KotlinInputApiStyle, KotlinOptions, NamingConvention,
+};
 use askama::Template;
 use riff_ffi_rules::naming;
 
@@ -812,7 +812,6 @@ impl<'a> KotlinLowerer<'a> {
             wait: stream.wait.to_string(),
             unsubscribe: stream.unsubscribe.to_string(),
             free: stream.free.to_string(),
-
         }
     }
 
