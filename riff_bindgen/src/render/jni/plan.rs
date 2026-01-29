@@ -75,7 +75,7 @@ impl JniAsyncCompleteKind {
     pub fn jni_return(&self) -> &str {
         match self {
             Self::Void => "void",
-            Self::WireEncoded => "jobject",
+            Self::WireEncoded => "jbyteArray",
             Self::Direct { jni_return, .. } => jni_return,
         }
     }
@@ -696,7 +696,7 @@ impl JniReturnAbi {
             Self::Direct {
                 jni_return_type, ..
             } => jni_return_type.clone(),
-            Self::WireEncoded => "jobject".to_string(),
+            Self::WireEncoded => "jbyteArray".to_string(),
         }
     }
 

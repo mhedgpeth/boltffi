@@ -11,14 +11,12 @@ fun {{ func_name }}({% for param in signature_params %}{{ param.name }}: {{ para
     val buf = Native.{{ ffi_name }}({% for arg in native_args %}{{ arg }}{% if !loop.last %}, {% endif %}{% endfor %})
         ?: throw FfiException(-1, "Null buffer returned")
 {%- if is_blittable_return %}
-    return useNativeBuffer(buf) { buffer ->
+    return useWireBytes(buf) { buffer ->
         {{ decode_expr }}
     }
 {%- else %}
-    return useNativeBuffer(buf) { buffer ->
-        val wire = WireBuffer.fromByteBuffer(buffer)
-        {{ decode_expr }}
-    }
+    val wire = WireBuffer(buf)
+    return {{ decode_expr }}
 {%- endif %}
 {%- endif %}
 {%- else %}
@@ -40,14 +38,12 @@ fun {{ func_name }}({% for param in signature_params %}{{ param.name }}: {{ para
         val buf = Native.{{ ffi_name }}({% for arg in native_args %}{{ arg }}{% if !loop.last %}, {% endif %}{% endfor %})
             ?: throw FfiException(-1, "Null buffer returned")
 {%- if is_blittable_return %}
-        return useNativeBuffer(buf) { buffer ->
+        return useWireBytes(buf) { buffer ->
             {{ decode_expr }}
         }
 {%- else %}
-        return useNativeBuffer(buf) { buffer ->
-            val wire = WireBuffer.fromByteBuffer(buffer)
-            {{ decode_expr }}
-        }
+        val wire = WireBuffer(buf)
+        return {{ decode_expr }}
 {%- endif %}
 {%- endif %}
     } finally {

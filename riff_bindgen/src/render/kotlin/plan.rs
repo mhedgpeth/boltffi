@@ -36,7 +36,8 @@ pub struct KotlinCustomType {
     pub repr_kotlin_type: String,
     pub repr_size_expr: String,
     pub repr_encode_expr: String,
-    pub repr_decode_pair_expr: String,
+    pub repr_decode_value_expr: String,
+    pub repr_advance_expr: String,
 }
 
 #[derive(Clone)]
@@ -76,6 +77,7 @@ pub struct KotlinEnumField {
     pub kotlin_type: String,
     pub local_name: String,
     pub wire_decode_inline: String,
+    pub wire_advance_expr: String,
     pub wire_size_expr: String,
     pub wire_encode: String,
 }
@@ -123,6 +125,7 @@ pub struct KotlinRecordField {
     pub read_expr: String,
     pub local_name: String,
     pub wire_decode_inline: String,
+    pub wire_advance_expr: String,
     pub wire_size_expr: String,
     pub wire_encode: String,
     pub padding_after: usize,

@@ -247,12 +247,10 @@ mod tests {
     }
 
     #[test]
-    fn jni_ir_matches_legacy() {
+    fn jni_ir_generates_valid_glue() {
         let module = build_test_module();
         let package = "com.example";
         let class_name = "BenchRiff";
-
-        let legacy = JniGenerator::generate_with_class_name(&module, package, class_name);
 
         let mut ir_module = module.clone();
         let contract = ir::build_contract(&mut ir_module);
@@ -266,6 +264,9 @@ mod tests {
         .lower();
         let ir_code = JniEmitter::emit(&jni_module);
 
-        assert_eq!(legacy, ir_code);
+        assert!(!ir_code.is_empty());
+        assert!(ir_code.contains("riff_free_buf"));
+        assert!(ir_code.contains("jbyteArray"));
+        assert!(!ir_code.contains("NewDirectByteBuffer(env, (void*)_buf.ptr"));
     }
 }

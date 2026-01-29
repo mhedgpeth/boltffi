@@ -5,6 +5,11 @@
 #include <string.h>
 #include "{{ module_name }}.h"
 
+static inline void riff_free_buf(uint8_t* ptr, size_t len) {
+    FfiBuf_u8 buf = { ptr, len, len };
+    {{ prefix }}_free_buf_u8(buf);
+}
+
 {%- if has_async %}
 static JavaVM* g_jvm = NULL;
 static jclass g_callback_class = NULL;
@@ -193,7 +198,10 @@ JNIEXPORT {{ func.complete_kind.jni_return() }} JNICALL {{ func.jni_complete_nam
     FfiStatus _status;
     FfiBuf_u8 _buf = {{ func.ffi_complete }}((RustFutureHandle)future, &_status);
     if (_status.code != 0 || _buf.ptr == NULL) return NULL;
-    return (*env)->NewDirectByteBuffer(env, (void*)_buf.ptr, (jlong)_buf.len);
+    jbyteArray _arr = (*env)->NewByteArray(env, (jint)_buf.len);
+    (*env)->SetByteArrayRegion(env, _arr, 0, (jint)_buf.len, (const jbyte*)_buf.ptr);
+    riff_free_buf(_buf.ptr, _buf.len);
+    return _arr;
 {%- else %}
     FfiStatus _status;
     {{ func.complete_kind.c_type() }} _result = {{ func.ffi_complete }}((RustFutureHandle)future, &_status);
@@ -291,7 +299,10 @@ JNIEXPORT {{ func.complete_kind.jni_return() }} JNICALL {{ func.jni_complete_nam
     FfiStatus _status;
     FfiBuf_u8 _buf = {{ func.ffi_complete }}((RustFutureHandle)future, &_status);
     if (_status.code != 0 || _buf.ptr == NULL) return NULL;
-    return (*env)->NewDirectByteBuffer(env, (void*)_buf.ptr, (jlong)_buf.len);
+    jbyteArray _arr = (*env)->NewByteArray(env, (jint)_buf.len);
+    (*env)->SetByteArrayRegion(env, _arr, 0, (jint)_buf.len, (const jbyte*)_buf.ptr);
+    riff_free_buf(_buf.ptr, _buf.len);
+    return _arr;
 {%- else %}
     FfiStatus _status;
     {{ func.complete_kind.c_type() }} _result = {{ func.ffi_complete }}((RustFutureHandle)future, &_status);

@@ -304,8 +304,10 @@ impl<'a> KotlinLowerer<'a> {
     fn lower_custom_type(&self, custom: &CustomTypeDef) -> KotlinCustomType {
         let class_name = NamingConvention::class_name(custom.id.as_str());
         let repr_kotlin_type = self.kotlin_type(&custom.repr);
-        let repr_decode_pair_expr =
-            emit::emit_read_pair(&self.custom_read_seq(custom), "offset", "offset");
+        let custom_seq = self.custom_read_seq(custom);
+        let repr_decode_value_expr =
+            emit::emit_read_value_advancing(&custom_seq, "offset", "offset");
+        let repr_advance_expr = emit::emit_advance_read(&custom_seq);
         let repr_encode_expr = emit::emit_write_expr(&self.custom_write_seq(custom));
         let repr_size_expr = emit::emit_size_expr(&self.custom_size_expr(custom));
 
@@ -314,7 +316,8 @@ impl<'a> KotlinLowerer<'a> {
             repr_kotlin_type,
             repr_size_expr,
             repr_encode_expr,
-            repr_decode_pair_expr,
+            repr_decode_value_expr,
+            repr_advance_expr,
         }
     }
 
@@ -384,6 +387,7 @@ impl<'a> KotlinLowerer<'a> {
             kotlin_type: self.kotlin_type(&field.type_expr),
             local_name: local_name.clone(),
             wire_decode_inline: emit::emit_inline_decode(&field.decode, &local_name, "pos"),
+            wire_advance_expr: emit::emit_advance_read(&field.decode),
             wire_size_expr: emit::emit_size_expr(&field.decode.size),
             wire_encode: emit::emit_write_expr(&field.encode),
         }
@@ -485,6 +489,7 @@ impl<'a> KotlinLowerer<'a> {
             read_expr: emit::emit_read_value(&decode_seq, "offset", "offset"),
             local_name: local_name.clone(),
             wire_decode_inline: emit::emit_inline_decode(&decode_seq, &local_name, "pos"),
+            wire_advance_expr: emit::emit_advance_read(&decode_seq),
             wire_size_expr: emit::emit_size_expr(&encode_seq.size),
             wire_encode: emit::emit_write_expr(&encode_seq),
             padding_after: self.field_padding_after(&record.id, &field.name),
@@ -1242,7 +1247,7 @@ impl<'a> KotlinLowerer<'a> {
                         jni_type: self.jni_type_for_param(param),
                     })
                     .collect(),
-                return_jni_type: "ByteBuffer?".to_string(),
+                return_jni_type: "ByteArray?".to_string(),
             })
             .collect::<Vec<_>>();
         let classes = self
@@ -1282,14 +1287,14 @@ impl<'a> KotlinLowerer<'a> {
         let return_jni_type = match &call.return_ {
             ReturnTransport::Void => "Unit".to_string(),
             ReturnTransport::Direct(abi) => self.jni_type_for_abi(abi),
-            ReturnTransport::Encoded { .. } => "ByteBuffer?".to_string(),
+            ReturnTransport::Encoded { .. } => "ByteArray?".to_string(),
             ReturnTransport::Handle { .. } | ReturnTransport::Callback { .. } => "Long".to_string(),
         };
         let complete_return_jni_type = match &call.mode {
             CallMode::Async(async_call) => match &async_call.result {
                 AsyncResultTransport::Void => "Unit".to_string(),
                 AsyncResultTransport::Direct(abi) => self.jni_type_for_abi(abi),
-                AsyncResultTransport::Encoded { .. } => "ByteBuffer?".to_string(),
+                AsyncResultTransport::Encoded { .. } => "ByteArray?".to_string(),
                 AsyncResultTransport::Handle { .. } | AsyncResultTransport::Callback { .. } => {
                     "Long".to_string()
                 }
@@ -1369,7 +1374,7 @@ impl<'a> KotlinLowerer<'a> {
                     return_jni_type: match &async_call.result {
                         AsyncResultTransport::Void => "Unit".to_string(),
                         AsyncResultTransport::Direct(abi) => self.jni_type_for_abi(abi),
-                        AsyncResultTransport::Encoded { .. } => "ByteBuffer?".to_string(),
+                        AsyncResultTransport::Encoded { .. } => "ByteArray?".to_string(),
                         AsyncResultTransport::Handle { .. }
                         | AsyncResultTransport::Callback { .. } => "Long".to_string(),
                     },
@@ -1425,7 +1430,7 @@ impl<'a> KotlinLowerer<'a> {
         match returns {
             ReturnTransport::Void => "Unit".to_string(),
             ReturnTransport::Direct(abi) => self.jni_type_for_abi(abi),
-            ReturnTransport::Encoded { .. } => "ByteBuffer?".to_string(),
+            ReturnTransport::Encoded { .. } => "ByteArray?".to_string(),
             ReturnTransport::Handle { .. } | ReturnTransport::Callback { .. } => "Long".to_string(),
         }
     }
@@ -1947,16 +1952,16 @@ impl<'a> KotlinLowerer<'a> {
             Some(ReadOp::Result { ok, err, .. }) => (ok.as_ref(), err.as_ref()),
             _ => return emit::emit_read_value(decode_ops, "0", "0"),
         };
-        let ok_expr = match returns {
+        let ok_reader = match returns {
             ReturnDef::Result {
                 ok: TypeExpr::Void, ..
-            } => "Unit to 0".to_string(),
-            _ => emit::emit_read_pair(ok_seq, "pos", "pos"),
+            } => "Unit.also { w.pos = p }".to_string(),
+            _ => emit::emit_element_reader(ok_seq),
         };
-        let err_expr = emit::emit_read_pair(err_seq, "pos", "pos");
+        let err_reader = emit::emit_element_reader(err_seq);
         format!(
-            "wire.readResult(0, {{ pos -> {} }}, {{ pos -> {} }}).first.getOrThrow()",
-            ok_expr, err_expr
+            "wire.readResultValue(0, {{ w, p -> {} }}, {{ w, p -> {} }}).getOrThrow()",
+            ok_reader, err_reader
         )
     }
 

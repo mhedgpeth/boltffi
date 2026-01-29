@@ -38,6 +38,9 @@ JNIEXPORT {{ return_abi.jni_return_type() }} JNICALL {{ jni_name }}(JNIEnv *env,
     return {{ return_abi.jni_result_cast() }}_result;
 {%- elif return_abi.is_wire_encoded() %}
     if (_buf.ptr == NULL) return NULL;
-    return (*env)->NewDirectByteBuffer(env, (void*)_buf.ptr, (jlong)_buf.len);
+    jbyteArray _arr = (*env)->NewByteArray(env, (jint)_buf.len);
+    (*env)->SetByteArrayRegion(env, _arr, 0, (jint)_buf.len, (const jbyte*)_buf.ptr);
+    riff_free_buf(_buf.ptr, _buf.len);
+    return _arr;
 {%- endif %}
 }

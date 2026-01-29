@@ -33,14 +33,12 @@ suspend fun {{ func_name }}({% for param in signature_params %}{{ param.name }}:
 {%- else %}
         val buf = Native.{{ ffi_complete }}(future) ?: throw FfiException(-1, "Null buffer returned")
 {%- if is_blittable_return %}
-        useNativeBuffer(buf) { buffer ->
+        useWireBytes(buf) { buffer ->
             {{ decode_expr }}
         }
 {%- else %}
-        useNativeBuffer(buf) { buffer ->
-            val wire = WireBuffer.fromByteBuffer(buffer)
-            {{ decode_expr }}
-        }
+        val wire = WireBuffer(buf)
+        {{ decode_expr }}
 {%- endif %}
 {%- endif %}
     },

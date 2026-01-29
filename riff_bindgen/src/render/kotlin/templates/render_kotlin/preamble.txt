@@ -27,9 +27,9 @@ value class {{ custom.class_name }}(val value: {{ custom.repr_kotlin_type }}) {
     internal fun wireEncodeTo(wire: WireWriter) { val repr = value; {{ custom.repr_encode_expr }} }
 
     companion object {
-        internal fun decode(wire: WireBuffer, offset: Int): Pair<{{ custom.class_name }}, Int> {
-            val (repr, size) = {{ custom.repr_decode_pair_expr }}
-            return {{ custom.class_name }}(repr) to size
+        internal fun decode(wire: WireBuffer, offset: Int): {{ custom.class_name }} {
+            wire.pos = offset
+            return {{ custom.class_name }}({{ custom.repr_advance_expr }})
         }
     }
 }
@@ -41,6 +41,10 @@ class RiffException(val errorBuffer: ByteBuffer) : Exception("Structured error")
     init {
         errorBuffer.order(ByteOrder.nativeOrder())
     }
+}
+
+private inline fun <T> useWireBytes(bytes: ByteArray, block: (java.nio.ByteBuffer) -> T): T {
+    return block(java.nio.ByteBuffer.wrap(bytes).order(java.nio.ByteOrder.LITTLE_ENDIAN))
 }
 
 private inline fun <T> useNativeBuffer(buffer: ByteBuffer, block: (ByteBuffer) -> T): T {
@@ -192,23 +196,28 @@ internal class RiffStreamContext(
 }
 {%- endif %}
 
-class WireBuffer private constructor(private val buffer: ByteBuffer) {
+class WireBuffer(@JvmField val array: ByteArray, @JvmField val arrayBase: Int = 0) {
+    @JvmField var pos: Int = 0
+
     companion object {
-        fun fromByteBuffer(buf: ByteBuffer): WireBuffer =
-            WireBuffer(buf.slice().order(ByteOrder.LITTLE_ENDIAN))
+        fun fromByteBuffer(buf: java.nio.ByteBuffer): WireBuffer {
+            val bytes = ByteArray(buf.remaining())
+            buf.get(bytes)
+            return WireBuffer(bytes)
+        }
     }
 
-    fun readBool(offset: Int): Boolean = buffer.get(offset) != 0.toByte()
-    fun readI8(offset: Int): Byte = buffer.get(offset)
-    fun readU8(offset: Int): UByte = buffer.get(offset).toUByte()
-    fun readI16(offset: Int): Short = buffer.getShort(offset)
-    fun readU16(offset: Int): UShort = buffer.getShort(offset).toUShort()
-    fun readI32(offset: Int): Int = buffer.getInt(offset)
-    fun readU32(offset: Int): UInt = buffer.getInt(offset).toUInt()
-    fun readI64(offset: Int): Long = buffer.getLong(offset)
-    fun readU64(offset: Int): ULong = buffer.getLong(offset).toULong()
-    fun readF32(offset: Int): Float = buffer.getFloat(offset)
-    fun readF64(offset: Int): Double = buffer.getDouble(offset)
+    fun readBool(offset: Int): Boolean = array[arrayBase + offset] != 0.toByte()
+    fun readI8(offset: Int): Byte = array[arrayBase + offset]
+    fun readU8(offset: Int): UByte = array[arrayBase + offset].toUByte()
+    fun readI16(offset: Int): Short = leI16(arrayBase + offset)
+    fun readU16(offset: Int): UShort = leI16(arrayBase + offset).toUShort()
+    fun readI32(offset: Int): Int = leI32(arrayBase + offset)
+    fun readU32(offset: Int): UInt = leI32(arrayBase + offset).toUInt()
+    fun readI64(offset: Int): Long = leI64(arrayBase + offset)
+    fun readU64(offset: Int): ULong = leI64(arrayBase + offset).toULong()
+    fun readF32(offset: Int): Float = Float.fromBits(leI32(arrayBase + offset))
+    fun readF64(offset: Int): Double = Double.fromBits(leI64(arrayBase + offset))
 
     fun readDuration(offset: Int): Duration {
         val seconds = readI64(offset)
@@ -235,125 +244,273 @@ class WireBuffer private constructor(private val buffer: ByteBuffer) {
         return UUID(msb, lsb)
     }
 
-    fun readUri(offset: Int): Pair<URI, Int> {
-        val (value, size) = readString(offset)
-        return URI.create(value) to size
+    fun readStringAt(offset: Int): String {
+        val o = arrayBase + offset
+        val len = leI32(o).toUInt().toInt()
+        if (len == 0) return ""
+        return String(array, o + 4, len, Charsets.UTF_8)
     }
 
-    fun readString(offset: Int): Pair<String, Int> {
-        val len = readU32(offset).toInt()
-        val bytes = ScratchBytes.acquire(len)
-        val view = buffer.duplicate().order(ByteOrder.LITTLE_ENDIAN)
-        view.position(offset + 4)
-        view.get(bytes, 0, len)
-        return String(bytes, 0, len, Charsets.UTF_8) to (4 + len)
+    fun readBytesAt(offset: Int): ByteArray {
+        val o = arrayBase + offset
+        val len = leI32(o).toUInt().toInt()
+        if (len == 0) return ByteArray(0)
+        return array.copyOfRange(o + 4, o + 4 + len)
     }
 
-    fun readBytes(offset: Int): Pair<ByteArray, Int> {
-        val len = readU32(offset).toInt()
-        val bytes = ByteArray(len)
-        val view = buffer.duplicate().order(ByteOrder.LITTLE_ENDIAN)
-        view.position(offset + 4)
-        view.get(bytes)
-        return bytes to (4 + len)
+    fun readShortArrayAt(offset: Int): ShortArray {
+        val o = arrayBase + offset
+        val count = leLen(o)
+        if (count == 0) return ShortArray(0)
+        val base = o + 4
+        return ShortArray(count) { i -> leI16(base + i * 2) }
     }
 
-    fun readByteArray(offset: Int): Pair<ByteArray, Int> = readBytes(offset)
-
-    fun readShortArray(offset: Int): Pair<ShortArray, Int> {
-        val count = readU32(offset).toInt()
-        val bytes = (count.toLong() * 2L).toInt()
-        val arr = ShortArray(count)
-        val view = buffer.duplicate().order(ByteOrder.LITTLE_ENDIAN)
-        view.position(offset + 4)
-        view.limit(offset + 4 + bytes)
-        view.slice().order(ByteOrder.LITTLE_ENDIAN).asShortBuffer().get(arr)
-        return arr to (4 + bytes)
+    fun readIntArrayAt(offset: Int): IntArray {
+        val o = arrayBase + offset
+        val count = leLen(o)
+        if (count == 0) return IntArray(0)
+        val base = o + 4
+        return IntArray(count) { i -> leI32(base + i * 4) }
     }
 
-    fun readIntArray(offset: Int): Pair<IntArray, Int> {
-        val count = readU32(offset).toInt()
-        val bytes = (count.toLong() * 4L).toInt()
-        val arr = IntArray(count)
-        val view = buffer.duplicate().order(ByteOrder.LITTLE_ENDIAN)
-        view.position(offset + 4)
-        view.limit(offset + 4 + bytes)
-        view.slice().order(ByteOrder.LITTLE_ENDIAN).asIntBuffer().get(arr)
-        return arr to (4 + bytes)
+    fun readLongArrayAt(offset: Int): LongArray {
+        val o = arrayBase + offset
+        val count = leLen(o)
+        if (count == 0) return LongArray(0)
+        val base = o + 4
+        return LongArray(count) { i -> leI64(base + i * 8) }
     }
 
-    fun readLongArray(offset: Int): Pair<LongArray, Int> {
-        val count = readU32(offset).toInt()
-        val bytes = (count.toLong() * 8L).toInt()
-        val arr = LongArray(count)
-        val view = buffer.duplicate().order(ByteOrder.LITTLE_ENDIAN)
-        view.position(offset + 4)
-        view.limit(offset + 4 + bytes)
-        view.slice().order(ByteOrder.LITTLE_ENDIAN).asLongBuffer().get(arr)
-        return arr to (4 + bytes)
+    fun readFloatArrayAt(offset: Int): FloatArray {
+        val o = arrayBase + offset
+        val count = leLen(o)
+        if (count == 0) return FloatArray(0)
+        val base = o + 4
+        return FloatArray(count) { i -> Float.fromBits(leI32(base + i * 4)) }
     }
 
-    fun readFloatArray(offset: Int): Pair<FloatArray, Int> {
-        val count = readU32(offset).toInt()
-        val bytes = (count.toLong() * 4L).toInt()
-        val arr = FloatArray(count)
-        val view = buffer.duplicate().order(ByteOrder.LITTLE_ENDIAN)
-        view.position(offset + 4)
-        view.limit(offset + 4 + bytes)
-        view.slice().order(ByteOrder.LITTLE_ENDIAN).asFloatBuffer().get(arr)
-        return arr to (4 + bytes)
+    fun readDoubleArrayAt(offset: Int): DoubleArray {
+        val o = arrayBase + offset
+        val count = leLen(o)
+        if (count == 0) return DoubleArray(0)
+        val base = o + 4
+        return DoubleArray(count) { i -> Double.fromBits(leI64(base + i * 8)) }
     }
 
-    fun readDoubleArray(offset: Int): Pair<DoubleArray, Int> {
-        val count = readU32(offset).toInt()
-        val bytes = (count.toLong() * 8L).toInt()
-        val arr = DoubleArray(count)
-        val view = buffer.duplicate().order(ByteOrder.LITTLE_ENDIAN)
-        view.position(offset + 4)
-        view.limit(offset + 4 + bytes)
-        view.slice().order(ByteOrder.LITTLE_ENDIAN).asDoubleBuffer().get(arr)
-        return arr to (4 + bytes)
+    fun readBooleanArrayAt(offset: Int): BooleanArray {
+        val o = arrayBase + offset
+        val count = leLen(o)
+        if (count == 0) return BooleanArray(0)
+        val base = o + 4
+        return BooleanArray(count) { i -> array[base + i] != 0.toByte() }
     }
 
-    fun readBooleanArray(offset: Int): Pair<BooleanArray, Int> {
-        val count = readU32(offset).toInt()
-        val arr = BooleanArray(count) { i -> readBool(offset + 4 + i) }
-        return arr to (4 + count)
+    fun stringSize(offset: Int): Int = 4 + leLen(arrayBase + offset)
+
+    fun bytesSize(offset: Int): Int = 4 + leLen(arrayBase + offset)
+
+    fun shortArraySize(offset: Int): Int = 4 + leLen(arrayBase + offset) * 2
+
+    fun intArraySize(offset: Int): Int = 4 + leLen(arrayBase + offset) * 4
+
+    fun longArraySize(offset: Int): Int = 4 + leLen(arrayBase + offset) * 8
+
+    fun floatArraySize(offset: Int): Int = 4 + leLen(arrayBase + offset) * 4
+
+    fun doubleArraySize(offset: Int): Int = 4 + leLen(arrayBase + offset) * 8
+
+    fun booleanArraySize(offset: Int): Int = 4 + leLen(arrayBase + offset)
+
+    @PublishedApi internal inline fun leI16(o: Int): Short =
+        ((array[o].toInt() and 0xFF) or ((array[o + 1].toInt() and 0xFF) shl 8)).toShort()
+
+    @PublishedApi internal inline fun leI32(o: Int): Int =
+        (array[o].toInt() and 0xFF) or
+        ((array[o + 1].toInt() and 0xFF) shl 8) or
+        ((array[o + 2].toInt() and 0xFF) shl 16) or
+        ((array[o + 3].toInt() and 0xFF) shl 24)
+
+    @PublishedApi internal inline fun leI64(o: Int): Long =
+        (array[o].toLong() and 0xFFL) or
+        ((array[o + 1].toLong() and 0xFFL) shl 8) or
+        ((array[o + 2].toLong() and 0xFFL) shl 16) or
+        ((array[o + 3].toLong() and 0xFFL) shl 24) or
+        ((array[o + 4].toLong() and 0xFFL) shl 32) or
+        ((array[o + 5].toLong() and 0xFFL) shl 40) or
+        ((array[o + 6].toLong() and 0xFFL) shl 48) or
+        ((array[o + 7].toLong() and 0xFFL) shl 56)
+
+    @PublishedApi internal inline fun leLen(o: Int): Int = leI32(o).toUInt().toInt()
+
+    fun advanceBool(): Boolean { val v = array[arrayBase + pos] != 0.toByte(); pos += 1; return v }
+    fun advanceI8(): Byte { val v = array[arrayBase + pos]; pos += 1; return v }
+    fun advanceU8(): UByte { val v = array[arrayBase + pos].toUByte(); pos += 1; return v }
+    fun advanceI16(): Short { val v = leI16(arrayBase + pos); pos += 2; return v }
+    fun advanceU16(): UShort { val v = leI16(arrayBase + pos).toUShort(); pos += 2; return v }
+    fun advanceI32(): Int { val v = leI32(arrayBase + pos); pos += 4; return v }
+    fun advanceU32(): UInt { val v = leI32(arrayBase + pos).toUInt(); pos += 4; return v }
+    fun advanceI64(): Long { val v = leI64(arrayBase + pos); pos += 8; return v }
+    fun advanceU64(): ULong { val v = leI64(arrayBase + pos).toULong(); pos += 8; return v }
+    fun advanceF32(): Float { val v = Float.fromBits(leI32(arrayBase + pos)); pos += 4; return v }
+    fun advanceF64(): Double { val v = Double.fromBits(leI64(arrayBase + pos)); pos += 8; return v }
+
+    fun skipString() { val len = leLen(arrayBase + pos); pos += 4 + len }
+
+    fun skipList() { val count = leLen(arrayBase + pos); pos += 4; repeat(count) { skipString() } }
+
+    fun advanceString(): String {
+        val o = arrayBase + pos
+        val len = leLen(o)
+        pos += 4
+        if (len == 0) return ""
+        val off = arrayBase + pos
+        pos += len
+        return String(array, off, len, Charsets.UTF_8)
     }
 
-    inline fun <T> readNullable(offset: Int, reader: (Int) -> Pair<T, Int>): Pair<T?, Int> {
-        return if (readU8(offset).toInt() == 0) {
-            null to 1
+    fun advanceBytes(): ByteArray {
+        val o = arrayBase + pos
+        val len = leLen(o)
+        pos += 4
+        if (len == 0) return ByteArray(0)
+        val off = arrayBase + pos
+        pos += len
+        return array.copyOfRange(off, off + len)
+    }
+
+    fun advanceShortArray(): ShortArray {
+        val o = arrayBase + pos
+        val count = leLen(o)
+        pos += 4
+        if (count == 0) return ShortArray(0)
+        val base = arrayBase + pos
+        pos += count * 2
+        return ShortArray(count) { i -> leI16(base + i * 2) }
+    }
+
+    fun advanceIntArray(): IntArray {
+        val o = arrayBase + pos
+        val count = leLen(o)
+        pos += 4
+        if (count == 0) return IntArray(0)
+        val base = arrayBase + pos
+        pos += count * 4
+        return IntArray(count) { i -> leI32(base + i * 4) }
+    }
+
+    fun advanceLongArray(): LongArray {
+        val o = arrayBase + pos
+        val count = leLen(o)
+        pos += 4
+        if (count == 0) return LongArray(0)
+        val base = arrayBase + pos
+        pos += count * 8
+        return LongArray(count) { i -> leI64(base + i * 8) }
+    }
+
+    fun advanceFloatArray(): FloatArray {
+        val o = arrayBase + pos
+        val count = leLen(o)
+        pos += 4
+        if (count == 0) return FloatArray(0)
+        val base = arrayBase + pos
+        pos += count * 4
+        return FloatArray(count) { i -> Float.fromBits(leI32(base + i * 4)) }
+    }
+
+    fun advanceDoubleArray(): DoubleArray {
+        val o = arrayBase + pos
+        val count = leLen(o)
+        pos += 4
+        if (count == 0) return DoubleArray(0)
+        val base = arrayBase + pos
+        pos += count * 8
+        return DoubleArray(count) { i -> Double.fromBits(leI64(base + i * 8)) }
+    }
+
+    fun advanceBooleanArray(): BooleanArray {
+        val o = arrayBase + pos
+        val count = leLen(o)
+        pos += 4
+        if (count == 0) return BooleanArray(0)
+        val base = arrayBase + pos
+        pos += count
+        return BooleanArray(count) { i -> array[base + i] != 0.toByte() }
+    }
+
+    fun advanceDuration(): Duration {
+        val seconds = advanceI64()
+        val nanos = advanceI32().toLong()
+        require(seconds >= 0L) { "Duration out of range" }
+        require(nanos >= 0L) { "Duration nanos out of range" }
+        return Duration.ofSeconds(seconds, nanos)
+    }
+
+    fun advanceInstant(): Instant {
+        val seconds = advanceI64()
+        val nanos = advanceI32().toLong()
+        require(nanos >= 0L) { "Instant nanos out of range" }
+        if (seconds >= 0L) {
+            return Instant.EPOCH.plus(Duration.ofSeconds(seconds, nanos))
+        }
+        require(seconds != Long.MIN_VALUE) { "Instant out of range" }
+        return Instant.EPOCH.minus(Duration.ofSeconds(-seconds, nanos))
+    }
+
+    fun advanceUuid(): UUID = UUID(advanceI64(), advanceI64())
+
+    fun advanceUri(): URI = URI.create(advanceString())
+
+    inline fun <T> advanceNullable(reader: (WireBuffer) -> T): T? {
+        val tag = advanceU8().toInt()
+        return if (tag == 0) null else reader(this)
+    }
+
+    inline fun <T> advanceList(reader: (WireBuffer) -> T): List<T> {
+        val count = advanceI32().toUInt().toInt()
+        if (count == 0) return emptyList()
+        return ArrayList<T>(count).also { list -> repeat(count) { list.add(reader(this)) } }
+    }
+
+    inline fun <T, E> advanceResult(okReader: (WireBuffer) -> T, errReader: (WireBuffer) -> E): RiffResult<T, E> {
+        val tag = advanceU8().toInt()
+        return if (tag == 0) RiffResult.Ok(okReader(this)) else RiffResult.Err(errReader(this))
+    }
+
+    inline fun <T> readNullableValue(offset: Int, reader: (WireBuffer, Int) -> T): T? {
+        return if (array[arrayBase + offset] == 0.toByte()) {
+            pos = offset + 1
+            null
         } else {
-            val (value, size) = reader(offset + 1)
-            value to (1 + size)
+            pos = offset + 1
+            reader(this, offset + 1)
         }
     }
 
-    inline fun <T> readList(offset: Int, reader: (Int) -> Pair<T, Int>): Pair<List<T>, Int> {
-        val count = readU32(offset).toInt()
-        var pos = offset + 4
+    inline fun <T> readListOf(offset: Int, reader: (WireBuffer, Int) -> T): List<T> {
+        val count = leLen(arrayBase + offset)
+        if (count == 0) { pos = offset + 4; return emptyList() }
         val result = ArrayList<T>(count)
+        pos = offset + 4
         repeat(count) {
-            val (item, size) = reader(pos)
-            result.add(item)
-            pos += size
+            val p = pos
+            result.add(reader(this, p))
         }
-        return result to (pos - offset)
+        return result
     }
 
-    inline fun <T, E> readResult(
+    inline fun <T, E> readResultValue(
         offset: Int,
-        okReader: (Int) -> Pair<T, Int>,
-        errReader: (Int) -> Pair<E, Int>
-    ): Pair<RiffResult<T, E>, Int> {
-        val tag = readU8(offset).toInt()
+        okReader: (WireBuffer, Int) -> T,
+        errReader: (WireBuffer, Int) -> E,
+    ): RiffResult<T, E> {
+        val tag = array[arrayBase + offset].toUByte().toInt()
+        pos = offset + 1
         return if (tag == 0) {
-            val (ok, size) = okReader(offset + 1)
-            RiffResult.Ok(ok) to (1 + size)
+            RiffResult.Ok(okReader(this, offset + 1))
         } else {
-            val (err, size) = errReader(offset + 1)
-            RiffResult.Err(err) to (1 + size)
+            RiffResult.Err(errReader(this, offset + 1))
         }
     }
 
@@ -395,19 +552,6 @@ sealed class RiffResult<out T, out E> {
 
 private object Utf8Codec {
     fun maxBytes(value: String): Int = value.length * 3
-}
-
-private object ScratchBytes {
-    private val scratch: ThreadLocal<ByteArray> = ThreadLocal.withInitial { ByteArray(256) }
-
-    fun acquire(requiredCapacity: Int): ByteArray {
-        val bytes = scratch.get()
-        return if (bytes.size >= requiredCapacity) {
-            bytes
-        } else {
-            ByteArray(requiredCapacity).also { scratch.set(it) }
-        }
-    }
 }
 
 class WireWriter(initialCapacity: Int = 256) {

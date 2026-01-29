@@ -8,19 +8,20 @@ sealed class {{ class_name }}{% if is_error %} : Exception(){% endif %} {
 {%- endfor %}
 
     companion object {
-        fun decode(wire: WireBuffer, offset: Int): Pair<{{ class_name }}, Int> {
-            var pos = offset
-            val tag = wire.readI32(pos); pos += 4
+        fun decode(wire: WireBuffer, offset: Int): {{ class_name }} {
+            wire.pos = offset
+            val tag = wire.advanceI32()
             return when (tag) {
 {%- for variant in variants %}
                 {{ variant.tag }} -> {
 {%- if variant.fields.is_empty() %}
-                    {{ variant.name }} to (pos - offset)
+                    {{ variant.name }}
 {%- else %}
+                    {{ variant.name }}(
 {%- for field in variant.fields %}
-                    val {{ field.local_name }} = {{ field.wire_decode_inline }}
+                        {{ field.wire_advance_expr }}{% if !loop.last %},{% endif %}
 {%- endfor %}
-                    {{ variant.name }}({% for field in variant.fields %}{{ field.local_name }}{% if !loop.last %}, {% endif %}{% endfor %}) to (pos - offset)
+                    )
 {%- endif %}
                 }
 {%- endfor %}
