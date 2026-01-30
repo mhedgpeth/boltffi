@@ -148,6 +148,7 @@ pub struct ClassTemplate<'a> {
     pub streams: &'a [super::plan::KotlinStream],
     pub use_companion_methods: bool,
     pub has_factory_ctors: bool,
+    pub has_static_methods: bool,
     pub prefix: &'a str,
     pub ffi_free: &'a str,
 }
@@ -372,6 +373,7 @@ impl KotlinEmitter {
                 streams: &class.streams,
                 use_companion_methods: class.use_companion_methods,
                 has_factory_ctors: class.has_factory_ctors(),
+                has_static_methods: class.has_static_methods(),
                 prefix: &class.prefix,
                 ffi_free: &class.ffi_free,
             }
@@ -553,6 +555,7 @@ mod tests {
                 impl_: KotlinMethodImpl::SyncMethod(
                     "/**\n * Inserts a value into the store by key.\n */\nfun insert(key: String) { Native.riff_data_store_insert(handle, key) }".to_string(),
                 ),
+                is_static: false,
             }],
             streams: vec![],
             use_companion_methods: true,
@@ -565,6 +568,7 @@ mod tests {
             streams: &cls.streams,
             use_companion_methods: cls.use_companion_methods,
             has_factory_ctors: cls.has_factory_ctors(),
+            has_static_methods: cls.has_static_methods(),
             prefix: &cls.prefix,
             ffi_free: &cls.ffi_free,
         };

@@ -1780,6 +1780,7 @@ impl<'c> Lowerer<'c> {
         let layout = match &def.repr {
             EnumRepr::CStyle { tag_type, .. } => EnumLayout::CStyle {
                 tag_type: *tag_type,
+                is_error: def.is_error,
             },
 
             EnumRepr::Data { tag_type, variants } => EnumLayout::Data {

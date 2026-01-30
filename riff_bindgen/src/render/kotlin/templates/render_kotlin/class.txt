@@ -86,7 +86,7 @@
         if (!closed.compareAndSet(false, true)) return
         Native.{{ ffi_free }}(handle)
     }
-{%- if has_factory_ctors %}
+{%- if has_factory_ctors || has_static_methods %}
 
     companion object {
 {%- for ctor in constructors %}{% if ctor.is_factory && (use_companion_methods || ctor.signature_params.is_empty()) %}
@@ -125,9 +125,19 @@
 {%- endif %}
         }
 {%- endif %}{% endfor %}
+{%- for method in methods %}{% if method.is_static %}
+{%- match method.impl_ %}
+{%- when AsyncMethod with (async_method) %}
+
+        {{ async_method }}
+{%- when SyncMethod with (wire_method) %}
+
+        {{ wire_method }}
+{%- endmatch %}
+{%- endif %}{% endfor %}
     }
 {%- endif %}
-{%- for method in methods %}
+{%- for method in methods %}{% if !method.is_static %}
 {%- match method.impl_ %}
 {%- when AsyncMethod with (async_method) %}
 
@@ -136,7 +146,7 @@
 
     {{ wire_method }}
 {%- endmatch %}
-{%- endfor %}
+{%- endif %}{% endfor %}
 {%- for stream in streams %}
 {%- match stream.mode %}
 {%- when KotlinStreamMode::Async %}

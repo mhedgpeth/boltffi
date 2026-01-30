@@ -11,10 +11,6 @@ import kotlin.coroutines.resumeWithException
 import kotlinx.coroutines.CancellableContinuation
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlin.jvm.JvmInline
-import java.net.URI
-import java.time.Duration
-import java.time.Instant
-import java.util.UUID
 {%- for import in extra_imports %}
 import {{ import }}
 {%- endfor %}

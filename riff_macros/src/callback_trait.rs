@@ -242,9 +242,15 @@ fn expand_method(
     };
 
     if is_async {
+        let async_wire_return = return_type.as_deref().map(|ty| needs_wire_return(ty)).unwrap_or(false);
+
         let callback_type = if let Some(ref ret_ty) = return_type {
-            let ffi_ret = rust_type_to_ffi_param_type(ret_ty);
-            quote! { extern "C" fn(callback_data: u64, result: #ffi_ret, status: ::riff::__private::FfiStatus) }
+            if async_wire_return {
+                quote! { extern "C" fn(callback_data: u64, result: ::riff::__private::FfiBuf<u8>, status: ::riff::__private::FfiStatus) }
+            } else {
+                let ffi_ret = rust_type_to_ffi_param_type(ret_ty);
+                quote! { extern "C" fn(callback_data: u64, result: #ffi_ret, status: ::riff::__private::FfiStatus) }
+            }
         } else {
             quote! { extern "C" fn(callback_data: u64, status: ::riff::__private::FfiStatus) }
         };
@@ -273,6 +279,48 @@ fn expand_method(
                     })
                     .unwrap_or_else(|| quote! { result });
 
+                let callback_body = if async_wire_return {
+                    quote! {
+                        extern "C" fn callback(data: u64, result: ::riff::__private::FfiBuf<u8>, status: ::riff::__private::FfiStatus) {
+                            let decoded: #ret_ty = {
+                                let bytes = result.into_vec();
+                                ::riff::__private::wire::decode(&bytes).expect("wire decode async callback return")
+                            };
+                            let ctx = unsafe { Arc::from_raw(data as *const AsyncContext<#ret_ty>) };
+                            let waker = ctx
+                                .state
+                                .lock()
+                                .ok()
+                                .and_then(|mut guard| {
+                                    guard.result = Some(decoded);
+                                    guard.status = status;
+                                    guard.waker.take()
+                                });
+                            if let Some(waker) = waker {
+                                waker.wake();
+                            }
+                        }
+                    }
+                } else {
+                    quote! {
+                        extern "C" fn callback(data: u64, result: #ret_ty, status: ::riff::__private::FfiStatus) {
+                            let ctx = unsafe { Arc::from_raw(data as *const AsyncContext<#ret_ty>) };
+                            let waker = ctx
+                                .state
+                                .lock()
+                                .ok()
+                                .and_then(|mut guard| {
+                                    guard.result = Some(result);
+                                    guard.status = status;
+                                    guard.waker.take()
+                                });
+                            if let Some(waker) = waker {
+                                waker.wake();
+                            }
+                        }
+                    }
+                };
+
                 quote! {
                     use std::sync::{Arc, Mutex};
                     use std::task::Waker;
@@ -295,21 +343,7 @@ fn expand_method(
                         }),
                     });
 
-                    extern "C" fn callback(data: u64, result: #ret_ty, status: ::riff::__private::FfiStatus) {
-                        let ctx = unsafe { Arc::from_raw(data as *const AsyncContext<#ret_ty>) };
-                        let waker = ctx
-                            .state
-                            .lock()
-                            .ok()
-                            .and_then(|mut guard| {
-                                guard.result = Some(result);
-                                guard.status = status;
-                                guard.waker.take()
-                            });
-                        if let Some(waker) = waker {
-                            waker.wake();
-                        }
-                    }
+                    #callback_body
 
                     let ctx_ptr = Arc::into_raw(Arc::clone(&ctx)) as u64;
                     {
@@ -408,9 +442,15 @@ fn expand_method(
             }
         })
     } else {
+        let wire_return = return_type.as_deref().map(|ty| needs_wire_return(ty)).unwrap_or(false);
+
         let out_param = if let Some(ref ret_ty) = return_type {
-            let ffi_ret = rust_type_to_ffi_param_type(ret_ty);
-            quote! { out: *mut #ffi_ret, }
+            if wire_return {
+                quote! { out: *mut ::riff::__private::FfiBuf<u8>, }
+            } else {
+                let ffi_ret = rust_type_to_ffi_param_type(ret_ty);
+                quote! { out: *mut #ffi_ret, }
+            }
         } else {
             quote! {}
         };
@@ -437,22 +477,43 @@ fn expand_method(
                     }
                 });
 
-                quote! {
-                    #(#prelude_stmts)*
-                    let mut out: #ret_ty = Default::default();
-                    let mut status = ::riff::__private::FfiStatus::default();
-                    unsafe {
-                        ((*self.vtable).#method_name_snake)(
-                            self.handle,
-                            #(#call_args,)*
-                            &mut out as *mut _,
-                            &mut status
-                        );
+                if wire_return {
+                    quote! {
+                        #(#prelude_stmts)*
+                        let mut out_buf: ::riff::__private::FfiBuf<u8> = Default::default();
+                        let mut status = ::riff::__private::FfiStatus::default();
+                        unsafe {
+                            ((*self.vtable).#method_name_snake)(
+                                self.handle,
+                                #(#call_args,)*
+                                &mut out_buf as *mut _,
+                                &mut status
+                            );
+                        }
+                        if status.is_err() {
+                            #error_expr
+                        }
+                        let out_bytes = out_buf.into_vec();
+                        ::riff::__private::wire::decode(&out_bytes).expect("wire decode callback return")
                     }
-                    if status.is_err() {
-                        #error_expr
+                } else {
+                    quote! {
+                        #(#prelude_stmts)*
+                        let mut out: #ret_ty = Default::default();
+                        let mut status = ::riff::__private::FfiStatus::default();
+                        unsafe {
+                            ((*self.vtable).#method_name_snake)(
+                                self.handle,
+                                #(#call_args,)*
+                                &mut out as *mut _,
+                                &mut status
+                            );
+                        }
+                        if status.is_err() {
+                            #error_expr
+                        }
+                        out
                     }
-                    out
                 }
             }
             None => quote! {
@@ -555,6 +616,11 @@ fn is_ffi_primitive(type_str: &str) -> bool {
             | "usize"
             | "isize"
     )
+}
+
+fn needs_wire_return(ty: &syn::Type) -> bool {
+    let type_str = quote!(#ty).to_string().replace(' ', "");
+    !is_ffi_primitive(&type_str)
 }
 
 fn parse_result_type(ty: &Type) -> Option<(Type, Type)> {

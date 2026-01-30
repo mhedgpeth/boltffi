@@ -21,6 +21,83 @@ pub fn render_value(expr: &ValueExpr) -> String {
     }
 }
 
+fn render_type_name(name: &str) -> String {
+    NamingConvention::class_name(name)
+}
+
+fn kotlin_type_for_type_expr(ty: &TypeExpr) -> String {
+    match ty {
+        TypeExpr::Primitive(p) => match p {
+            PrimitiveType::Bool => "Boolean".to_string(),
+            PrimitiveType::I8 => "Byte".to_string(),
+            PrimitiveType::U8 => "UByte".to_string(),
+            PrimitiveType::I16 => "Short".to_string(),
+            PrimitiveType::U16 => "UShort".to_string(),
+            PrimitiveType::I32 => "Int".to_string(),
+            PrimitiveType::U32 => "UInt".to_string(),
+            PrimitiveType::I64 | PrimitiveType::ISize => "Long".to_string(),
+            PrimitiveType::U64 | PrimitiveType::USize => "ULong".to_string(),
+            PrimitiveType::F32 => "Float".to_string(),
+            PrimitiveType::F64 => "Double".to_string(),
+        },
+        TypeExpr::String => "String".to_string(),
+        TypeExpr::Bytes => "ByteArray".to_string(),
+        TypeExpr::Vec(inner) => match inner.as_ref() {
+            TypeExpr::Primitive(primitive) => match primitive {
+                PrimitiveType::I32 | PrimitiveType::U32 => "IntArray".to_string(),
+                PrimitiveType::I16 | PrimitiveType::U16 => "ShortArray".to_string(),
+                PrimitiveType::I64 | PrimitiveType::U64 | PrimitiveType::ISize | PrimitiveType::USize => {
+                    "LongArray".to_string()
+                }
+                PrimitiveType::F32 => "FloatArray".to_string(),
+                PrimitiveType::F64 => "DoubleArray".to_string(),
+                PrimitiveType::U8 | PrimitiveType::I8 => "ByteArray".to_string(),
+                PrimitiveType::Bool => "BooleanArray".to_string(),
+            },
+            _ => format!("List<{}>", kotlin_type_for_type_expr(inner)),
+        },
+        TypeExpr::Option(inner) => format!("{}?", kotlin_type_for_type_expr(inner)),
+        TypeExpr::Result { ok, err } => format!(
+            "RiffResult<{}, {}>",
+            kotlin_type_for_type_expr(ok),
+            kotlin_type_for_type_expr(err)
+        ),
+        TypeExpr::Record(id) => render_type_name(id.as_str()),
+        TypeExpr::Enum(id) => render_type_name(id.as_str()),
+        TypeExpr::Custom(id) => render_type_name(id.as_str()),
+        TypeExpr::Builtin(id) => match id.as_str() {
+            "Duration" => "Duration".to_string(),
+            "SystemTime" => "Instant".to_string(),
+            "Uuid" => "UUID".to_string(),
+            "Url" => "URI".to_string(),
+            _ => "String".to_string(),
+        },
+        TypeExpr::Handle(class_id) => render_type_name(class_id.as_str()),
+        TypeExpr::Callback(callback_id) => render_type_name(callback_id.as_str()),
+        TypeExpr::Void => "Unit".to_string(),
+    }
+}
+
+fn kotlin_type_for_write_seq(seq: &WriteSeq) -> String {
+    match seq.ops.first() {
+        Some(WriteOp::Primitive { primitive, .. }) => kotlin_type_for_type_expr(&TypeExpr::Primitive(*primitive)),
+        Some(WriteOp::String { .. }) => "String".to_string(),
+        Some(WriteOp::Bytes { .. }) => "ByteArray".to_string(),
+        Some(WriteOp::Builtin { id, .. }) => kotlin_type_for_type_expr(&TypeExpr::Builtin(id.clone())),
+        Some(WriteOp::Record { id, .. }) => render_type_name(id.as_str()),
+        Some(WriteOp::Enum { id, .. }) => render_type_name(id.as_str()),
+        Some(WriteOp::Custom { id, .. }) => render_type_name(id.as_str()),
+        Some(WriteOp::Vec { element_type, .. }) => kotlin_type_for_type_expr(&TypeExpr::Vec(Box::new(element_type.clone()))),
+        Some(WriteOp::Option { some, .. }) => format!("{}?", kotlin_type_for_write_seq(some)),
+        Some(WriteOp::Result { ok, err, .. }) => format!(
+            "RiffResult<{}, {}>",
+            kotlin_type_for_write_seq(ok),
+            kotlin_type_for_write_seq(err)
+        ),
+        _ => "Any".to_string(),
+    }
+}
+
 pub fn emit_size_expr(size: &SizeExpr) -> String {
     match size {
         SizeExpr::Fixed(value) => value.to_string(),
@@ -56,10 +133,35 @@ pub fn emit_size_expr(size: &SizeExpr) -> String {
             let ok_expr = emit_size_expr(ok);
             let err_expr = emit_size_expr(err);
             format!(
-                "(when (val _r = {}) {{ is RiffResult.Ok -> {{ val okVal = _r.value; 1 + {} }}; is RiffResult.Err -> {{ val errVal = _r.error; 1 + {} }} }})",
+                "(when (val _r = {}) {{ is RiffResult.Ok<*> -> {{ val okVal = _r.value; 1 + {} }}; is RiffResult.Err<*> -> {{ val errVal = _r.error; 1 + {} }} }})",
                 v, ok_expr, err_expr
             )
         }
+    }
+}
+
+pub fn emit_size_expr_for_write_seq(seq: &WriteSeq) -> String {
+    match seq.ops.first() {
+        Some(WriteOp::Custom { value, .. }) => emit_size_expr(&SizeExpr::WireSize {
+            value: value.clone(),
+        }),
+        Some(WriteOp::Result { ok, err, .. }) => {
+            let ok_type = kotlin_type_for_write_seq(ok);
+            let err_type = kotlin_type_for_write_seq(err);
+            match &seq.size {
+                SizeExpr::ResultSize { value, ok, err } => {
+                    let v = render_value(value);
+                    let ok_expr = emit_size_expr(ok);
+                    let err_expr = emit_size_expr(err);
+                    format!(
+                        "(when (val _r = {}) {{ is RiffResult.Ok<*> -> {{ val okVal = _r.value as {}; 1 + {} }}; is RiffResult.Err<*> -> {{ val errVal = _r.error as {}; 1 + {} }} }})",
+                        v, ok_type, ok_expr, err_type, err_expr
+                    )
+                }
+                _ => emit_size_expr(&seq.size),
+            }
+        }
+        _ => emit_size_expr(&seq.size),
     }
 }
 
@@ -110,7 +212,7 @@ pub fn emit_read_pair(seq: &ReadSeq, base_name: &str, base_expr: &str) -> String
             let offset_expr = emit_offset_expr(offset, base_name, base_expr);
             format!(
                 "{}.decode(wire, {}).let {{ v -> v to (wire.pos - {}) }}",
-                id.as_str(),
+                render_type_name(id.as_str()),
                 offset_expr,
                 offset_expr
             )
@@ -118,19 +220,19 @@ pub fn emit_read_pair(seq: &ReadSeq, base_name: &str, base_expr: &str) -> String
         ReadOp::Enum { id, offset, layout } => {
             let offset_expr = emit_offset_expr(offset, base_name, base_expr);
             match layout {
-                EnumLayout::CStyle { .. } => {
+                EnumLayout::CStyle { is_error: false, .. } => {
                     let size = emit_size_expr(&seq.size);
                     format!(
                         "{}.fromValue(wire.readI32({})) to {}",
-                        id.as_str(),
+                        render_type_name(id.as_str()),
                         offset_expr,
                         size
                     )
                 }
-                EnumLayout::Data { .. } | EnumLayout::Recursive => {
+                EnumLayout::CStyle { is_error: true, .. } | EnumLayout::Data { .. } | EnumLayout::Recursive => {
                     format!(
                         "{}.decode(wire, {}).let {{ v -> v to (wire.pos - {}) }}",
-                        id.as_str(),
+                        render_type_name(id.as_str()),
                         offset_expr,
                         offset_expr
                     )
@@ -158,7 +260,7 @@ pub fn emit_read_pair(seq: &ReadSeq, base_name: &str, base_expr: &str) -> String
         ReadOp::Custom { id, .. } => {
             format!(
                 "{}.decode(wire, {}).let {{ v -> v to (wire.pos - {}) }}",
-                id.as_str(),
+                render_type_name(id.as_str()),
                 base_expr,
                 base_expr
             )
@@ -197,16 +299,20 @@ pub fn emit_read_value(seq: &ReadSeq, base_name: &str, base_expr: &str) -> Strin
         ),
         ReadOp::Record { id, offset, .. } => {
             let offset_expr = emit_offset_expr(offset, base_name, base_expr);
-            format!("{}.decode(wire, {})", id.as_str(), offset_expr)
+            format!("{}.decode(wire, {})", render_type_name(id.as_str()), offset_expr)
         }
         ReadOp::Enum { id, offset, layout } => {
             let offset_expr = emit_offset_expr(offset, base_name, base_expr);
             match layout {
-                EnumLayout::CStyle { .. } => {
-                    format!("{}.fromValue(wire.readI32({}))", id.as_str(), offset_expr)
+                EnumLayout::CStyle { is_error: false, .. } => {
+                    format!(
+                        "{}.fromValue(wire.readI32({}))",
+                        render_type_name(id.as_str()),
+                        offset_expr
+                    )
                 }
-                EnumLayout::Data { .. } | EnumLayout::Recursive => {
-                    format!("{}.decode(wire, {})", id.as_str(), offset_expr)
+                EnumLayout::CStyle { is_error: true, .. } | EnumLayout::Data { .. } | EnumLayout::Recursive => {
+                    format!("{}.decode(wire, {})", render_type_name(id.as_str()), offset_expr)
                 }
             }
         }
@@ -225,7 +331,7 @@ pub fn emit_read_value(seq: &ReadSeq, base_name: &str, base_expr: &str) -> Strin
         }
         ReadOp::Builtin { id, offset } => emit_read_builtin_value(id, offset, base_name, base_expr),
         ReadOp::Custom { id, .. } => {
-            format!("{}.decode(wire, {})", id.as_str(), base_expr)
+            format!("{}.decode(wire, {})", render_type_name(id.as_str()), base_expr)
         }
     }
 }
@@ -252,14 +358,17 @@ pub fn emit_advance_read(seq: &ReadSeq) -> String {
         ReadOp::String { .. } => "wire.advanceString()".to_string(),
         ReadOp::Bytes { .. } => "wire.advanceBytes()".to_string(),
         ReadOp::Record { id, .. } => {
-            format!("{}.decode(wire, wire.pos)", id.as_str())
+            format!("{}.decode(wire, wire.pos)", render_type_name(id.as_str()))
         }
         ReadOp::Enum { id, layout, .. } => match layout {
-            EnumLayout::CStyle { .. } => {
-                format!("{}.fromValue(wire.advanceI32())", id.as_str())
+            EnumLayout::CStyle { is_error: false, .. } => {
+                format!(
+                    "{}.fromValue(wire.advanceI32())",
+                    render_type_name(id.as_str())
+                )
             }
-            EnumLayout::Data { .. } | EnumLayout::Recursive => {
-                format!("{}.decode(wire, wire.pos)", id.as_str())
+            EnumLayout::CStyle { is_error: true, .. } | EnumLayout::Data { .. } | EnumLayout::Recursive => {
+                format!("{}.decode(wire, wire.pos)", render_type_name(id.as_str()))
             }
         },
         ReadOp::Option { some, .. } => {
@@ -285,7 +394,7 @@ pub fn emit_advance_read(seq: &ReadSeq) -> String {
             _ => "wire.advanceString()".to_string(),
         },
         ReadOp::Custom { id, .. } => {
-            format!("{}.decode(wire, wire.pos)", id.as_str())
+            format!("{}.decode(wire, wire.pos)", render_type_name(id.as_str()))
         }
     }
 }
@@ -383,8 +492,8 @@ pub fn emit_write_expr(seq: &WriteSeq) -> String {
             format!("{}.wireEncodeTo(wire)", render_value(value))
         }
         WriteOp::Enum { value, layout, .. } => match layout {
-            EnumLayout::CStyle { .. } => format!("wire.writeI32({}.value)", render_value(value)),
-            EnumLayout::Data { .. } | EnumLayout::Recursive => {
+            EnumLayout::CStyle { is_error: false, .. } => format!("wire.writeI32({}.value)", render_value(value)),
+            EnumLayout::CStyle { is_error: true, .. } | EnumLayout::Data { .. } | EnumLayout::Recursive => {
                 format!("{}.wireEncodeTo(wire)", render_value(value))
             }
         },
@@ -392,9 +501,11 @@ pub fn emit_write_expr(seq: &WriteSeq) -> String {
             let v = render_value(value);
             let ok_expr = emit_write_expr(ok);
             let err_expr = emit_write_expr(err);
+            let ok_type = kotlin_type_for_write_seq(ok);
+            let err_type = kotlin_type_for_write_seq(err);
             format!(
-                "when ({}) {{ is RiffResult.Ok -> {{ wire.writeU8(0u); val okVal = {}.value; {} }} is RiffResult.Err -> {{ wire.writeU8(1u); val errVal = {}.error; {} }} }}",
-                v, v, ok_expr, v, err_expr
+                "when ({}) {{ is RiffResult.Ok<*> -> {{ wire.writeU8(0u); val okVal = {}.value as {}; {} }} is RiffResult.Err<*> -> {{ wire.writeU8(1u); val errVal = {}.error as {}; {} }} }}",
+                v, v, ok_type, ok_expr, v, err_type, err_expr
             )
         }
         WriteOp::Builtin { id, value } => emit_write_builtin(id, &render_value(value)),
@@ -694,7 +805,7 @@ pub fn emit_element_reader(seq: &ReadSeq) -> String {
         ReadOp::Bytes { .. } => "w.readBytesAt(p).also { w.pos = p + w.bytesSize(p) }".to_string(),
         ReadOp::Record { id, .. } => format!("{}.decode(w, p)", id.as_str()),
         ReadOp::Enum { id, layout, .. } => match layout {
-            EnumLayout::CStyle { .. } => {
+            EnumLayout::CStyle { is_error: false, .. } => {
                 let size = emit_size_expr(&seq.size);
                 format!(
                     "{}.fromValue(w.readI32(p)).also {{ w.pos = p + {} }}",
@@ -702,7 +813,7 @@ pub fn emit_element_reader(seq: &ReadSeq) -> String {
                     size
                 )
             }
-            EnumLayout::Data { .. } | EnumLayout::Recursive => {
+            EnumLayout::CStyle { is_error: true, .. } | EnumLayout::Data { .. } | EnumLayout::Recursive => {
                 format!("{}.decode(w, p)", id.as_str())
             }
         },

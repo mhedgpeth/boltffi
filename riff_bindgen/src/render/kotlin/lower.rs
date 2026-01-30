@@ -7,6 +7,7 @@ use crate::ir::abi::{
 };
 use crate::ir::codec::VecLayout;
 use crate::ir::contract::FfiContract;
+use crate::ir::definitions::Receiver;
 use crate::ir::definitions::{
     CallbackKind, CallbackMethodDef, CallbackTraitDef, ClassDef, ConstructorDef, CustomTypeDef,
     EnumDef, EnumRepr, FieldDef, FunctionDef, MethodDef, ParamDef, RecordDef, ReturnDef, StreamDef,
@@ -15,7 +16,10 @@ use crate::ir::definitions::{
 use crate::ir::ids::{
     BuiltinId, CallbackId, ClassId, CustomTypeId, EnumId, FieldName, MethodId, ParamName, RecordId,
 };
-use crate::ir::ops::{FieldReadOp, OffsetExpr, ReadOp, ReadSeq, SizeExpr, WriteOp, WriteSeq};
+use crate::ir::ops::{
+    remap_root_in_seq, FieldReadOp, FieldWriteOp, OffsetExpr, ReadOp, ReadSeq, SizeExpr, ValueExpr,
+    WriteOp, WriteSeq,
+};
 use crate::ir::plan::AbiType;
 use crate::ir::types::{PrimitiveType, TypeExpr};
 use crate::render::kotlin::emit;
@@ -173,9 +177,16 @@ impl<'a> KotlinLowerer<'a> {
         } else {
             Vec::new()
         };
+        let builtin_imports = vec![
+            "java.time.Duration".to_string(),
+            "java.time.Instant".to_string(),
+            "java.util.UUID".to_string(),
+            "java.net.URI".to_string(),
+        ];
         coroutine_imports
             .into_iter()
             .chain(stream_imports)
+            .chain(builtin_imports)
             .for_each(|import| {
                 if !imports.iter().any(|item| item == &import) {
                     imports.push(import);
@@ -308,8 +319,9 @@ impl<'a> KotlinLowerer<'a> {
         let repr_decode_value_expr =
             emit::emit_read_value_advancing(&custom_seq, "offset", "offset");
         let repr_advance_expr = emit::emit_advance_read(&custom_seq);
-        let repr_encode_expr = emit::emit_write_expr(&self.custom_write_seq(custom));
-        let repr_size_expr = emit::emit_size_expr(&self.custom_size_expr(custom));
+        let custom_write_seq = self.custom_write_seq(custom);
+        let repr_encode_expr = emit::emit_write_expr(&custom_write_seq);
+        let repr_size_expr = emit::emit_size_expr_for_write_seq(&custom_write_seq);
 
         KotlinCustomType {
             class_name,
@@ -327,12 +339,153 @@ impl<'a> KotlinLowerer<'a> {
     }
 
     fn custom_write_seq(&self, custom: &CustomTypeDef) -> WriteSeq {
-        self.find_custom_write_seq(&custom.id)
-            .unwrap_or_else(|| self.write_seq_from_repr(&custom.repr))
+        let base_seq = self
+            .find_custom_write_seq(&custom.id)
+            .unwrap_or_else(|| self.write_seq_from_repr(&custom.repr));
+        let remapped = remap_root_in_seq(&base_seq, ValueExpr::Var("repr".to_string()));
+        self.normalize_custom_write_seq(&custom.repr, remapped)
     }
 
-    fn custom_size_expr(&self, custom: &CustomTypeDef) -> SizeExpr {
-        self.custom_write_seq(custom).size
+    fn normalize_custom_write_seq(&self, repr: &TypeExpr, seq: WriteSeq) -> WriteSeq {
+        let _ = repr;
+        self.strip_field_access_in_write_seq(&seq)
+    }
+
+    fn strip_field_access_in_write_seq(&self, seq: &WriteSeq) -> WriteSeq {
+        WriteSeq {
+            size: self.strip_field_access_in_size(&seq.size),
+            ops: seq
+                .ops
+                .iter()
+                .map(|op| self.strip_field_access_in_write_op(op))
+                .collect(),
+            shape: seq.shape,
+        }
+    }
+
+    fn strip_field_access_in_size(&self, size: &SizeExpr) -> SizeExpr {
+        match size {
+            SizeExpr::Fixed(value) => SizeExpr::Fixed(*value),
+            SizeExpr::Runtime => SizeExpr::Runtime,
+            SizeExpr::StringLen(value) => {
+                SizeExpr::StringLen(self.strip_field_access_in_value(value))
+            }
+            SizeExpr::BytesLen(value) => SizeExpr::BytesLen(self.strip_field_access_in_value(value)),
+            SizeExpr::ValueSize(value) => {
+                SizeExpr::ValueSize(self.strip_field_access_in_value(value))
+            }
+            SizeExpr::WireSize { value } => SizeExpr::WireSize {
+                value: self.strip_field_access_in_value(value),
+            },
+            SizeExpr::BuiltinSize { id, value } => SizeExpr::BuiltinSize {
+                id: id.clone(),
+                value: self.strip_field_access_in_value(value),
+            },
+            SizeExpr::Sum(parts) => SizeExpr::Sum(
+                parts
+                    .iter()
+                    .map(|part| self.strip_field_access_in_size(part))
+                    .collect(),
+            ),
+            SizeExpr::OptionSize { value, inner } => SizeExpr::OptionSize {
+                value: self.strip_field_access_in_value(value),
+                inner: Box::new(self.strip_field_access_in_size(inner)),
+            },
+            SizeExpr::VecSize {
+                value,
+                inner,
+                layout,
+            } => SizeExpr::VecSize {
+                value: self.strip_field_access_in_value(value),
+                inner: Box::new(self.strip_field_access_in_size(inner)),
+                layout: layout.clone(),
+            },
+            SizeExpr::ResultSize { value, ok, err } => SizeExpr::ResultSize {
+                value: self.strip_field_access_in_value(value),
+                ok: Box::new(self.strip_field_access_in_size(ok)),
+                err: Box::new(self.strip_field_access_in_size(err)),
+            },
+        }
+    }
+
+    fn strip_field_access_in_write_op(&self, op: &WriteOp) -> WriteOp {
+        match op {
+            WriteOp::Primitive { primitive, value } => WriteOp::Primitive {
+                primitive: *primitive,
+                value: self.strip_field_access_in_value(value),
+            },
+            WriteOp::String { value } => WriteOp::String {
+                value: self.strip_field_access_in_value(value),
+            },
+            WriteOp::Bytes { value } => WriteOp::Bytes {
+                value: self.strip_field_access_in_value(value),
+            },
+            WriteOp::Builtin { id, value } => WriteOp::Builtin {
+                id: id.clone(),
+                value: self.strip_field_access_in_value(value),
+            },
+            WriteOp::Option { value, some } => WriteOp::Option {
+                value: self.strip_field_access_in_value(value),
+                some: Box::new(self.strip_field_access_in_write_seq(some)),
+            },
+            WriteOp::Vec {
+                value,
+                element_type,
+                element,
+                layout,
+            } => WriteOp::Vec {
+                value: self.strip_field_access_in_value(value),
+                element_type: element_type.clone(),
+                element: Box::new(self.strip_field_access_in_write_seq(element)),
+                layout: layout.clone(),
+            },
+            WriteOp::Record { id, value, fields } => WriteOp::Record {
+                id: id.clone(),
+                value: self.strip_field_access_in_value(value),
+                fields: fields
+                    .iter()
+                    .map(|field| FieldWriteOp {
+                        name: field.name.clone(),
+                        accessor: self.strip_field_access_in_value(&field.accessor),
+                        seq: self.strip_field_access_in_write_seq(&field.seq),
+                    })
+                    .collect(),
+            },
+            WriteOp::Enum { id, value, layout } => WriteOp::Enum {
+                id: id.clone(),
+                value: self.strip_field_access_in_value(value),
+                layout: layout.clone(),
+            },
+            WriteOp::Result { value, ok, err } => WriteOp::Result {
+                value: self.strip_field_access_in_value(value),
+                ok: Box::new(self.strip_field_access_in_write_seq(ok)),
+                err: Box::new(self.strip_field_access_in_write_seq(err)),
+            },
+            WriteOp::Custom {
+                id,
+                value,
+                underlying,
+            } => WriteOp::Custom {
+                id: id.clone(),
+                value: self.strip_field_access_in_value(value),
+                underlying: Box::new(self.strip_field_access_in_write_seq(underlying)),
+            },
+        }
+    }
+
+    fn strip_field_access_in_value(&self, value: &ValueExpr) -> ValueExpr {
+        match value {
+            ValueExpr::Field(parent, name) => {
+                let stripped_parent = self.strip_field_access_in_value(parent);
+                match &stripped_parent {
+                    ValueExpr::Var(var) if var == "repr" => ValueExpr::Var("repr".to_string()),
+                    ValueExpr::Named(name) if name == "repr" => ValueExpr::Var("repr".to_string()),
+                    _ => ValueExpr::Field(Box::new(stripped_parent), name.clone()),
+                }
+            }
+            ValueExpr::Instance => ValueExpr::Var("repr".to_string()),
+            ValueExpr::Var(_) | ValueExpr::Named(_) => value.clone(),
+        }
     }
 
     fn lower_enum(&self, enumeration: &EnumDef) -> KotlinEnum {
@@ -345,13 +498,18 @@ impl<'a> KotlinLowerer<'a> {
         } else {
             KotlinEnumKind::Sealed
         };
+        let variant_names = abi_enum
+            .variants
+            .iter()
+            .map(|variant| NamingConvention::class_name(variant.name.as_str()))
+            .collect::<HashSet<_>>();
         let variant_docs = enumeration.variant_docs();
         let variants = abi_enum
             .variants
             .iter()
             .enumerate()
             .map(|(i, variant)| {
-                let mut v = self.lower_enum_variant(variant, kind);
+                let mut v = self.lower_enum_variant(variant, kind, &variant_names);
                 v.doc = variant_docs.get(i).cloned().flatten();
                 v
             })
@@ -368,12 +526,13 @@ impl<'a> KotlinLowerer<'a> {
         &self,
         variant: &AbiEnumVariant,
         kind: KotlinEnumKind,
+        variant_names: &HashSet<String>,
     ) -> KotlinEnumVariant {
         let fields = match &variant.payload {
             AbiEnumPayload::Unit => Vec::new(),
             AbiEnumPayload::Tuple(fields) | AbiEnumPayload::Struct(fields) => fields
                 .iter()
-                .map(|field| self.lower_enum_field(field))
+                .map(|field| self.lower_enum_field(field, variant_names))
                 .collect(),
         };
         let name = match kind {
@@ -388,15 +547,27 @@ impl<'a> KotlinLowerer<'a> {
         }
     }
 
-    fn lower_enum_field(&self, field: &AbiEnumField) -> KotlinEnumField {
+    fn lower_enum_field(
+        &self,
+        field: &AbiEnumField,
+        variant_names: &HashSet<String>,
+    ) -> KotlinEnumField {
         let local_name = format!("_{}_", field.name.as_str().to_lowercase());
+        let (kotlin_type, decode_name) =
+            self.kotlin_type_with_disambiguation(&field.type_expr, variant_names);
+        let wire_decode_inline = emit::emit_inline_decode(&field.decode, &local_name, "pos");
+        let wire_decode_inline =
+            self.qualify_decode_expr(wire_decode_inline, decode_name.as_deref());
+        let wire_advance_expr = emit::emit_advance_read(&field.decode);
+        let wire_advance_expr =
+            self.qualify_decode_expr(wire_advance_expr, decode_name.as_deref());
         KotlinEnumField {
             name: NamingConvention::property_name(field.name.as_str()),
-            kotlin_type: self.kotlin_type(&field.type_expr),
+            kotlin_type,
             local_name: local_name.clone(),
-            wire_decode_inline: emit::emit_inline_decode(&field.decode, &local_name, "pos"),
-            wire_advance_expr: emit::emit_advance_read(&field.decode),
-            wire_size_expr: emit::emit_size_expr(&field.decode.size),
+            wire_decode_inline,
+            wire_advance_expr,
+            wire_size_expr: emit::emit_size_expr_for_write_seq(&field.encode),
             wire_encode: emit::emit_write_expr(&field.encode),
         }
     }
@@ -499,7 +670,7 @@ impl<'a> KotlinLowerer<'a> {
             local_name: local_name.clone(),
             wire_decode_inline: emit::emit_inline_decode(&decode_seq, &local_name, "pos"),
             wire_advance_expr: emit::emit_advance_read(&decode_seq),
-            wire_size_expr: emit::emit_size_expr(&encode_seq.size),
+            wire_size_expr: emit::emit_size_expr_for_write_seq(&encode_seq),
             wire_encode: emit::emit_write_expr(&encode_seq),
             padding_after: self.field_padding_after(&record.id, &field.name),
             doc: field.doc.clone(),
@@ -741,7 +912,7 @@ impl<'a> KotlinLowerer<'a> {
         let decode_expr = self.decode_expr_for_call_return(&call.return_, &method.returns);
         let is_blittable_return = self.is_blittable_return(&call.return_);
         let ffi_name = call.symbol.as_str().to_string();
-        let include_handle = true;
+        let include_handle = method.receiver != Receiver::Static;
         let err_type = self.error_type_name(&method.returns);
         let rendered = if method.is_async {
             let async_call = self.async_call_for_method(class, method, call);
@@ -793,6 +964,7 @@ impl<'a> KotlinLowerer<'a> {
             } else {
                 KotlinMethodImpl::SyncMethod(rendered)
             },
+            is_static: method.receiver == Receiver::Static,
         }
     }
 
@@ -1020,7 +1192,7 @@ impl<'a> KotlinLowerer<'a> {
             })
             .collect();
         let return_info = self.callback_return_info(&method.returns, &abi_method.return_);
-        let invoker = self.async_callback_invoker(&method.returns);
+        let invoker = self.async_callback_invoker(&return_info);
         KotlinAsyncCallbackMethod {
             name: NamingConvention::method_name(method.id.as_str()),
             ffi_name: abi_method.vtable_field.as_str().to_string(),
@@ -1061,61 +1233,34 @@ impl<'a> KotlinLowerer<'a> {
         }
     }
 
-    fn async_callback_invoker(&self, returns: &ReturnDef) -> KotlinAsyncCallbackInvoker {
-        let result_jni_type = match returns {
-            ReturnDef::Value(TypeExpr::Primitive(p)) => Some(self.primitive_jni_type(*p)),
-            ReturnDef::Value(TypeExpr::String) => Some("String".to_string()),
-            ReturnDef::Value(TypeExpr::Enum(_)) => Some("Int".to_string()),
-            ReturnDef::Value(TypeExpr::Handle(_)) | ReturnDef::Value(TypeExpr::Callback(_)) => {
-                Some("Long".to_string())
-            }
-            ReturnDef::Value(TypeExpr::Record(_))
-            | ReturnDef::Value(TypeExpr::Vec(_))
-            | ReturnDef::Value(TypeExpr::Option(_))
-            | ReturnDef::Value(TypeExpr::Bytes)
-            | ReturnDef::Value(TypeExpr::Custom(_))
-            | ReturnDef::Value(TypeExpr::Builtin(_)) => Some("ByteBuffer".to_string()),
-            ReturnDef::Void
-            | ReturnDef::Result { .. }
-            | ReturnDef::Value(TypeExpr::Void)
-            | ReturnDef::Value(TypeExpr::Result { .. }) => None,
-        };
+    fn async_callback_invoker(
+        &self,
+        return_info: &Option<KotlinCallbackReturn>,
+    ) -> KotlinAsyncCallbackInvoker {
+        let mut result_jni_type = return_info.as_ref().map(|ret| ret.jni_type.clone());
+        let suffix = self.invoker_suffix_from_jni_type(&result_jni_type);
+        if suffix == "Void" {
+            result_jni_type = None;
+        }
         KotlinAsyncCallbackInvoker {
-            name: format!("invokeAsyncCallback{}", self.invoker_suffix(returns)),
+            name: format!("invokeAsyncCallback{}", suffix),
             result_jni_type,
         }
     }
 
-    fn invoker_suffix(&self, returns: &ReturnDef) -> String {
-        match returns {
-            ReturnDef::Value(TypeExpr::Primitive(p)) => match p {
-                PrimitiveType::Bool => "Bool".to_string(),
-                PrimitiveType::I8 => "I8".to_string(),
-                PrimitiveType::U8 => "I8".to_string(),
-                PrimitiveType::I16 => "I16".to_string(),
-                PrimitiveType::U16 => "I16".to_string(),
-                PrimitiveType::I32 => "I32".to_string(),
-                PrimitiveType::U32 => "I32".to_string(),
-                PrimitiveType::I64 | PrimitiveType::ISize => "I64".to_string(),
-                PrimitiveType::U64 | PrimitiveType::USize => "I64".to_string(),
-                PrimitiveType::F32 => "F32".to_string(),
-                PrimitiveType::F64 => "F64".to_string(),
-            },
-            ReturnDef::Value(TypeExpr::Handle(_)) | ReturnDef::Value(TypeExpr::Callback(_)) => {
-                "I64".to_string()
-            }
-            ReturnDef::Void
-            | ReturnDef::Result { .. }
-            | ReturnDef::Value(TypeExpr::Void)
-            | ReturnDef::Value(TypeExpr::String)
-            | ReturnDef::Value(TypeExpr::Bytes)
-            | ReturnDef::Value(TypeExpr::Enum(_))
-            | ReturnDef::Value(TypeExpr::Record(_))
-            | ReturnDef::Value(TypeExpr::Vec(_))
-            | ReturnDef::Value(TypeExpr::Option(_))
-            | ReturnDef::Value(TypeExpr::Result { .. })
-            | ReturnDef::Value(TypeExpr::Custom(_))
-            | ReturnDef::Value(TypeExpr::Builtin(_)) => "Void".to_string(),
+    fn invoker_suffix_from_jni_type(&self, result_jni_type: &Option<String>) -> String {
+        match result_jni_type.as_deref() {
+            None => "Void".to_string(),
+            Some("Boolean") => "Bool".to_string(),
+            Some("Byte") => "I8".to_string(),
+            Some("Short") => "I16".to_string(),
+            Some("Int") => "I32".to_string(),
+            Some("Long") => "I64".to_string(),
+            Some("Float") => "F32".to_string(),
+            Some("Double") => "F64".to_string(),
+            Some("ByteBuffer") => "Object".to_string(),
+            Some("String") => "Object".to_string(),
+            Some(_) => "Object".to_string(),
         }
     }
 
@@ -1125,7 +1270,6 @@ impl<'a> KotlinLowerer<'a> {
         transport: &ReturnTransport,
     ) -> Option<KotlinCallbackReturn> {
         let kotlin_type = self.kotlin_return_type_from_def(returns, transport)?;
-        let wrap_ok = matches!(returns, ReturnDef::Result { .. });
         let (jni_type, default_value, to_jni) = match transport {
             ReturnTransport::Void => return None,
             ReturnTransport::Direct(abi) => (
@@ -1136,7 +1280,7 @@ impl<'a> KotlinLowerer<'a> {
             ReturnTransport::Encoded { encode_ops, .. } => (
                 "ByteBuffer".to_string(),
                 "ByteBuffer.allocateDirect(0)".to_string(),
-                self.callback_return_wire_encode(encode_ops, wrap_ok),
+                self.callback_return_wire_encode(encode_ops),
             ),
             ReturnTransport::Handle { class_id, nullable } => (
                 "Long".to_string(),
@@ -1152,11 +1296,29 @@ impl<'a> KotlinLowerer<'a> {
                 self.callback_return_callback_cast(callback_id, *nullable),
             ),
         };
+        let (error_type, error_is_throwable) = match returns {
+            ReturnDef::Result { err, .. } => {
+                let err_type = self.kotlin_type(err);
+                let throwable = match err {
+                    TypeExpr::Enum(id) => self
+                        .contract
+                        .catalog
+                        .resolve_enum(id)
+                        .map(|e| e.is_error)
+                        .unwrap_or(false),
+                    _ => false,
+                };
+                (Some(err_type), throwable)
+            }
+            _ => (None, false),
+        };
         Some(KotlinCallbackReturn {
             kotlin_type,
             jni_type,
             default_value,
             to_jni,
+            error_type,
+            error_is_throwable,
         })
     }
 
@@ -1224,17 +1386,12 @@ impl<'a> KotlinLowerer<'a> {
         }
     }
 
-    fn callback_return_wire_encode(&self, encode_ops: &WriteSeq, wrap_ok: bool) -> String {
-        let size_expr = emit::emit_size_expr(&encode_ops.size);
+    fn callback_return_wire_encode(&self, encode_ops: &WriteSeq) -> String {
+        let size_expr = emit::emit_size_expr_for_write_seq(encode_ops);
         let encode_expr = emit::emit_write_expr(encode_ops);
-        let value_binding = if wrap_ok {
-            "val value = RiffResult.Ok(value); "
-        } else {
-            ""
-        };
         format!(
-            ".let {{ value -> run {{ val writer = WireWriterPool.acquire({}); try {{ val wire = writer.writer; {}{}; writer.buffer }} finally {{ writer.close() }} }} }}",
-            size_expr, value_binding, encode_expr
+            ".let {{ value -> run {{ val writer = WireWriterPool.acquire({}); try {{ val wire = writer.writer; {}; writer.buffer }} finally {{ writer.close() }} }} }}",
+            size_expr, encode_expr
         )
     }
 
@@ -1245,8 +1402,28 @@ impl<'a> KotlinLowerer<'a> {
             .iter()
             .map(|func| self.lower_native_function(func))
             .collect::<Vec<_>>();
-        let declared_symbols: HashSet<&str> =
-            functions.iter().map(|f| f.ffi_name.as_str()).collect();
+        let class_symbols = self
+            .contract
+            .catalog
+            .all_classes()
+            .flat_map(|class| {
+                let ctor_symbols = class
+                    .constructors
+                    .iter()
+                    .enumerate()
+                    .map(|(index, _)| self.abi_call_for_constructor(class, index).symbol.clone());
+                let method_symbols = class
+                    .methods
+                    .iter()
+                    .map(|method| self.abi_call_for_method(class, method).symbol.clone());
+                ctor_symbols.chain(method_symbols)
+            })
+            .collect::<HashSet<_>>();
+        let declared_symbols = functions
+            .iter()
+            .map(|f| f.ffi_name.as_str())
+            .chain(class_symbols.iter().map(|s| s.as_str()))
+            .collect::<HashSet<_>>();
         let wire_functions = self
             .abi
             .calls
@@ -1281,9 +1458,23 @@ impl<'a> KotlinLowerer<'a> {
                     .methods
                     .iter()
                     .filter(|method| method.is_async)
-                    .map(|method| self.async_callback_invoker(&method.returns))
+                    .map(|method| {
+                        let abi_method = self.abi_callback_method(&callback.id, &method.id);
+                        let return_info =
+                            self.callback_return_info(&method.returns, &abi_method.return_);
+                        self.async_callback_invoker(&return_info)
+                    })
             })
-            .collect();
+            .fold(
+                (HashSet::new(), Vec::new()),
+                |(mut seen, mut invokers), invoker| {
+                    if seen.insert(invoker.name.clone()) {
+                        invokers.push(invoker);
+                    }
+                    (seen, invokers)
+                },
+            )
+            .1;
         KotlinNative {
             lib_name: self
                 .options
@@ -1378,7 +1569,7 @@ impl<'a> KotlinLowerer<'a> {
                     ffi_complete: async_call.complete.as_str().to_string(),
                     ffi_cancel: async_call.cancel.as_str().to_string(),
                     ffi_free: async_call.free.as_str().to_string(),
-                    include_handle: true,
+                    include_handle: method.receiver != Receiver::Static,
                     params: self
                         .visible_native_params(&call)
                         .into_iter()
@@ -1405,7 +1596,7 @@ impl<'a> KotlinLowerer<'a> {
                 let call = Self::strip_receiver(self.abi_call_for_method(class, method));
                 KotlinNativeSyncMethod {
                     ffi_name: call.symbol.as_str().to_string(),
-                    include_handle: true,
+                    include_handle: method.receiver != Receiver::Static,
                     params: self
                         .visible_native_params(&call)
                         .into_iter()
@@ -1566,6 +1757,47 @@ impl<'a> KotlinLowerer<'a> {
             TypeExpr::Handle(class_id) => NamingConvention::class_name(class_id.as_str()),
             TypeExpr::Callback(callback_id) => NamingConvention::class_name(callback_id.as_str()),
             TypeExpr::Void => "Unit".to_string(),
+        }
+    }
+
+    fn kotlin_type_with_disambiguation(
+        &self,
+        ty: &TypeExpr,
+        reserved: &HashSet<String>,
+    ) -> (String, Option<String>) {
+        match ty {
+            TypeExpr::Record(id) => self.disambiguate_type_name(id.as_str(), reserved),
+            TypeExpr::Custom(id) => self.disambiguate_type_name(id.as_str(), reserved),
+            TypeExpr::Enum(id) => self.disambiguate_type_name(id.as_str(), reserved),
+            _ => (self.kotlin_type(ty), None),
+        }
+    }
+
+    fn qualify_decode_expr(&self, expr: String, qualified: Option<&str>) -> String {
+        let Some(qualified) = qualified else {
+            return expr;
+        };
+        let unqualified = qualified
+            .rsplit('.')
+            .next()
+            .unwrap_or(qualified);
+        let prefix = format!("{}.", unqualified);
+        expr.strip_prefix(&prefix)
+            .map(|suffix| format!("{}.{}", qualified, suffix))
+            .unwrap_or(expr)
+    }
+
+    fn disambiguate_type_name(
+        &self,
+        type_name: &str,
+        reserved: &HashSet<String>,
+    ) -> (String, Option<String>) {
+        let class_name = NamingConvention::class_name(type_name);
+        if reserved.contains(&class_name) {
+            let qualified = format!("{}.{}", self.package_name, class_name);
+            (qualified.clone(), Some(qualified))
+        } else {
+            (class_name, None)
         }
     }
 
@@ -1826,7 +2058,7 @@ impl<'a> KotlinLowerer<'a> {
             .filter_map(|param| match &param.role {
                 ParamRole::InEncoded { encode_ops, .. } => Some(KotlinWireWriter {
                     binding_name: format!("wire_writer_{}", param.name.as_str()),
-                    size_expr: emit::emit_size_expr(&encode_ops.size),
+                    size_expr: emit::emit_size_expr_for_write_seq(encode_ops),
                     encode_expr: emit::emit_write_expr(encode_ops),
                 }),
                 ParamRole::InDirect

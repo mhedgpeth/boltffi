@@ -235,6 +235,10 @@ impl KotlinClass {
     pub fn has_factory_ctors(&self) -> bool {
         self.constructors.iter().any(|c| c.is_factory)
     }
+
+    pub fn has_static_methods(&self) -> bool {
+        self.methods.iter().any(|m| m.is_static)
+    }
 }
 
 #[derive(Clone)]
@@ -253,6 +257,7 @@ pub struct KotlinConstructor {
 #[derive(Clone)]
 pub struct KotlinMethod {
     pub impl_: KotlinMethodImpl,
+    pub is_static: bool,
 }
 
 #[derive(Clone)]
@@ -376,6 +381,8 @@ pub struct KotlinCallbackReturn {
     pub jni_type: String,
     pub default_value: String,
     pub to_jni: String,
+    pub error_type: Option<String>,
+    pub error_is_throwable: bool,
 }
 
 #[derive(Clone)]

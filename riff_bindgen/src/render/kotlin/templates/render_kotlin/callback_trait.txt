@@ -55,8 +55,9 @@ object {{ callbacks_object }} {
         }
         @OptIn(DelicateCoroutinesApi::class)
         GlobalScope.launch {
-            {% match method.return_info %}{% when Some with (ret) %}val result = impl.{{ method.name }}({% for param in method.params %}{{ param.conversion }}{% if !loop.last %}, {% endif %}{% endfor %})
-            Native.{{ method.invoker_name }}(callbackPtr, callbackData, result{{ ret.to_jni }}){% when None %}impl.{{ method.name }}({% for param in method.params %}{{ param.conversion }}{% if !loop.last %}, {% endif %}{% endfor %})
+            {% match method.return_info %}{% when Some with (ret) %}{% match ret.error_type %}{% when Some with (err_ty) %}val result: RiffResult<{{ ret.kotlin_type }}, {{ err_ty }}> = try { RiffResult.Ok(impl.{{ method.name }}({% for param in method.params %}{{ param.conversion }}{% if !loop.last %}, {% endif %}{% endfor %})) } catch (e: {{ err_ty }}) { RiffResult.Err(e) }
+            Native.{{ method.invoker_name }}(callbackPtr, callbackData, result{{ ret.to_jni }}){% when None %}val result = impl.{{ method.name }}({% for param in method.params %}{{ param.conversion }}{% if !loop.last %}, {% endif %}{% endfor %})
+            Native.{{ method.invoker_name }}(callbackPtr, callbackData, result{{ ret.to_jni }}){% endmatch %}{% when None %}impl.{{ method.name }}({% for param in method.params %}{{ param.conversion }}{% if !loop.last %}, {% endif %}{% endfor %})
             Native.{{ method.invoker_name }}(callbackPtr, callbackData){% endmatch %}
         }
     }

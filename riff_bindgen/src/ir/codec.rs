@@ -103,6 +103,7 @@ pub struct EncodedField {
 pub enum EnumLayout {
     CStyle {
         tag_type: PrimitiveType,
+        is_error: bool,
     },
     Data {
         tag_type: PrimitiveType,
