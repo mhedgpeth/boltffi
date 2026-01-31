@@ -10,7 +10,7 @@ public final class Connection {
     }
 
     public init(url: String) throws {
-        guard let ptr = url.withCString { urlPtr in riff_connection_open(UnsafeRawPointer(urlPtr).assumingMemoryBound(to: UInt8.self), UInt(url.utf8.count)) } else {
+        guard let ptr = url.withCString { urlPtr -> OpaquePointer? in riff_connection_open(UnsafeRawPointer(urlPtr).assumingMemoryBound(to: UInt8.self), UInt(url.utf8.count)) } else {
             throw FfiError(message: takeLastErrorMessage())
         }
         self.handle = ptr

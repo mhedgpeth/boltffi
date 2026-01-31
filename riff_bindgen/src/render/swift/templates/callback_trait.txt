@@ -31,13 +31,44 @@ private var {{ callback.vtable_var }}: {{ callback.vtable_type }} = {
 {%- endfor %}
 {%- if method.is_async %}
             Task {
-                {% if method.has_return() %}let result = {% endif %}{% if method.throws() %}try {% endif %}await wrapper.impl_.{{ method.swift_name }}({% for param in method.params %}{{ param.label }}: {{ param.call_arg }}{% if !loop.last %}, {% endif %}{% endfor %})
+{%- if method.throws() %}
+                do {
+                    {% if method.has_return() %}let result = {% endif %}try await wrapper.impl_.{{ method.swift_name }}({% for param in method.params %}{{ param.label }}: {{ param.call_arg }}{% if !loop.last %}, {% endif %}{% endfor %})
+{%- if method.has_return() %}
+{%- if method.wire_encoded_return() %}
+{%- if let Some(encoded) = method.wire_return_encode() %}
+                    {{ encoded }}
+{%- endif %}
+                    _ = encoded.withUnsafeBytes { (bytes: UnsafeRawBufferPointer) -> Void in
+                        callback?(callbackData, bytes.baseAddress?.assumingMemoryBound(to: UInt8.self), UInt(bytes.count), FfiStatus(code: 0))
+                    }
+{%- else %}
+                    callback?(callbackData, result, FfiStatus(code: 0))
+{%- endif %}
+{%- else %}
+                    callback?(callbackData, FfiStatus(code: 0))
+{%- endif %}
+                } catch {
+{%- if let Some(err_encoded) = method.wire_err_encode() %}
+{%- if let Some(err_type) = method.err_type() %}
+                    let error = error as! {{ err_type }}
+{%- endif %}
+                    {{ err_encoded }}
+                    _ = encoded.withUnsafeBytes { (bytes: UnsafeRawBufferPointer) -> Void in
+                        callback?(callbackData, bytes.baseAddress?.assumingMemoryBound(to: UInt8.self), UInt(bytes.count), FfiStatus(code: 1))
+                    }
+{%- else %}
+                    callback?(callbackData, FfiStatus(code: 1))
+{%- endif %}
+                }
+{%- else %}
+                {% if method.has_return() %}let result = {% endif %}await wrapper.impl_.{{ method.swift_name }}({% for param in method.params %}{{ param.label }}: {{ param.call_arg }}{% if !loop.last %}, {% endif %}{% endfor %})
 {%- if method.has_return() %}
 {%- if method.wire_encoded_return() %}
 {%- if let Some(encoded) = method.wire_return_encode() %}
                 {{ encoded }}
 {%- endif %}
-                _ = encoded.withUnsafeBytes { bytes in
+                _ = encoded.withUnsafeBytes { (bytes: UnsafeRawBufferPointer) -> Void in
                     callback?(callbackData, bytes.baseAddress?.assumingMemoryBound(to: UInt8.self), UInt(bytes.count), FfiStatus(code: 0))
                 }
 {%- else %}
@@ -45,6 +76,7 @@ private var {{ callback.vtable_var }}: {{ callback.vtable_type }} = {
 {%- endif %}
 {%- else %}
                 callback?(callbackData, FfiStatus(code: 0))
+{%- endif %}
 {%- endif %}
             }
 {%- else %}

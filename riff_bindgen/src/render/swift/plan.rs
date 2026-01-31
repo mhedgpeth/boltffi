@@ -119,11 +119,18 @@ pub enum SwiftAsyncConversion {
 #[derive(Debug, Clone)]
 pub struct SwiftModule {
     pub imports: Vec<String>,
+    pub custom_types: Vec<SwiftCustomType>,
     pub records: Vec<SwiftRecord>,
     pub enums: Vec<SwiftEnum>,
     pub classes: Vec<SwiftClass>,
     pub callbacks: Vec<SwiftCallback>,
     pub functions: Vec<SwiftFunction>,
+}
+
+#[derive(Debug, Clone)]
+pub struct SwiftCustomType {
+    pub alias_name: String,
+    pub target_type: String,
 }
 
 impl SwiftModule {
@@ -453,6 +460,16 @@ impl SwiftConstructor {
         closure_wrappers(self.params())
     }
 
+    pub fn annotated_closure_wrappers(&self) -> Vec<String> {
+        let mut wrappers = self.closure_wrappers();
+        if let Some(first) = wrappers.first_mut() {
+            if let Some(in_pos) = first.rfind(" in") {
+                first.replace_range(in_pos.., " -> OpaquePointer? in");
+            }
+        }
+        wrappers
+    }
+
     pub fn call_expr(&self) -> String {
         ffi_call_expr(self.ffi_symbol(), &[], self.params())
     }
@@ -613,11 +630,33 @@ impl SwiftCallbackMethod {
         self.encoded_return_encode().map(|encode| {
             let size_expr = emit::emit_size_expr(&encode.size);
             let encode_expr = emit::emit_write_data(encode);
+            let discriminant = if self.throws() { "data.appendU8(0); " } else { "" };
             format!(
-                "let encoded = ({{ var data = Data(capacity: {}); {}; return data }})()",
-                size_expr, encode_expr
+                "let encoded = ({{ var data = Data(capacity: {}); {}{}; return data }})()",
+                size_expr, discriminant, encode_expr
             )
         })
+    }
+
+    pub fn err_type(&self) -> Option<&str> {
+        match &self.returns {
+            SwiftReturn::Throws { err_type, .. } => Some(err_type),
+            _ => None,
+        }
+    }
+
+    pub fn wire_err_encode(&self) -> Option<String> {
+        match &self.returns {
+            SwiftReturn::Throws { err_encode: Some(encode), .. } => {
+                let size_expr = emit::emit_size_expr(&encode.size);
+                let encode_expr = emit::emit_write_data(encode);
+                Some(format!(
+                    "let encoded = ({{ var data = Data(capacity: {}); data.appendU8(1); {}; return data }})()",
+                    size_expr, encode_expr
+                ))
+            }
+            _ => None,
+        }
     }
 
     fn encoded_return_encode(&self) -> Option<&WriteSeq> {
@@ -760,27 +799,32 @@ impl SwiftParam {
                 "{}.withUnsafeBytes {{ $0.baseAddress }}, UInt({}.count)",
                 self.name, self.name
             ),
-            SwiftConversion::ToWireBuffer { encode } => {
-                if encode.shape == WireShape::Optional {
-                    format!(
-                        "{}Ptr?.baseAddress?.assumingMemoryBound(to: UInt8.self), UInt({}Ptr?.count ?? 0)",
-                        self.name, self.name
-                    )
-                } else {
-                    format!(
-                        "{}Ptr.baseAddress?.assumingMemoryBound(to: UInt8.self), UInt({}Ptr.count)",
-                        self.name, self.name
-                    )
-                }
-            }
+            SwiftConversion::ToWireBuffer { encode } => match encode.shape {
+                WireShape::Optional => format!(
+                    "{}Ptr?.baseAddress?.assumingMemoryBound(to: UInt8.self), UInt({}Ptr?.count ?? 0)",
+                    self.name, self.name
+                ),
+                WireShape::Value => format!(
+                    "{}Bytes, UInt({}Bytes.count)",
+                    self.name, self.name
+                ),
+                WireShape::Sequence => format!(
+                    "{}Ptr.baseAddress?.assumingMemoryBound(to: UInt8.self), UInt({}Ptr.count)",
+                    self.name, self.name
+                ),
+            },
             SwiftConversion::PrimitiveBuffer { .. } => {
                 format!("{}Ptr.baseAddress, UInt({}Ptr.count)", self.name, self.name)
             }
             SwiftConversion::MutableBuffer { .. } => {
                 format!("{}Ptr.baseAddress, UInt({}Ptr.count)", self.name, self.name)
             }
-            SwiftConversion::WrapCallback { protocol } => {
-                format!("{}Bridge.create({})", protocol, self.name)
+            SwiftConversion::WrapCallback { protocol, nullable } => {
+                if *nullable {
+                    format!("{}.map {{ {}Bridge.create($0) }} ?? RiffCallbackHandle(handle: 0, vtable: nil)", self.name, protocol)
+                } else {
+                    format!("{}Bridge.create({})", protocol, self.name)
+                }
             }
             SwiftConversion::InlineClosure { closure } => {
                 format!("{}, {}", closure.trampoline_var, closure.ptr_var)
@@ -802,18 +846,23 @@ impl SwiftParam {
     pub fn wrapper_code(&self) -> Option<String> {
         match &self.conversion {
             SwiftConversion::InlineClosure { closure } => Some(closure.render()),
+            SwiftConversion::ToWireBuffer { encode } if encode.shape == WireShape::Value => {
+                Some(format!(
+                    "let {name}Encoded = {name}.wireEncode()\n        let {name}Bytes = [UInt8]({name}Encoded)",
+                    name = self.name
+                ))
+            }
             _ => None,
         }
     }
 
     pub fn needs_closure_wrap(&self) -> bool {
-        matches!(
-            self.conversion,
-            SwiftConversion::ToString
-                | SwiftConversion::ToWireBuffer { .. }
-                | SwiftConversion::PrimitiveBuffer { .. }
-                | SwiftConversion::MutableBuffer { .. }
-        )
+        match &self.conversion {
+            SwiftConversion::ToString => true,
+            SwiftConversion::ToWireBuffer { encode } => encode.shape != WireShape::Value,
+            SwiftConversion::PrimitiveBuffer { .. } | SwiftConversion::MutableBuffer { .. } => true,
+            _ => false,
+        }
     }
 
     pub fn closure_wrap_open(&self) -> Option<String> {
@@ -830,10 +879,7 @@ impl SwiftParam {
                     "withWireEncodedOptional({}) {{ {}Ptr in",
                     self.name, self.name
                 )),
-                WireShape::Value => Some(format!(
-                    "{}.wireEncode().withUnsafeBytes {{ {}Ptr in",
-                    self.name, self.name
-                )),
+                WireShape::Value => None,
             },
             SwiftConversion::PrimitiveBuffer { .. } => Some(format!(
                 "{}.withUnsafeBufferPointer {{ {}Ptr in",
@@ -849,10 +895,13 @@ impl SwiftParam {
 
     pub fn closure_wrap_close(&self) -> Option<&'static str> {
         match &self.conversion {
-            SwiftConversion::ToString
-            | SwiftConversion::ToWireBuffer { .. }
-            | SwiftConversion::PrimitiveBuffer { .. }
-            | SwiftConversion::MutableBuffer { .. } => Some("}"),
+            SwiftConversion::ToString => Some("}"),
+            SwiftConversion::ToWireBuffer { encode } if encode.shape != WireShape::Value => {
+                Some("}")
+            }
+            SwiftConversion::PrimitiveBuffer { .. } | SwiftConversion::MutableBuffer { .. } => {
+                Some("}")
+            }
             _ => None,
         }
     }
@@ -912,7 +961,7 @@ pub enum SwiftConversion {
     ToWireBuffer { encode: WriteSeq },
     PrimitiveBuffer { element_type: String },
     MutableBuffer { element_type: String },
-    WrapCallback { protocol: String },
+    WrapCallback { protocol: String, nullable: bool },
     InlineClosure { closure: SwiftClosureTrampoline },
     PassHandle { class_name: String, nullable: bool },
 }
@@ -956,6 +1005,7 @@ pub enum SwiftReturn {
         err_type: String,
         err_decode: ReadSeq,
         err_is_string: bool,
+        err_encode: Option<WriteSeq>,
     },
 }
 

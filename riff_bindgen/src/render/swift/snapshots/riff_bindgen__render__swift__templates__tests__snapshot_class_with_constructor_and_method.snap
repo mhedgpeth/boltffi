@@ -10,7 +10,7 @@ public final class Database {
     }
 
     public init(path: String) {
-        let ptr = path.withCString { pathPtr in riff_database_open(UnsafeRawPointer(pathPtr).assumingMemoryBound(to: UInt8.self), UInt(path.utf8.count)) }!
+        let ptr = path.withCString { pathPtr -> OpaquePointer? in riff_database_open(UnsafeRawPointer(pathPtr).assumingMemoryBound(to: UInt8.self), UInt(path.utf8.count)) }!
         self.handle = ptr
     }
 

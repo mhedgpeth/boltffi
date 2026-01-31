@@ -400,11 +400,8 @@ static inline uint64_t {prefix}_atomic_u64_load(uint64_t* slot) {{
         }
 
         if method.is_async {
-            let callback_return = method
-                .returns
-                .ok_type()
-                .map(Self::trait_callback_return_params)
-                .unwrap_or_default();
+            let callback_return =
+                Self::trait_callback_return_params(&method.returns);
             params.push(format!(
                 "void (*callback)(uint64_t{}, FfiStatus)",
                 callback_return
@@ -424,10 +421,14 @@ static inline uint64_t {prefix}_atomic_u64_load(uint64_t* slot) {{
         )
     }
 
-    fn trait_callback_return_params(ty: &Type) -> String {
-        match ty {
-            Type::Primitive(_) => format!(", {}", Self::type_to_c(ty)),
-            _ => ", const uint8_t*, uintptr_t".to_string(),
+    fn trait_callback_return_params(returns: &ReturnType) -> String {
+        match returns {
+            ReturnType::Void => String::new(),
+            ReturnType::Fallible { .. } => ", const uint8_t*, uintptr_t".to_string(),
+            ReturnType::Value(ty) => match ty {
+                Type::Primitive(_) => format!(", {}", Self::type_to_c(ty)),
+                _ => ", const uint8_t*, uintptr_t".to_string(),
+            },
         }
     }
 

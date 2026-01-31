@@ -2781,7 +2781,7 @@ impl<'a> KotlinLowerer<'a> {
                 | ParamRole::StatusOut => None,
             });
             let error_seq = match &call.error {
-                ErrorTransport::Encoded { decode_ops } => Some(decode_ops),
+                ErrorTransport::Encoded { decode_ops, .. } => Some(decode_ops),
                 ErrorTransport::None | ErrorTransport::StatusCode => None,
             };
             let async_seq = match &call.mode {

@@ -9,9 +9,9 @@ use super::emit;
 use super::plan::{
     SwiftAsyncConversion, SwiftAsyncResult, SwiftCallMode, SwiftCallback, SwiftCallbackMethod,
     SwiftCallbackParam, SwiftClass, SwiftClosureTrampoline, SwiftClosureTrampolineParam,
-    SwiftConstructor, SwiftConversion, SwiftEnum, SwiftEnumStyle, SwiftField, SwiftFunction,
-    SwiftMethod, SwiftModule, SwiftParam, SwiftRecord, SwiftReturn, SwiftStream, SwiftStreamMode,
-    SwiftVariant, SwiftVariantPayload,
+    SwiftConstructor, SwiftConversion, SwiftCustomType, SwiftEnum, SwiftEnumStyle, SwiftField,
+    SwiftFunction, SwiftMethod, SwiftModule, SwiftParam, SwiftRecord, SwiftReturn, SwiftStream,
+    SwiftStreamMode, SwiftVariant, SwiftVariantPayload,
 };
 use crate::ir::abi::{
     AbiCall, AbiCallbackInvocation, AbiContract, AbiEnum, AbiEnumField, AbiEnumPayload,
@@ -118,6 +118,7 @@ impl<'a> SwiftLowerer<'a> {
     }
 
     pub fn lower(self) -> SwiftModule {
+        let custom_types = self.lower_custom_types();
         let records = self.lower_records();
         let enums = self.lower_enums();
         let classes = self.lower_classes();
@@ -126,12 +127,34 @@ impl<'a> SwiftLowerer<'a> {
 
         SwiftModule {
             imports: vec!["Foundation".to_string()],
+            custom_types,
             records,
             enums,
             classes,
             callbacks,
             functions,
         }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Custom Types
+// ─────────────────────────────────────────────────────────────────────────────
+
+impl<'a> SwiftLowerer<'a> {
+    fn lower_custom_types(&self) -> Vec<SwiftCustomType> {
+        self.contract
+            .catalog
+            .all_custom_types()
+            .map(|def| {
+                let alias_name = pascal_case(def.id.as_str());
+                let target_type = emit::swift_type(&def.repr);
+                SwiftCustomType {
+                    alias_name,
+                    target_type,
+                }
+            })
+            .collect()
     }
 }
 
@@ -217,7 +240,7 @@ impl<'a> SwiftLowerer<'a> {
                     .iter()
                     .enumerate()
                     .map(|(i, variant)| SwiftVariant {
-                        swift_name: variant.name.as_str().to_lower_camel_case(),
+                        swift_name: emit::escape_swift_keyword(&variant.name.as_str().to_lower_camel_case()),
                         discriminant: variant.discriminant,
                         payload: self.lower_variant_payload(variant),
                         doc: variant_docs.get(i).cloned().flatten(),
@@ -704,7 +727,7 @@ impl<'a> SwiftLowerer<'a> {
                     } else {
                         format!("any {}", protocol)
                     };
-                    (swift_type, SwiftConversion::WrapCallback { protocol })
+                    (swift_type, SwiftConversion::WrapCallback { protocol, nullable: *nullable })
                 }
                 CallbackStyle::ImplTrait => {
                     let closure_plan = self.build_closure_trampoline(callback_id, &swift_name);
@@ -810,11 +833,12 @@ impl<'a> SwiftLowerer<'a> {
 
         match error {
             ErrorTransport::None => base,
-            ErrorTransport::Encoded { decode_ops } => SwiftReturn::Throws {
+            ErrorTransport::Encoded { decode_ops, encode_ops } => SwiftReturn::Throws {
                 ok: Box::new(base),
                 err_type: self.swift_error_type(returns),
                 err_decode: decode_ops.clone(),
                 err_is_string: self.error_is_string(returns),
+                err_encode: encode_ops.clone(),
             },
             ErrorTransport::StatusCode => SwiftReturn::Throws {
                 ok: Box::new(base),
@@ -825,6 +849,7 @@ impl<'a> SwiftLowerer<'a> {
                     shape: WireShape::Value,
                 },
                 err_is_string: false,
+                err_encode: None,
             },
         }
     }
@@ -1044,11 +1069,13 @@ impl<'a> SwiftLowerer<'a> {
                 err_type,
                 err_decode,
                 err_is_string,
+                err_encode,
             } => SwiftReturn::Throws {
                 ok: Box::new(self.rebase_return_encode(*ok, new_base)),
                 err_type,
                 err_decode,
                 err_is_string,
+                err_encode: err_encode.map(|seq| remap_root_in_seq(&seq, ValueExpr::Var("error".to_string()))),
             },
             other => other,
         }
@@ -1264,7 +1291,7 @@ impl<'a> SwiftLowerer<'a> {
                 // so we dig into the first ReadOp::Result to pull out
                 // the err branch
                 let err_decode = match error {
-                    ErrorTransport::Encoded { decode_ops } => decode_ops.clone(),
+                    ErrorTransport::Encoded { decode_ops, .. } => decode_ops.clone(),
                     _ => match decode_ops.ops.first() {
                         Some(ReadOp::Result { err, .. }) => err.as_ref().clone(),
                         _ => ReadSeq {
@@ -1327,12 +1354,14 @@ impl<'a> SwiftLowerer<'a> {
                     shape: WireShape::Value,
                 },
                 err_is_string: false,
+                err_encode: None,
             },
-            ErrorTransport::Encoded { decode_ops } => SwiftReturn::Throws {
+            ErrorTransport::Encoded { decode_ops, encode_ops } => SwiftReturn::Throws {
                 ok: Box::new(SwiftReturn::Void),
                 err_type: self.swift_error_type(returns),
                 err_decode: decode_ops.clone(),
                 err_is_string: self.error_is_string(returns),
+                err_encode: encode_ops.clone(),
             },
         }
     }

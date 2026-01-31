@@ -6,6 +6,25 @@ use crate::ir::ops::{OffsetExpr, ReadOp, ReadSeq, SizeExpr, ValueExpr, WriteOp, 
 use crate::ir::types::{PrimitiveType, TypeExpr};
 use riff_ffi_rules::naming::snake_to_camel as camel_case;
 
+const SWIFT_KEYWORDS: &[&str] = &[
+    "associatedtype", "borrowing", "class", "consuming", "deinit", "enum", "extension",
+    "fileprivate", "func", "import", "init", "inout", "internal", "let", "nonisolated", "open",
+    "operator", "precedencegroup", "private", "protocol", "public", "rethrows", "static", "struct",
+    "subscript", "typealias", "var",
+    "break", "case", "catch", "continue", "default", "defer", "do", "else", "fallthrough", "for",
+    "guard", "if", "in", "repeat", "return", "switch", "throw", "where", "while",
+    "Any", "as", "await", "false", "is", "nil", "self", "Self", "super", "throws", "true", "try",
+    "_",
+];
+
+pub fn escape_swift_keyword(name: &str) -> String {
+    if SWIFT_KEYWORDS.contains(&name) {
+        format!("`{}`", name)
+    } else {
+        name.to_string()
+    }
+}
+
 pub fn render_value(expr: &ValueExpr) -> String {
     match expr {
         ValueExpr::Instance => "self".to_string(),
@@ -165,8 +184,12 @@ pub fn emit_size_expr(size: &SizeExpr) -> String {
                     format!("(4 + {}.count * {})", v, element_size)
                 }
                 VecLayout::Encoded => {
-                    let reduced = inner_size.replace("item", "$1");
-                    format!("(4 + {}.reduce(0) {{ $0 + {} }})", v, reduced)
+                    if inner_size.contains("item") {
+                        let reduced = inner_size.replace("item", "$1");
+                        format!("(4 + {}.reduce(0) {{ $0 + {} }})", v, reduced)
+                    } else {
+                        format!("(4 + {}.count * {})", v, inner_size)
+                    }
                 }
             }
         }

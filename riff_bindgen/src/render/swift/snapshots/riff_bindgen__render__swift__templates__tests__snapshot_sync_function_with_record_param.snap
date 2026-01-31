@@ -3,10 +3,10 @@ source: riff_bindgen/src/render/swift/templates.rs
 expression: "render_function(&func, \"riff\")"
 ---
 public func processPoint(point: Point) -> Point {
-    return point.wireEncode().withUnsafeBytes { pointPtr in
-        let buf = riff_process_point(pointPtr.baseAddress?.assumingMemoryBound(to: UInt8.self), UInt(pointPtr.count))
-        defer { riff_free_buf_u8(buf) }
-        let wire = WireBuffer(ptr: buf.ptr!, len: Int(buf.len))
-        return Point.decode(wireBuffer: wire, at: 0).value
-    }
+    let pointEncoded = point.wireEncode()
+        let pointBytes = [UInt8](pointEncoded)
+    let buf = riff_process_point(pointBytes, UInt(pointBytes.count))
+    defer { riff_free_buf_u8(buf) }
+    let wire = WireBuffer(ptr: buf.ptr!, len: Int(buf.len))
+    return Point.decode(wireBuffer: wire, at: 0).value
 }

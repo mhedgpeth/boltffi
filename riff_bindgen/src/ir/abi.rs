@@ -212,7 +212,10 @@ pub enum ReturnTransport {
 pub enum ErrorTransport {
     None,
     StatusCode,
-    Encoded { decode_ops: ReadSeq },
+    Encoded {
+        decode_ops: ReadSeq,
+        encode_ops: Option<WriteSeq>,
+    },
 }
 
 #[derive(Debug, Clone)]

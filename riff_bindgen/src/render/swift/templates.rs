@@ -222,6 +222,13 @@ impl SwiftEmitter {
         ));
         output.push_str("\n\n");
 
+        module.custom_types.iter().for_each(|ct| {
+            output.push_str(&format!("public typealias {} = {}\n", ct.alias_name, ct.target_type));
+        });
+        if !module.custom_types.is_empty() {
+            output.push('\n');
+        }
+
         module.records.iter().for_each(|record| {
             output.push_str(&render_record(record));
             output.push_str("\n\n");

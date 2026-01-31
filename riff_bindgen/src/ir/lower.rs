@@ -499,6 +499,7 @@ impl<'c> Lowerer<'c> {
                 },
                 ErrorTransport::Encoded {
                     decode_ops: self.expand_decode(err_codec),
+                    encode_ops: None,
                 },
             ),
             ReturnPlan::Fallible { ok, err_codec } => {
@@ -516,6 +517,7 @@ impl<'c> Lowerer<'c> {
                     },
                     ErrorTransport::Encoded {
                         decode_ops: self.expand_decode(err_codec),
+                        encode_ops: None,
                     },
                 )
             }
@@ -1039,17 +1041,21 @@ impl<'c> Lowerer<'c> {
                 let ok_codec = self.build_codec(ok);
                 let err_codec = self.build_codec(err);
                 let result_codec = CodecPlan::Result {
-                    ok: Box::new(ok_codec),
+                    ok: Box::new(ok_codec.clone()),
                     err: Box::new(err_codec.clone()),
                 };
                 (
                     ReturnTransport::Encoded {
                         decode_ops: self.expand_decode(&result_codec),
                         encode_ops: self
-                            .expand_encode(&result_codec, ValueExpr::Var("value".into())),
+                            .expand_encode(&ok_codec, ValueExpr::Var("result".into())),
                     },
                     ErrorTransport::Encoded {
                         decode_ops: self.expand_decode(&err_codec),
+                        encode_ops: Some(self.expand_encode(
+                            &err_codec,
+                            ValueExpr::Var("error".into()),
+                        )),
                     },
                 )
             }
