@@ -545,8 +545,8 @@ mod tests {
     use super::parse_default_value;
     use crate::ir::types::{PrimitiveType, TypeExpr};
     use crate::model::{
-        self, CallbackTrait, Enumeration, Function, Method, Module, Parameter, Primitive, Receiver,
-        Record, RecordField, ReturnType, TraitMethod, TraitMethodParam, Type, Variant,
+        self, CallbackTrait, Enumeration, Module, Parameter, Primitive, Receiver, Record,
+        RecordField, ReturnType, TraitMethod, TraitMethodParam, Type, Variant,
     };
 
     use super::ContractBuilder;
@@ -565,7 +565,7 @@ mod tests {
         }
     }
 
-    fn builder(module: &Module) -> ContractBuilder {
+    fn builder(module: &Module) -> ContractBuilder<'_> {
         ContractBuilder::new(module)
     }
 
@@ -899,7 +899,7 @@ mod tests {
         let def = builder(&module).convert_class(&module.classes[0]);
 
         assert_eq!(
-            def.constructors[0].doc().as_deref(),
+            def.constructors[0].doc(),
             Some("Opens a new database connection.")
         );
     }
@@ -1077,8 +1077,8 @@ mod tests {
 
     #[test]
     fn parse_default_float() {
-        match parse_default_value("3.14") {
-            DefaultValue::Float(v) => assert!((v - 3.14).abs() < f64::EPSILON),
+        match parse_default_value("2.5") {
+            DefaultValue::Float(v) => assert!((v - 2.5).abs() < f64::EPSILON),
             other => panic!("expected Float, got {:?}", other),
         }
     }

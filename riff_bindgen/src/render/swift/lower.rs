@@ -1899,7 +1899,7 @@ mod tests {
 
     #[test]
     fn swift_default_literal_float() {
-        assert_eq!(swift_default_literal(&DefaultValue::Float(3.14)), "3.14");
+        assert_eq!(swift_default_literal(&DefaultValue::Float(2.5)), "2.5");
     }
 
     #[test]

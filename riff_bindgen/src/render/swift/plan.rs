@@ -518,10 +518,10 @@ impl SwiftConstructor {
 
     pub fn annotated_closure_wrappers(&self) -> Vec<String> {
         let mut wrappers = self.closure_wrappers();
-        if let Some(first) = wrappers.first_mut() {
-            if let Some(in_pos) = first.rfind(" in") {
-                first.replace_range(in_pos.., " -> OpaquePointer? in");
-            }
+        if let Some(first) = wrappers.first_mut()
+            && let Some(in_pos) = first.rfind(" in")
+        {
+            first.replace_range(in_pos.., " -> OpaquePointer? in");
         }
         wrappers
     }
@@ -922,11 +922,13 @@ impl SwiftParam {
     }
 
     pub fn needs_closure_wrap(&self) -> bool {
-        match &self.conversion {
-            SwiftConversion::ToString | SwiftConversion::ToData => true,
-            SwiftConversion::PrimitiveBuffer { .. } | SwiftConversion::MutableBuffer { .. } => true,
-            _ => false,
-        }
+        matches!(
+            &self.conversion,
+            SwiftConversion::ToString
+                | SwiftConversion::ToData
+                | SwiftConversion::PrimitiveBuffer { .. }
+                | SwiftConversion::MutableBuffer { .. }
+        )
     }
 
     pub fn closure_wrap_open(&self) -> Option<String> {

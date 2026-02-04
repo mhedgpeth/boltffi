@@ -71,8 +71,8 @@ impl CHeaderGenerator {
             func.inputs
                 .iter()
                 .map(|param| &param.param_type)
-                .chain(func.returns.ok_type().into_iter())
-                .chain(func.returns.err_type().into_iter())
+                .chain(func.returns.ok_type())
+                .chain(func.returns.err_type())
                 .for_each(|ty| Self::collect_forward_decl_names_from_type(ty, &mut names));
         });
 
@@ -88,8 +88,8 @@ impl CHeaderGenerator {
                     .inputs
                     .iter()
                     .map(|param| &param.param_type)
-                    .chain(method.returns.ok_type().into_iter())
-                    .chain(method.returns.err_type().into_iter())
+                    .chain(method.returns.ok_type())
+                    .chain(method.returns.err_type())
                     .for_each(|ty| Self::collect_forward_decl_names_from_type(ty, &mut names));
             });
         });
@@ -100,8 +100,8 @@ impl CHeaderGenerator {
                     .inputs
                     .iter()
                     .map(|param| &param.param_type)
-                    .chain(method.returns.ok_type().into_iter())
-                    .chain(method.returns.err_type().into_iter())
+                    .chain(method.returns.ok_type())
+                    .chain(method.returns.err_type())
                     .for_each(|ty| Self::collect_forward_decl_names_from_type(ty, &mut names));
             });
         });

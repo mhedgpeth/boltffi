@@ -244,7 +244,7 @@ fn expand_method(
     if is_async {
         let async_wire_return = return_type
             .as_deref()
-            .map(|ty| needs_wire_return(ty))
+            .map(needs_wire_return)
             .unwrap_or(false);
 
         let callback_type = if let Some(ref ret_ty) = return_type {
@@ -447,7 +447,7 @@ fn expand_method(
     } else {
         let wire_return = return_type
             .as_deref()
-            .map(|ty| needs_wire_return(ty))
+            .map(needs_wire_return)
             .unwrap_or(false);
 
         let out_param = if let Some(ref ret_ty) = return_type {
