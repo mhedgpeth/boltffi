@@ -6,9 +6,7 @@ publish = false
 
 [dependencies]
 riff = { path = "../riff" }
-
-[dev-dependencies]
-tokio = { version = "1", features = ["rt", "macros"] }
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "time", "macros"] }
 
 [lints]
 workspace = true

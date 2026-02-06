@@ -585,4 +585,244 @@ mod tests {
         let vec: Vec<String> = vec!["hi".to_string(), "there".to_string()];
         assert_eq!(vec.wire_size(), 4 + 6 + 9);
     }
+
+    mod large_payloads {
+        use super::*;
+
+        #[test]
+        fn large_string_1mb() {
+            let size = 1024 * 1024;
+            let large_string: String = "x".repeat(size);
+
+            assert_eq!(large_string.wire_size(), 4 + size);
+
+            let mut buf = vec![0u8; large_string.wire_size()];
+            let written = large_string.encode_to(&mut buf);
+
+            assert_eq!(written, 4 + size);
+            assert_eq!(&buf[4..], large_string.as_bytes());
+        }
+
+        #[test]
+        fn large_string_10mb() {
+            let size = 10 * 1024 * 1024;
+            let large_string: String = "y".repeat(size);
+
+            assert_eq!(large_string.wire_size(), 4 + size);
+
+            let mut buf = vec![0u8; large_string.wire_size()];
+            let written = large_string.encode_to(&mut buf);
+
+            assert_eq!(written, 4 + size);
+        }
+
+        #[test]
+        fn large_vec_100k_elements() {
+            let count = 100_000;
+            let large_vec: Vec<i32> = (0..count).collect();
+
+            assert_eq!(large_vec.wire_size(), 4 + count as usize * 4);
+
+            let mut buf = vec![0u8; large_vec.wire_size()];
+            let written = large_vec.encode_to(&mut buf);
+
+            assert_eq!(written, 4 + count as usize * 4);
+
+            let stored_count = u32::from_le_bytes(buf[..4].try_into().unwrap());
+            assert_eq!(stored_count, count as u32);
+        }
+
+        #[test]
+        fn large_vec_1m_elements() {
+            let count = 1_000_000;
+            let large_vec: Vec<i32> = (0..count).collect();
+
+            let mut buf = vec![0u8; large_vec.wire_size()];
+            let written = large_vec.encode_to(&mut buf);
+
+            assert_eq!(written, 4 + count as usize * 4);
+        }
+
+        #[test]
+        fn large_vec_of_strings() {
+            let count = 10_000;
+            let large_vec: Vec<String> = (0..count).map(|i| format!("item_{}", i)).collect();
+
+            let expected_size: usize = 4 + large_vec.iter().map(|s| 4 + s.len()).sum::<usize>();
+            assert_eq!(large_vec.wire_size(), expected_size);
+
+            let mut buf = vec![0u8; large_vec.wire_size()];
+            let written = large_vec.encode_to(&mut buf);
+
+            assert_eq!(written, expected_size);
+        }
+
+        #[test]
+        fn nested_large_structures() {
+            let inner_count: usize = 1000;
+            let outer_count: usize = 100;
+
+            let nested: Vec<Vec<i32>> = (0..outer_count)
+                .map(|_| (0..inner_count as i32).collect())
+                .collect();
+
+            let inner_size = 4 + inner_count * 4;
+            let expected_size = 4 + outer_count * inner_size;
+            assert_eq!(nested.wire_size(), expected_size);
+
+            let mut buf = vec![0u8; nested.wire_size()];
+            let written = nested.encode_to(&mut buf);
+
+            assert_eq!(written, expected_size);
+        }
+    }
+
+    mod unicode {
+        use super::*;
+
+        #[test]
+        fn ascii_string() {
+            let s = "Hello, World!";
+            assert_eq!(s.wire_size(), 4 + 13);
+        }
+
+        #[test]
+        fn emoji_string() {
+            let s = "Hello 👋 World 🌍";
+            assert_eq!(s.wire_size(), 4 + s.len());
+
+            let mut buf = vec![0u8; s.wire_size()];
+            s.encode_to(&mut buf);
+
+            assert_eq!(&buf[4..], s.as_bytes());
+        }
+
+        #[test]
+        fn cjk_characters() {
+            let s = "你好世界";
+            assert_eq!(s.len(), 12);
+            assert_eq!(s.wire_size(), 4 + 12);
+
+            let mut buf = vec![0u8; s.wire_size()];
+            s.encode_to(&mut buf);
+
+            assert_eq!(&buf[4..], s.as_bytes());
+        }
+
+        #[test]
+        fn arabic_rtl_text() {
+            let s = "مرحبا بالعالم";
+            assert_eq!(s.wire_size(), 4 + s.len());
+
+            let mut buf = vec![0u8; s.wire_size()];
+            s.encode_to(&mut buf);
+
+            assert_eq!(&buf[4..], s.as_bytes());
+        }
+
+        #[test]
+        fn mixed_scripts() {
+            let s = "Hello 你好 مرحبا 🎉";
+            assert_eq!(s.wire_size(), 4 + s.len());
+
+            let mut buf = vec![0u8; s.wire_size()];
+            s.encode_to(&mut buf);
+
+            assert_eq!(&buf[4..], s.as_bytes());
+        }
+
+        #[test]
+        fn combining_characters() {
+            let s = "é";
+            assert_eq!(s.chars().count(), 1);
+            assert_eq!(s.len(), 2);
+            assert_eq!(s.wire_size(), 4 + 2);
+
+            let combining = "e\u{0301}";
+            assert_eq!(combining.chars().count(), 2);
+            assert_eq!(combining.len(), 3);
+            assert_eq!(combining.wire_size(), 4 + 3);
+        }
+
+        #[test]
+        fn zero_width_joiner_emoji() {
+            let family = "👨‍👩‍👧‍👦";
+            assert_eq!(family.wire_size(), 4 + family.len());
+
+            let mut buf = vec![0u8; family.wire_size()];
+            family.encode_to(&mut buf);
+
+            assert_eq!(&buf[4..], family.as_bytes());
+        }
+
+        #[test]
+        fn empty_string() {
+            let s = "";
+            assert_eq!(s.wire_size(), 4);
+
+            let mut buf = vec![0u8; 4];
+            let written = s.encode_to(&mut buf);
+
+            assert_eq!(written, 4);
+            assert_eq!(&buf, &[0, 0, 0, 0]);
+        }
+
+        #[test]
+        fn single_byte_boundary() {
+            let s = "\u{7F}";
+            assert_eq!(s.len(), 1);
+            assert_eq!(s.wire_size(), 4 + 1);
+        }
+
+        #[test]
+        fn two_byte_boundary() {
+            let s = "\u{80}";
+            assert_eq!(s.len(), 2);
+            assert_eq!(s.wire_size(), 4 + 2);
+
+            let s = "\u{7FF}";
+            assert_eq!(s.len(), 2);
+        }
+
+        #[test]
+        fn three_byte_boundary() {
+            let s = "\u{800}";
+            assert_eq!(s.len(), 3);
+
+            let s = "\u{FFFF}";
+            assert_eq!(s.len(), 3);
+        }
+
+        #[test]
+        fn four_byte_boundary() {
+            let s = "\u{10000}";
+            assert_eq!(s.len(), 4);
+
+            let s = "\u{10FFFF}";
+            assert_eq!(s.len(), 4);
+        }
+
+        #[test]
+        fn string_with_newlines_and_tabs() {
+            let s = "line1\nline2\tcolumn";
+            assert_eq!(s.wire_size(), 4 + s.len());
+
+            let mut buf = vec![0u8; s.wire_size()];
+            s.encode_to(&mut buf);
+
+            assert_eq!(&buf[4..], s.as_bytes());
+        }
+
+        #[test]
+        fn string_with_null_bytes() {
+            let s = "hello\0world";
+            assert_eq!(s.len(), 11);
+            assert_eq!(s.wire_size(), 4 + 11);
+
+            let mut buf = vec![0u8; s.wire_size()];
+            s.encode_to(&mut buf);
+
+            assert_eq!(&buf[4..], s.as_bytes());
+        }
+    }
 }

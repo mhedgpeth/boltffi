@@ -429,4 +429,242 @@ mod tests {
         assert_eq!(decoded, original);
         assert_eq!(size, written);
     }
+
+    mod large_payload_roundtrip {
+        use super::*;
+        use crate::wire::encode::WireSize;
+
+        #[test]
+        fn string_1mb_roundtrip() {
+            let original: String = "x".repeat(1024 * 1024);
+
+            let mut buf = vec![0u8; original.wire_size()];
+            original.encode_to(&mut buf);
+
+            let (decoded, _) = String::decode_from(&buf).unwrap();
+            assert_eq!(decoded, original);
+        }
+
+        #[test]
+        fn string_10mb_roundtrip() {
+            let original: String = "y".repeat(10 * 1024 * 1024);
+
+            let mut buf = vec![0u8; original.wire_size()];
+            original.encode_to(&mut buf);
+
+            let (decoded, _) = String::decode_from(&buf).unwrap();
+            assert_eq!(decoded, original);
+        }
+
+        #[test]
+        fn vec_100k_i32_roundtrip() {
+            let original: Vec<i32> = (0..100_000).collect();
+
+            let mut buf = vec![0u8; original.wire_size()];
+            original.encode_to(&mut buf);
+
+            let (decoded, _) = Vec::<i32>::decode_from(&buf).unwrap();
+            assert_eq!(decoded, original);
+        }
+
+        #[test]
+        fn vec_1m_i32_roundtrip() {
+            let original: Vec<i32> = (0..1_000_000).collect();
+
+            let mut buf = vec![0u8; original.wire_size()];
+            original.encode_to(&mut buf);
+
+            let (decoded, _) = Vec::<i32>::decode_from(&buf).unwrap();
+            assert_eq!(decoded, original);
+        }
+
+        #[test]
+        fn vec_10k_strings_roundtrip() {
+            let original: Vec<String> = (0..10_000).map(|i| format!("item_{}", i)).collect();
+
+            let mut buf = vec![0u8; original.wire_size()];
+            original.encode_to(&mut buf);
+
+            let (decoded, _) = Vec::<String>::decode_from(&buf).unwrap();
+            assert_eq!(decoded, original);
+        }
+
+        #[test]
+        fn nested_vecs_roundtrip() {
+            let original: Vec<Vec<i32>> = (0..100)
+                .map(|_| (0..1000).collect())
+                .collect();
+
+            let mut buf = vec![0u8; original.wire_size()];
+            original.encode_to(&mut buf);
+
+            let (decoded, _) = Vec::<Vec<i32>>::decode_from(&buf).unwrap();
+            assert_eq!(decoded, original);
+        }
+    }
+
+    mod unicode_roundtrip {
+        use super::*;
+        use crate::wire::encode::WireSize;
+
+        #[test]
+        fn emoji_roundtrip() {
+            let original = "Hello 👋 World 🌍 🎉".to_string();
+
+            let mut buf = vec![0u8; original.wire_size()];
+            original.encode_to(&mut buf);
+
+            let (decoded, _) = String::decode_from(&buf).unwrap();
+            assert_eq!(decoded, original);
+        }
+
+        #[test]
+        fn cjk_roundtrip() {
+            let original = "你好世界 こんにちは 안녕하세요".to_string();
+
+            let mut buf = vec![0u8; original.wire_size()];
+            original.encode_to(&mut buf);
+
+            let (decoded, _) = String::decode_from(&buf).unwrap();
+            assert_eq!(decoded, original);
+        }
+
+        #[test]
+        fn arabic_roundtrip() {
+            let original = "مرحبا بالعالم".to_string();
+
+            let mut buf = vec![0u8; original.wire_size()];
+            original.encode_to(&mut buf);
+
+            let (decoded, _) = String::decode_from(&buf).unwrap();
+            assert_eq!(decoded, original);
+        }
+
+        #[test]
+        fn mixed_scripts_roundtrip() {
+            let original = "Hello 你好 مرحبا Привет 🎉".to_string();
+
+            let mut buf = vec![0u8; original.wire_size()];
+            original.encode_to(&mut buf);
+
+            let (decoded, _) = String::decode_from(&buf).unwrap();
+            assert_eq!(decoded, original);
+        }
+
+        #[test]
+        fn combining_characters_roundtrip() {
+            let original = "café naïve résumé".to_string();
+
+            let mut buf = vec![0u8; original.wire_size()];
+            original.encode_to(&mut buf);
+
+            let (decoded, _) = String::decode_from(&buf).unwrap();
+            assert_eq!(decoded, original);
+        }
+
+        #[test]
+        fn zero_width_joiner_emoji_roundtrip() {
+            let original = "👨‍👩‍👧‍👦 👨‍💻 🏳️‍🌈".to_string();
+
+            let mut buf = vec![0u8; original.wire_size()];
+            original.encode_to(&mut buf);
+
+            let (decoded, _) = String::decode_from(&buf).unwrap();
+            assert_eq!(decoded, original);
+        }
+
+        #[test]
+        fn empty_string_roundtrip() {
+            let original = String::new();
+
+            let mut buf = vec![0u8; original.wire_size()];
+            original.encode_to(&mut buf);
+
+            let (decoded, _) = String::decode_from(&buf).unwrap();
+            assert_eq!(decoded, original);
+        }
+
+        #[test]
+        fn null_byte_roundtrip() {
+            let original = "hello\0world\0test".to_string();
+
+            let mut buf = vec![0u8; original.wire_size()];
+            original.encode_to(&mut buf);
+
+            let (decoded, _) = String::decode_from(&buf).unwrap();
+            assert_eq!(decoded, original);
+        }
+
+        #[test]
+        fn whitespace_variants_roundtrip() {
+            let original = "tab\there\nnewline\rcarriage\u{00A0}nbsp".to_string();
+
+            let mut buf = vec![0u8; original.wire_size()];
+            original.encode_to(&mut buf);
+
+            let (decoded, _) = String::decode_from(&buf).unwrap();
+            assert_eq!(decoded, original);
+        }
+
+        #[test]
+        fn vec_of_unicode_strings_roundtrip() {
+            let original: Vec<String> = vec![
+                "Hello".to_string(),
+                "你好".to_string(),
+                "مرحبا".to_string(),
+                "👋🌍".to_string(),
+            ];
+
+            let mut buf = vec![0u8; original.wire_size()];
+            original.encode_to(&mut buf);
+
+            let (decoded, _) = Vec::<String>::decode_from(&buf).unwrap();
+            assert_eq!(decoded, original);
+        }
+    }
+
+    mod decode_errors {
+        use super::*;
+
+        #[test]
+        fn string_buffer_too_small_for_length() {
+            let buf = [0u8; 2];
+            let result = String::decode_from(&buf);
+            assert!(matches!(result, Err(DecodeError::BufferTooSmall)));
+        }
+
+        #[test]
+        fn string_buffer_too_small_for_content() {
+            let mut buf = [0u8; 8];
+            buf[..4].copy_from_slice(&100u32.to_le_bytes());
+
+            let result = String::decode_from(&buf);
+            assert!(matches!(result, Err(DecodeError::BufferTooSmall)));
+        }
+
+        #[test]
+        fn vec_buffer_too_small_for_count() {
+            let buf = [0u8; 2];
+            let result = Vec::<i32>::decode_from(&buf);
+            assert!(matches!(result, Err(DecodeError::BufferTooSmall)));
+        }
+
+        #[test]
+        fn vec_buffer_too_small_for_elements() {
+            let mut buf = [0u8; 8];
+            buf[..4].copy_from_slice(&100u32.to_le_bytes());
+
+            let result = Vec::<i32>::decode_from(&buf);
+            assert!(matches!(result, Err(DecodeError::BufferTooSmall)));
+        }
+
+        #[test]
+        fn empty_buffer() {
+            let buf: [u8; 0] = [];
+
+            assert!(matches!(String::decode_from(&buf), Err(DecodeError::BufferTooSmall)));
+            assert!(matches!(Vec::<i32>::decode_from(&buf), Err(DecodeError::BufferTooSmall)));
+            assert!(matches!(i32::decode_from(&buf), Err(DecodeError::BufferTooSmall)));
+        }
+    }
 }

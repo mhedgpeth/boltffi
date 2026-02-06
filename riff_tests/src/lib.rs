@@ -296,3 +296,256 @@ impl AsyncProcessor {
         fetcher.find(key).await.map(|v| v + self.offset as i64)
     }
 }
+
+use std::future::Future;
+use std::pin::Pin;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::task::{Context, Poll};
+use std::time::Duration;
+
+struct YieldOnce(bool);
+
+impl YieldOnce {
+    fn new() -> Self {
+        Self(false)
+    }
+}
+
+impl Future for YieldOnce {
+    type Output = ();
+
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
+        if self.0 {
+            Poll::Ready(())
+        } else {
+            self.0 = true;
+            cx.waker().wake_by_ref();
+            Poll::Pending
+        }
+    }
+}
+
+#[data]
+#[derive(Clone, Debug, PartialEq)]
+#[repr(i32)]
+pub enum FixtureError {
+    NotFound = 1,
+    InvalidInput = 2,
+    Timeout = 3,
+}
+
+impl std::fmt::Display for FixtureError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NotFound => write!(f, "not found"),
+            Self::InvalidInput => write!(f, "invalid input"),
+            Self::Timeout => write!(f, "timeout"),
+        }
+    }
+}
+
+impl std::error::Error for FixtureError {}
+
+#[export]
+pub fn fallible_divide(a: i32, b: i32) -> Result<i32, FixtureError> {
+    if b == 0 {
+        Err(FixtureError::InvalidInput)
+    } else {
+        Ok(a / b)
+    }
+}
+
+#[export]
+pub fn fallible_lookup(key: i32) -> Result<String, FixtureError> {
+    match key {
+        1 => Ok("one".to_string()),
+        2 => Ok("two".to_string()),
+        3 => Ok("three".to_string()),
+        _ => Err(FixtureError::NotFound),
+    }
+}
+
+#[export]
+pub async fn async_fallible_fetch(key: i32) -> Result<String, FixtureError> {
+    tokio::time::sleep(Duration::from_millis(10)).await;
+    if key < 0 {
+        Err(FixtureError::InvalidInput)
+    } else if key > 100 {
+        Err(FixtureError::NotFound)
+    } else {
+        Ok(format!("value_{}", key))
+    }
+}
+
+pub struct CancellableTask {
+    started: Arc<AtomicBool>,
+    completed: Arc<AtomicBool>,
+    iterations: Arc<AtomicU32>,
+}
+
+impl Default for CancellableTask {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[export]
+impl CancellableTask {
+    pub fn new() -> Self {
+        Self {
+            started: Arc::new(AtomicBool::new(false)),
+            completed: Arc::new(AtomicBool::new(false)),
+            iterations: Arc::new(AtomicU32::new(0)),
+        }
+    }
+
+    pub fn was_started(&self) -> bool {
+        self.started.load(Ordering::SeqCst)
+    }
+
+    pub fn was_completed(&self) -> bool {
+        self.completed.load(Ordering::SeqCst)
+    }
+
+    pub fn iteration_count(&self) -> u32 {
+        self.iterations.load(Ordering::SeqCst)
+    }
+
+    pub async fn long_running_task(&self) -> i32 {
+        self.started.store(true, Ordering::SeqCst);
+
+        for i in 0..100 {
+            self.iterations.store(i, Ordering::SeqCst);
+            std::thread::sleep(Duration::from_millis(5));
+            YieldOnce::new().await;
+        }
+
+        self.completed.store(true, Ordering::SeqCst);
+        42
+    }
+
+    pub async fn instant_task(&self) -> i32 {
+        self.started.store(true, Ordering::SeqCst);
+        self.completed.store(true, Ordering::SeqCst);
+        99
+    }
+}
+
+pub struct FallibleService {
+    failure_mode: Arc<AtomicU32>,
+}
+
+impl Default for FallibleService {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[export]
+impl FallibleService {
+    pub fn new() -> Self {
+        Self {
+            failure_mode: Arc::new(AtomicU32::new(0)),
+        }
+    }
+
+    pub fn set_failure_mode(&self, mode: u32) {
+        self.failure_mode.store(mode, Ordering::SeqCst);
+    }
+
+    pub fn get_value(&self, key: i32) -> Result<i32, FixtureError> {
+        match self.failure_mode.load(Ordering::SeqCst) {
+            1 => Err(FixtureError::NotFound),
+            2 => Err(FixtureError::InvalidInput),
+            3 => Err(FixtureError::Timeout),
+            _ => Ok(key * 2),
+        }
+    }
+
+    pub async fn async_get_value(&self, key: i32) -> Result<i32, FixtureError> {
+        tokio::time::sleep(Duration::from_millis(5)).await;
+        self.get_value(key)
+    }
+
+    pub fn get_optional(&self, key: i32) -> Option<i32> {
+        if key > 0 {
+            Some(key * 3)
+        } else {
+            None
+        }
+    }
+
+    pub fn get_nested_result(&self, key: i32) -> Result<Option<i32>, FixtureError> {
+        match self.failure_mode.load(Ordering::SeqCst) {
+            1 => Err(FixtureError::NotFound),
+            _ if key < 0 => Ok(None),
+            _ => Ok(Some(key * 4)),
+        }
+    }
+}
+
+pub struct CounterStream {
+    producer: StreamProducer<i32>,
+}
+
+impl Default for CounterStream {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[export]
+impl CounterStream {
+    pub fn new() -> Self {
+        Self {
+            producer: StreamProducer::new(256),
+        }
+    }
+
+    pub fn emit(&self, value: i32) {
+        self.producer.push(value);
+    }
+
+    pub fn emit_batch(&self, values: Vec<i32>) -> u32 {
+        values
+            .iter()
+            .map(|v| {
+                self.producer.push(*v);
+            })
+            .count() as u32
+    }
+
+    #[ffi_stream(item = i32)]
+    pub fn subscribe(&self) -> Arc<EventSubscription<i32>> {
+        self.producer.subscribe()
+    }
+}
+
+pub struct PointStream {
+    producer: StreamProducer<FixturePoint>,
+}
+
+impl Default for PointStream {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[export]
+impl PointStream {
+    pub fn new() -> Self {
+        Self {
+            producer: StreamProducer::new(32),
+        }
+    }
+
+    pub fn emit(&self, point: FixturePoint) {
+        self.producer.push(point);
+    }
+
+    #[ffi_stream(item = FixturePoint)]
+    pub fn subscribe(&self) -> Arc<EventSubscription<FixturePoint>> {
+        self.producer.subscribe()
+    }
+}
