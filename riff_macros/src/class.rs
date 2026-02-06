@@ -1,5 +1,5 @@
 use proc_macro::TokenStream;
-use quote::quote;
+use quote::{quote, quote_spanned};
 use riff_ffi_rules::naming;
 use syn::{FnArg, ReturnType, Type};
 
@@ -12,7 +12,8 @@ use crate::returns::{
     get_async_rust_return_type,
 };
 
-pub fn ffi_class_impl(item: TokenStream) -> TokenStream {
+pub fn ffi_class_impl(attr: TokenStream, item: TokenStream) -> TokenStream {
+    let thread_unsafe = attr.to_string().contains("thread_unsafe");
     let input = syn::parse_macro_input!(item as syn::ItemImpl);
 
     let custom_types = match custom_types::registry_for_current_crate() {
@@ -83,8 +84,30 @@ pub fn ffi_class_impl(item: TokenStream) -> TokenStream {
         })
         .collect();
 
+    let thread_safety_assertion = if thread_unsafe {
+        quote! {}
+    } else {
+        let span = type_name.span();
+        quote_spanned! {span=>
+            #[allow(dead_code)]
+            const _: () = {
+                #[diagnostic::on_unimplemented(
+                    message = "Riff: `{Self}` must be thread-safe (Send + Sync) to be exported via FFI",
+                    note = "exported classes can be called from any thread in the foreign language",
+                    note = "use #[riff::export(thread_unsafe)] to opt out if you guarantee single-threaded access"
+                )]
+                trait RiffThreadSafe: Send + Sync {}
+                impl<T: Send + Sync> RiffThreadSafe for T {}
+                fn _assert<T: RiffThreadSafe>() {}
+                fn _check() { _assert::<#type_name>(); }
+            };
+        }
+    };
+
     let expanded = quote! {
         #input
+
+        #thread_safety_assertion
 
         #[unsafe(no_mangle)]
         pub unsafe extern "C" fn #free_ident(handle: *mut #type_name) {

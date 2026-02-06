@@ -1,4 +1,11 @@
-{{ self::kdoc_block(doc, "") }}{% if is_closure %}fun {% endif %}interface {{ interface_name }} {
+{{ self::kdoc_block(doc, "") }}/**
+ * ### Thread Safety
+ *
+ * Callback methods may be invoked from any thread and the thread is not guaranteed to be
+ * the same between calls. **Your implementation must be thread-safe.**
+ * Use `RiffScope.launchOnMain` if updating UI.
+ */
+{% if is_closure %}fun {% endif %}interface {{ interface_name }} {
 {%- for method in sync_methods %}
 {{ self::kdoc_block(method.doc, "    ") }}    fun {{ method.name }}({% for param in method.params %}{{ param.name }}: {{ param.kotlin_type }}{% if !loop.last %}, {% endif %}{% endfor %}){% match method.return_info %}{% when Some with (ret) %}: {{ ret.kotlin_type }}{% when None %}{% endmatch %}
 {%- endfor %}

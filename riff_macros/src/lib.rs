@@ -48,8 +48,8 @@ pub fn ffi_stream(_attr: TokenStream, item: TokenStream) -> TokenStream {
 }
 
 #[proc_macro_attribute]
-pub fn ffi_class(_attr: TokenStream, item: TokenStream) -> TokenStream {
-    class::ffi_class_impl(item)
+pub fn ffi_class(attr: TokenStream, item: TokenStream) -> TokenStream {
+    class::ffi_class_impl(attr, item)
 }
 
 #[proc_macro_attribute]
