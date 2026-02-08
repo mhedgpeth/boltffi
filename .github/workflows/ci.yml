@@ -83,7 +83,7 @@ jobs:
         with:
           cache-on-failure: true
       - run: cargo build --release -p boltffi_cli
-      - run: ./target/release/riff --version
+      - run: ./target/release/boltffi --version
 
   docs:
     name: Docs
