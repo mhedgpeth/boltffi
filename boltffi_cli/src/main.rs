@@ -128,6 +128,8 @@ enum GenerateTargetArg {
     Kotlin,
     #[value(help = "Generate C header")]
     Header,
+    #[value(help = "Generate TypeScript bindings for WASM")]
+    Typescript,
     #[value(help = "Generate all bindings")]
     All,
 }
@@ -249,6 +251,7 @@ fn execute_command(command: Commands) -> Result<()> {
                         GenerateTargetArg::Swift => GenerateTarget::Swift,
                         GenerateTargetArg::Kotlin => GenerateTarget::Kotlin,
                         GenerateTargetArg::Header => GenerateTarget::Header,
+                        GenerateTargetArg::Typescript => GenerateTarget::Typescript,
                         GenerateTargetArg::All => GenerateTarget::All,
                     })
                     .unwrap_or(GenerateTarget::All),

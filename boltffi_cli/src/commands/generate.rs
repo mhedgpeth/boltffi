@@ -1,5 +1,6 @@
 use std::path::PathBuf;
 
+use boltffi_bindgen::render::typescript::{TypeScriptEmitter, TypeScriptLowerer};
 use boltffi_bindgen::{
     CHeaderGenerator, FactoryStyle, KotlinOptions, TypeConversion as BindgenTypeConversion,
     TypeMapping as BindgenTypeMapping, TypeMappings, ir, render, scan_crate,
@@ -15,6 +16,7 @@ pub enum GenerateTarget {
     Swift,
     Kotlin,
     Header,
+    Typescript,
     All,
 }
 
@@ -28,6 +30,7 @@ pub fn run_generate_with_output(config: &Config, options: GenerateOptions) -> Re
         GenerateTarget::Swift => generate_swift(config, options.output),
         GenerateTarget::Kotlin => generate_kotlin(config, options.output),
         GenerateTarget::Header => generate_header(config, options.output),
+        GenerateTarget::Typescript => generate_typescript(config, options.output),
         GenerateTarget::All => {
             generate_swift(config, options.output.clone())?;
             generate_kotlin(config, options.output.clone())?;
@@ -210,6 +213,41 @@ fn generate_header(config: &Config, output: Option<PathBuf>) -> Result<()> {
     let header_code = CHeaderGenerator::generate(&module);
 
     std::fs::write(&output_path, header_code).map_err(|source| CliError::WriteFailed {
+        path: output_path.clone(),
+        source,
+    })?;
+
+    println!("Generated: {}", output_path.display());
+    Ok(())
+}
+
+fn generate_typescript(config: &Config, output: Option<PathBuf>) -> Result<()> {
+    let output_dir = output.unwrap_or_else(|| PathBuf::from("generated/typescript"));
+    let output_path = output_dir.join(format!("{}.ts", config.library_name()));
+
+    std::fs::create_dir_all(&output_dir).map_err(|source| CliError::CreateDirectoryFailed {
+        path: output_dir.clone(),
+        source,
+    })?;
+
+    let crate_dir = std::env::current_dir()
+        .and_then(|p| p.canonicalize())
+        .unwrap_or_else(|_| PathBuf::from("."));
+    let crate_name = config.library_name();
+
+    let mut module = scan_crate(&crate_dir, crate_name).map_err(|e| CliError::CommandFailed {
+        command: format!("scan_crate: {}", e),
+        status: None,
+    })?;
+
+    let contract = ir::build_contract(&mut module);
+    let abi_contract = ir::Lowerer::new(&contract).to_abi_contract();
+
+    let ts_module =
+        TypeScriptLowerer::new(&contract, &abi_contract, crate_name.to_string()).lower();
+    let ts_code = TypeScriptEmitter::emit(&ts_module);
+
+    std::fs::write(&output_path, &ts_code).map_err(|source| CliError::WriteFailed {
         path: output_path.clone(),
         source,
     })?;
