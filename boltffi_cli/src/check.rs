@@ -35,7 +35,11 @@ impl EnvironmentCheck {
 
         let missing_targets = required_triples
             .iter()
-            .filter(|triple| !installed_targets.iter().any(|installed| installed == *triple))
+            .filter(|triple| {
+                !installed_targets
+                    .iter()
+                    .any(|installed| installed == *triple)
+            })
             .cloned()
             .collect();
 

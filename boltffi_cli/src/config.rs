@@ -217,23 +217,12 @@ impl WasmProfile {
     }
 }
 
-#[derive(Debug, Deserialize, Serialize, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone, Default)]
 pub struct WasmOptimizeConfig {
     pub enabled: Option<bool>,
     pub level: Option<WasmOptimizeLevel>,
     pub strip_debug: Option<bool>,
     pub on_missing: Option<WasmOptimizeOnMissing>,
-}
-
-impl Default for WasmOptimizeConfig {
-    fn default() -> Self {
-        Self {
-            enabled: None,
-            level: None,
-            strip_debug: None,
-            on_missing: None,
-        }
-    }
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone, Copy, PartialEq, Eq)]

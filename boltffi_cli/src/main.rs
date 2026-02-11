@@ -408,9 +408,7 @@ fn load_config_if_present() -> Result<Option<Config>> {
         return Ok(None);
     }
 
-    Config::load(&config_path)
-        .map(Some)
-        .map_err(Into::into)
+    Config::load(&config_path).map(Some).map_err(Into::into)
 }
 
 fn run_release(config: &Config, platform: Option<BuildPlatformArg>) -> Result<()> {
