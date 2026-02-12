@@ -3,12 +3,14 @@ use std::collections::HashMap;
 use boltffi_ffi_rules::naming::{self, snake_to_camel as camel_case};
 
 use crate::ir::abi::{
-    AbiCall, AbiContract, AbiEnum, AbiEnumPayload, AbiParam, AbiRecord, CallId, CallMode,
-    ErrorTransport, ParamRole, ReturnTransport,
+    AbiCall, AbiCallbackInvocation, AbiContract, AbiEnum, AbiEnumPayload, AbiParam, AbiRecord,
+    CallId, CallMode, ErrorTransport, ParamRole, ReturnTransport,
 };
 use crate::ir::contract::FfiContract;
-use crate::ir::definitions::{EnumDef, FunctionDef, ParamDef, RecordDef};
-use crate::ir::ids::{EnumId, FieldName, RecordId};
+use crate::ir::definitions::{
+    CallbackTraitDef, EnumDef, FunctionDef, ParamDef, RecordDef, ReturnDef,
+};
+use crate::ir::ids::{CallbackId, EnumId, FieldName, RecordId};
 use crate::ir::ops::{
     FieldWriteOp, ReadOp, ReadSeq, SizeExpr, ValueExpr, WireShape, WriteOp, WriteSeq,
 };
@@ -19,6 +21,7 @@ use crate::render::typescript::plan::*;
 
 struct AbiIndex {
     calls: HashMap<CallId, usize>,
+    callbacks: HashMap<CallbackId, usize>,
     records: HashMap<RecordId, usize>,
     enums: HashMap<EnumId, usize>,
 }
@@ -30,6 +33,12 @@ impl AbiIndex {
             .iter()
             .enumerate()
             .map(|(index, call)| (call.id.clone(), index))
+            .collect();
+        let callbacks = contract
+            .callbacks
+            .iter()
+            .enumerate()
+            .map(|(index, cb)| (cb.callback_id.clone(), index))
             .collect();
         let records = contract
             .records
@@ -46,9 +55,14 @@ impl AbiIndex {
 
         Self {
             calls,
+            callbacks,
             records,
             enums,
         }
+    }
+
+    fn callback<'a>(&self, contract: &'a AbiContract, id: &CallbackId) -> &'a AbiCallbackInvocation {
+        &contract.callbacks[self.callbacks[id]]
     }
 
     fn call<'a>(&self, contract: &'a AbiContract, id: &CallId) -> &'a AbiCall {
@@ -105,12 +119,20 @@ impl<'a> TypeScriptLowerer<'a> {
 
         let wasm_imports = self.collect_wasm_imports(&index);
 
+        let callbacks = self
+            .contract
+            .catalog
+            .all_callbacks()
+            .map(|def| self.lower_callback(def, &index))
+            .collect();
+
         TsModule {
             module_name: self.module_name.clone(),
             abi_version: 1,
             records,
             enums,
             functions,
+            callbacks,
             wasm_imports,
         }
     }
@@ -211,6 +233,99 @@ impl<'a> TypeScriptLowerer<'a> {
         }
     }
 
+    fn lower_callback(&self, def: &CallbackTraitDef, index: &AbiIndex) -> TsCallback {
+        let abi_callback = index.callback(self.abi, &def.id);
+        let interface_name = naming::to_upper_camel_case(def.id.as_str());
+        let trait_name_snake = naming::to_snake_case(def.id.as_str());
+        let create_handle_fn = format!("boltffi_create_{}_handle", trait_name_snake);
+
+        let methods = def
+            .methods
+            .iter()
+            .filter(|m| !m.is_async)
+            .filter_map(|method_def| {
+                let abi_method = abi_callback.methods.iter().find(|am| am.id == method_def.id)?;
+                let ts_name = camel_case(method_def.id.as_str());
+                let import_name = format!(
+                    "__boltffi_callback_{}_{}",
+                    trait_name_snake,
+                    naming::to_snake_case(method_def.id.as_str())
+                );
+
+                let params = method_def
+                    .params
+                    .iter()
+                    .map(|p| {
+                        let ts_type = emit::ts_type(&p.type_expr);
+                        let param_name = p.name.as_str();
+                        let abi_param = abi_method
+                            .params
+                            .iter()
+                            .find(|ap| ap.name.as_str() == param_name);
+
+                        let kind = match abi_param.map(|ap| &ap.role) {
+                            Some(ParamRole::InEncoded { decode_ops, .. }) => {
+                                let decode_expr = emit::emit_reader_read(decode_ops);
+                                TsCallbackParamKind::WireEncoded { decode_expr }
+                            }
+                            _ => TsCallbackParamKind::Primitive,
+                        };
+
+                        TsCallbackParam {
+                            name: camel_case(param_name),
+                            ts_type,
+                            kind,
+                        }
+                    })
+                    .collect();
+
+                let return_kind = match &abi_method.return_ {
+                    ReturnTransport::Void => TsCallbackReturnKind::Void,
+                    ReturnTransport::Direct(_) => {
+                        let ts_type = match &method_def.returns {
+                            ReturnDef::Value(ty) => emit::ts_type(ty),
+                            _ => "number".to_string(),
+                        };
+                        TsCallbackReturnKind::Primitive { ts_type }
+                    }
+                    ReturnTransport::Encoded { encode_ops, .. } => {
+                        let ts_type = match &method_def.returns {
+                            ReturnDef::Value(ty) => emit::ts_type(ty),
+                            ReturnDef::Result { ok, .. } => emit::ts_type(ok),
+                            _ => "unknown".to_string(),
+                        };
+                        let encode_expr = emit::emit_writer_write(encode_ops, "writer", "result");
+                        let size_expr = emit::emit_size_expr(&encode_ops.size, "result");
+                        TsCallbackReturnKind::WireEncoded {
+                            ts_type,
+                            encode_expr,
+                            size_expr,
+                        }
+                    }
+                    ReturnTransport::Handle { .. } | ReturnTransport::Callback { .. } => {
+                        TsCallbackReturnKind::Primitive { ts_type: "number".to_string() }
+                    }
+                };
+
+                Some(TsCallbackMethod {
+                    ts_name,
+                    import_name,
+                    params,
+                    return_kind,
+                    doc: method_def.doc.clone(),
+                })
+            })
+            .collect();
+
+        TsCallback {
+            interface_name,
+            trait_name_snake,
+            create_handle_fn,
+            methods,
+            doc: def.doc.clone(),
+        }
+    }
+
     fn lower_function(&self, def: &FunctionDef, index: &AbiIndex) -> Option<TsFunction> {
         let call_id = CallId::Function(def.id.clone());
         let abi_call = index.call(self.abi, &call_id);
@@ -271,11 +386,24 @@ impl<'a> TypeScriptLowerer<'a> {
                 ts_type: "string".to_string(),
                 conversion: TsParamConversion::String,
             },
-            ParamRole::InBuffer { .. } => TsParam {
-                name: emit::escape_ts_keyword(&name),
-                ts_type: "Uint8Array".to_string(),
-                conversion: TsParamConversion::Bytes,
-            },
+            ParamRole::InBuffer { element_abi, .. } => {
+                let (ts_type, conversion) = match element_abi {
+                    AbiType::U8 => ("Uint8Array".to_string(), TsParamConversion::Bytes),
+                    _ => (
+                        param_def
+                            .map(|p| emit::ts_type(&p.type_expr))
+                            .unwrap_or_else(|| primitive_buffer_ts_type(*element_abi)),
+                        TsParamConversion::PrimitiveBuffer {
+                            element_abi: *element_abi,
+                        },
+                    ),
+                };
+                TsParam {
+                    name: emit::escape_ts_keyword(&name),
+                    ts_type,
+                    conversion,
+                }
+            }
             ParamRole::InEncoded { encode_ops, .. } => {
                 let ts_type = param_def
                     .map(|p| emit::ts_type(&p.type_expr))
@@ -296,6 +424,14 @@ impl<'a> TypeScriptLowerer<'a> {
                     name: emit::escape_ts_keyword(&name),
                     ts_type,
                     conversion,
+                }
+            }
+            ParamRole::InCallback { callback_id, .. } => {
+                let interface_name = naming::to_upper_camel_case(callback_id.as_str());
+                TsParam {
+                    name: emit::escape_ts_keyword(&name),
+                    ts_type: interface_name.clone(),
+                    conversion: TsParamConversion::Callback { interface_name },
                 }
             }
             _ => TsParam {
@@ -435,6 +571,24 @@ fn abi_type_to_wasm(abi_type: &AbiType) -> String {
         AbiType::I64 | AbiType::U64 => "bigint".to_string(),
         AbiType::F32 | AbiType::F64 => "number".to_string(),
         AbiType::Pointer => "number".to_string(),
+    }
+}
+
+fn primitive_buffer_ts_type(abi_type: AbiType) -> String {
+    match abi_type {
+        AbiType::Bool => "boolean[]".to_string(),
+        AbiType::I64 | AbiType::U64 => "bigint[]".to_string(),
+        AbiType::I8
+        | AbiType::U8
+        | AbiType::I16
+        | AbiType::U16
+        | AbiType::I32
+        | AbiType::U32
+        | AbiType::ISize
+        | AbiType::USize
+        | AbiType::F32
+        | AbiType::F64 => "number[]".to_string(),
+        AbiType::Void | AbiType::Pointer => "unknown[]".to_string(),
     }
 }
 
@@ -647,6 +801,15 @@ mod tests {
         }
     }
 
+    fn vec_param(name: &str, primitive: PrimitiveType) -> ParamDef {
+        ParamDef {
+            name: ParamName::new(name),
+            type_expr: TypeExpr::Vec(Box::new(TypeExpr::Primitive(primitive))),
+            passing: ParamPassing::Value,
+            doc: None,
+        }
+    }
+
     fn function(
         name: &str,
         params: Vec<ParamDef>,
@@ -744,5 +907,110 @@ mod tests {
 
         assert_eq!(module.wasm_imports.len(), 1);
         assert_eq!(module.wasm_imports[0].ffi_name, "boltffi_sync_value");
+    }
+
+    #[test]
+    fn vec_i32_param_uses_number_array_conversion() {
+        let mut contract = empty_contract();
+        contract.functions.push(function(
+            "process_values",
+            vec![vec_param("values", PrimitiveType::I32)],
+            ReturnDef::Void,
+            false,
+        ));
+
+        let module = lower_contract(&contract);
+        let function = module
+            .functions
+            .iter()
+            .find(|function| function.name == "processValues")
+            .expect("function should be lowered");
+        let param = function
+            .params
+            .iter()
+            .find(|param| param.name == "values")
+            .expect("vec parameter should exist");
+
+        assert_eq!(param.ts_type, "number[]");
+        assert!(matches!(
+            param.conversion,
+            TsParamConversion::PrimitiveBuffer {
+                element_abi: AbiType::I32
+            }
+        ));
+    }
+
+    #[test]
+    fn vec_i32_param_builds_primitive_buffer_wrapper_sequence() {
+        let mut contract = empty_contract();
+        contract.functions.push(function(
+            "process_values",
+            vec![vec_param("values", PrimitiveType::I32)],
+            ReturnDef::Void,
+            false,
+        ));
+
+        let module = lower_contract(&contract);
+        let function = module
+            .functions
+            .iter()
+            .find(|function| function.name == "processValues")
+            .expect("function should be lowered");
+        let param = function
+            .params
+            .iter()
+            .find(|param| param.name == "values")
+            .expect("vec parameter should exist");
+
+        assert_eq!(
+            param.wrapper_code(),
+            Some("const values_alloc = _module.allocPrimitiveBuffer(values, \"i32\");".to_string())
+        );
+        assert_eq!(
+            param.ffi_args(),
+            vec!["values_alloc.ptr".to_string(), "values_alloc.len".to_string()]
+        );
+        assert_eq!(
+            param.cleanup_code(),
+            Some("_module.freePrimitiveBuffer(values_alloc);".to_string())
+        );
+    }
+
+    #[test]
+    fn vec_u8_param_remains_uint8_array() {
+        let mut contract = empty_contract();
+        contract.functions.push(function(
+            "process_bytes",
+            vec![vec_param("values", PrimitiveType::U8)],
+            ReturnDef::Void,
+            false,
+        ));
+
+        let module = lower_contract(&contract);
+        let function = module
+            .functions
+            .iter()
+            .find(|function| function.name == "processBytes")
+            .expect("function should be lowered");
+        let param = function
+            .params
+            .iter()
+            .find(|param| param.name == "values")
+            .expect("vec parameter should exist");
+
+        assert_eq!(param.ts_type, "Uint8Array");
+        assert!(matches!(param.conversion, TsParamConversion::Bytes));
+        assert_eq!(
+            param.wrapper_code(),
+            Some("const values_alloc = _module.allocBytes(values);".to_string())
+        );
+        assert_eq!(
+            param.ffi_args(),
+            vec!["values_alloc.ptr".to_string(), "values_alloc.len".to_string()]
+        );
+        assert_eq!(
+            param.cleanup_code(),
+            Some("_module.freeAlloc(values_alloc);".to_string())
+        );
     }
 }

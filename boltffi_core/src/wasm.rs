@@ -3,6 +3,38 @@ pub const WASM_ABI_VERSION: u32 = 1;
 #[cfg(any(test, target_arch = "wasm32"))]
 use std::alloc::{Layout, alloc, dealloc};
 
+#[cfg(target_arch = "wasm32")]
+#[repr(C)]
+pub struct WasmCallbackOutBuf {
+    ptr: u32,
+    len: u32,
+    cap: u32,
+}
+
+#[cfg(target_arch = "wasm32")]
+impl WasmCallbackOutBuf {
+    pub const fn empty() -> Self {
+        Self { ptr: 0, len: 0, cap: 0 }
+    }
+
+    pub unsafe fn as_slice(&self) -> &[u8] {
+        if self.ptr == 0 || self.len == 0 {
+            &[]
+        } else {
+            unsafe { core::slice::from_raw_parts(self.ptr as *const u8, self.len as usize) }
+        }
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+impl Drop for WasmCallbackOutBuf {
+    fn drop(&mut self) {
+        if self.ptr != 0 && self.cap > 0 {
+            boltffi_wasm_free_impl(self.ptr as usize, self.cap as usize);
+        }
+    }
+}
+
 #[cfg(any(test, target_arch = "wasm32"))]
 fn boltffi_wasm_alloc_impl(size: usize) -> usize {
     if size == 0 {

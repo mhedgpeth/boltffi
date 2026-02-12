@@ -1,13 +1,15 @@
-mod builtins;
-mod bytes;
-mod enums;
-mod options;
-mod primitives;
-mod records;
-mod results;
+pub mod builtins;
+pub mod bytes;
+pub mod callbacks;
+pub mod enums;
+pub mod options;
+pub mod primitives;
+pub mod records;
+pub mod results;
 
 pub use builtins::*;
 pub use bytes::*;
+pub use callbacks::*;
 pub use enums::*;
 pub use options::*;
 pub use primitives::*;

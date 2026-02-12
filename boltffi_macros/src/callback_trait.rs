@@ -79,29 +79,61 @@ fn expand_ffi_trait(item_trait: syn::ItemTrait) -> Result<proc_macro2::TokenStre
         .map(|method| expand_method(method, &mut vtable_fields, &custom_types))
         .collect::<Result<Vec<_>, _>>()?;
 
+    let wasm_expansions: Vec<WasmMethodExpansion> = item_trait
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            syn::TraitItem::Fn(method) => Some(method),
+            _ => None,
+        })
+        .filter(|method| method.sig.asyncness.is_none())
+        .map(|method| expand_method_wasm(method, &trait_name_snake, &custom_types))
+        .collect::<Result<Vec<_>, _>>()?;
+
+    let wasm_extern_imports: Vec<_> = wasm_expansions.iter().map(|e| &e.extern_import).collect();
+    let wasm_impl_bodies: Vec<_> = wasm_expansions.iter().map(|e| &e.impl_body).collect();
+
+    let wasm_free_import = format_ident!("__boltffi_callback_{}_free", trait_name_snake);
+    let wasm_clone_import = format_ident!("__boltffi_callback_{}_clone", trait_name_snake);
+    let wasm_create_fn = format_ident!(
+        "{}_create_{}_handle",
+        naming::ffi_prefix(),
+        trait_name_snake
+    );
+
     let expanded = quote! {
         #item_trait
 
+        #[cfg(not(target_arch = "wasm32"))]
         #[repr(C)]
         pub struct #vtable_name {
             #(#vtable_fields),*
         }
 
+        #[cfg(not(target_arch = "wasm32"))]
         #[derive(Debug)]
         pub struct #foreign_name {
             vtable: *const #vtable_name,
             handle: u64,
         }
 
+        #[cfg(target_arch = "wasm32")]
+        #[derive(Debug)]
+        pub struct #foreign_name {
+            handle: u32,
+        }
+
         unsafe impl Send for #foreign_name {}
         unsafe impl Sync for #foreign_name {}
 
+        #[cfg(not(target_arch = "wasm32"))]
         impl Drop for #foreign_name {
             fn drop(&mut self) {
                 unsafe { ((*self.vtable).free)(self.handle) };
             }
         }
 
+        #[cfg(not(target_arch = "wasm32"))]
         impl Clone for #foreign_name {
             fn clone(&self) -> Self {
                 let new_handle = unsafe { ((*self.vtable).clone)(self.handle) };
@@ -112,19 +144,23 @@ fn expand_ffi_trait(item_trait: syn::ItemTrait) -> Result<proc_macro2::TokenStre
             }
         }
 
+        #[cfg(not(target_arch = "wasm32"))]
         #async_trait_attr
         impl #trait_name for #foreign_name {
             #(#foreign_impls)*
         }
 
+        #[cfg(not(target_arch = "wasm32"))]
         static #vtable_static: std::sync::atomic::AtomicPtr<#vtable_name> =
             std::sync::atomic::AtomicPtr::new(std::ptr::null_mut());
 
+        #[cfg(not(target_arch = "wasm32"))]
         #[unsafe(no_mangle)]
         pub extern "C" fn #register_fn(vtable: *const #vtable_name) {
             #vtable_static.store(vtable as *mut _, std::sync::atomic::Ordering::Release);
         }
 
+        #[cfg(not(target_arch = "wasm32"))]
         #[unsafe(no_mangle)]
         pub extern "C" fn #create_fn(handle: u64) -> ::boltffi::__private::CallbackHandle {
             let vtable = #vtable_static.load(std::sync::atomic::Ordering::Acquire);
@@ -133,9 +169,44 @@ fn expand_ffi_trait(item_trait: syn::ItemTrait) -> Result<proc_macro2::TokenStre
             }
             ::boltffi::__private::CallbackHandle::new(handle, vtable as *const std::ffi::c_void)
         }
+
+        #[cfg(target_arch = "wasm32")]
+        #[link(wasm_import_module = "env")]
+        unsafe extern "C" {
+            fn #wasm_free_import(handle: u32);
+            fn #wasm_clone_import(handle: u32) -> u32;
+            #(#wasm_extern_imports)*
+        }
+
+        #[cfg(target_arch = "wasm32")]
+        impl Drop for #foreign_name {
+            fn drop(&mut self) {
+                unsafe { #wasm_free_import(self.handle) };
+            }
+        }
+
+        #[cfg(target_arch = "wasm32")]
+        impl Clone for #foreign_name {
+            fn clone(&self) -> Self {
+                let new_handle = unsafe { #wasm_clone_import(self.handle) };
+                Self { handle: new_handle }
+            }
+        }
+
+        #[cfg(target_arch = "wasm32")]
+        impl #trait_name for #foreign_name {
+            #(#wasm_impl_bodies)*
+        }
+
+        #[cfg(target_arch = "wasm32")]
+        #[unsafe(no_mangle)]
+        pub extern "C" fn #wasm_create_fn(js_handle: u32) -> u32 {
+            js_handle
+        }
     };
 
     let concrete_impl = quote! {
+        #[cfg(not(target_arch = "wasm32"))]
         impl ::boltffi::__private::FromCallbackHandle for #foreign_name {
             unsafe fn arc_from_callback_handle(handle: ::boltffi::__private::CallbackHandle) -> std::sync::Arc<Self> {
                 debug_assert!(!handle.is_null());
@@ -153,10 +224,28 @@ fn expand_ffi_trait(item_trait: syn::ItemTrait) -> Result<proc_macro2::TokenStre
                 })
             }
         }
+
+        #[cfg(target_arch = "wasm32")]
+        impl ::boltffi::__private::FromCallbackHandle for #foreign_name {
+            unsafe fn arc_from_callback_handle(handle: ::boltffi::__private::CallbackHandle) -> std::sync::Arc<Self> {
+                debug_assert!(!handle.is_null());
+                std::sync::Arc::new(Self {
+                    handle: handle.handle() as u32,
+                })
+            }
+
+            unsafe fn box_from_callback_handle(handle: ::boltffi::__private::CallbackHandle) -> Box<Self> {
+                debug_assert!(!handle.is_null());
+                Box::new(Self {
+                    handle: handle.handle() as u32,
+                })
+            }
+        }
     };
 
     let dyn_impl = if is_object_safe {
         quote! {
+            #[cfg(not(target_arch = "wasm32"))]
             impl ::boltffi::__private::FromCallbackHandle for dyn #trait_name {
                 unsafe fn arc_from_callback_handle(handle: ::boltffi::__private::CallbackHandle) -> std::sync::Arc<Self> {
                     debug_assert!(!handle.is_null());
@@ -172,6 +261,25 @@ fn expand_ffi_trait(item_trait: syn::ItemTrait) -> Result<proc_macro2::TokenStre
                     let foreign = #foreign_name {
                         vtable: handle.vtable() as *const #vtable_name,
                         handle: handle.handle(),
+                    };
+                    Box::new(foreign)
+                }
+            }
+
+            #[cfg(target_arch = "wasm32")]
+            impl ::boltffi::__private::FromCallbackHandle for dyn #trait_name {
+                unsafe fn arc_from_callback_handle(handle: ::boltffi::__private::CallbackHandle) -> std::sync::Arc<Self> {
+                    debug_assert!(!handle.is_null());
+                    let foreign = #foreign_name {
+                        handle: handle.handle() as u32,
+                    };
+                    std::sync::Arc::new(foreign)
+                }
+
+                unsafe fn box_from_callback_handle(handle: ::boltffi::__private::CallbackHandle) -> Box<Self> {
+                    debug_assert!(!handle.is_null());
+                    let foreign = #foreign_name {
+                        handle: handle.handle() as u32,
                     };
                     Box::new(foreign)
                 }
@@ -720,4 +828,189 @@ fn parse_result_type(ty: &Type) -> Option<(Type, Type)> {
     let ok = types.next()?;
     let err = types.next()?;
     Some((ok, err))
+}
+
+struct WasmMethodExpansion {
+    extern_import: proc_macro2::TokenStream,
+    impl_body: proc_macro2::TokenStream,
+}
+
+fn expand_method_wasm(
+    method: &syn::TraitItemFn,
+    trait_name_snake: &syn::Ident,
+    custom_types: &custom_types::CustomTypeRegistry,
+) -> Result<WasmMethodExpansion, syn::Error> {
+    let method_name = &method.sig.ident;
+    let method_name_snake = to_snake_case_ident(&method_name.to_string());
+    let import_name = format_ident!(
+        "__boltffi_callback_{}_{}", 
+        trait_name_snake, 
+        method_name_snake
+    );
+
+    let is_async = method.sig.asyncness.is_some();
+    if is_async {
+        return Err(syn::Error::new_spanned(
+            method,
+            "async callback methods are not yet supported for WASM",
+        ));
+    }
+
+    let (ffi_param_types, param_names, call_args, prelude_stmts): (Vec<_>, Vec<_>, Vec<_>, Vec<_>) = method
+        .sig
+        .inputs
+        .iter()
+        .filter_map(|input| match input {
+            FnArg::Typed(pat_type) => match pat_type.pat.as_ref() {
+                Pat::Ident(pat_ident) => Some((pat_ident.ident.clone(), pat_type.ty.clone())),
+                _ => None,
+            },
+            FnArg::Receiver(_) => None,
+        })
+        .map(|(param_name, param_type)| {
+            lower_callback_param_wasm(&param_name, &param_type, custom_types)
+        })
+        .fold(
+            (Vec::new(), Vec::new(), Vec::new(), Vec::new()),
+            |(mut ffi, mut rust, mut call, mut preludes), lowering| {
+                for p in lowering.ffi_params {
+                    ffi.push(p);
+                }
+                rust.push(lowering.rust_param);
+                for a in lowering.call_args {
+                    call.push(a);
+                }
+                if let Some(stmt) = lowering.prelude {
+                    preludes.push(stmt);
+                }
+                (ffi, rust, call, preludes)
+            },
+        );
+
+    let return_type = match &method.sig.output {
+        ReturnType::Default => None,
+        ReturnType::Type(_, ty) => Some(ty.clone()),
+    };
+
+    let wire_return = return_type
+        .as_deref()
+        .map(needs_wire_return)
+        .unwrap_or(false);
+
+    let (extern_import, impl_body) = if let Some(ref ret_ty) = return_type {
+        if wire_return {
+            (
+                quote! {
+                    fn #import_name(
+                        handle: u32,
+                        out_buf_ptr: *mut ::boltffi::__private::WasmCallbackOutBuf,
+                        #(#ffi_param_types),*
+                    );
+                },
+                quote! {
+                    #(#prelude_stmts)*
+                    let mut out_buf = ::boltffi::__private::WasmCallbackOutBuf::empty();
+                    unsafe {
+                        #import_name(
+                            self.handle,
+                            &mut out_buf as *mut _,
+                            #(#call_args),*
+                        );
+                    }
+                    let out_bytes = unsafe { out_buf.as_slice() };
+                    ::boltffi::__private::wire::decode(out_bytes)
+                        .expect("wire decode wasm callback return")
+                },
+            )
+        } else {
+            let ffi_ret = rust_type_to_ffi_param_type(ret_ty);
+            (
+                quote! {
+                    fn #import_name(handle: u32, #(#ffi_param_types),*) -> #ffi_ret;
+                },
+                quote! {
+                    #(#prelude_stmts)*
+                    unsafe { #import_name(self.handle, #(#call_args),*) }
+                },
+            )
+        }
+    } else {
+        (
+            quote! {
+                fn #import_name(handle: u32, #(#ffi_param_types),*);
+            },
+            quote! {
+                #(#prelude_stmts)*
+                unsafe { #import_name(self.handle, #(#call_args),*) }
+            },
+        )
+    };
+
+    let output_type = return_type
+        .as_ref()
+        .map(|t| quote! { -> #t })
+        .unwrap_or_default();
+
+    Ok(WasmMethodExpansion {
+        extern_import,
+        impl_body: quote! {
+            fn #method_name(&self, #(#param_names,)*) #output_type {
+                #impl_body
+            }
+        },
+    })
+}
+
+struct WasmCallbackParamLowering {
+    ffi_params: Vec<proc_macro2::TokenStream>,
+    rust_param: proc_macro2::TokenStream,
+    call_args: Vec<proc_macro2::TokenStream>,
+    prelude: Option<proc_macro2::TokenStream>,
+}
+
+fn lower_callback_param_wasm(
+    param_name: &syn::Ident,
+    param_type: &syn::Type,
+    custom_types: &custom_types::CustomTypeRegistry,
+) -> WasmCallbackParamLowering {
+    let rust_param = quote! { #param_name: #param_type };
+    let type_str = quote!(#param_type).to_string().replace(' ', "");
+
+    if is_ffi_primitive(&type_str) {
+        return WasmCallbackParamLowering {
+            ffi_params: vec![quote! { #param_name: #param_type }],
+            rust_param,
+            call_args: vec![quote! { #param_name }],
+            prelude: None,
+        };
+    }
+
+    let ptr_name = format_ident!("{}_ptr", param_name);
+    let len_name = format_ident!("{}_len", param_name);
+    let wire_name = format_ident!("{}_wire", param_name);
+
+    let prelude = if custom_types::contains_custom_types(param_type, custom_types) {
+        let wire_ty = custom_types::wire_type_for(param_type, custom_types);
+        let wire_value_name = format_ident!("{}_wire_value", param_name);
+        let to_wire = custom_types::to_wire_expr_owned(param_type, custom_types, param_name);
+        quote! {
+            let #wire_value_name: #wire_ty = { #to_wire };
+            let #wire_name = ::boltffi::__private::wire::encode(&#wire_value_name);
+        }
+    } else {
+        quote! { let #wire_name = ::boltffi::__private::wire::encode(&#param_name); }
+    };
+
+    WasmCallbackParamLowering {
+        ffi_params: vec![
+            quote! { #ptr_name: *const u8 },
+            quote! { #len_name: u32 },
+        ],
+        rust_param,
+        call_args: vec![
+            quote! { #wire_name.as_ptr() },
+            quote! { #wire_name.len() as u32 },
+        ],
+        prelude: Some(prelude),
+    }
 }

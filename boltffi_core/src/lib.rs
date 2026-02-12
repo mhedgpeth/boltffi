@@ -36,6 +36,8 @@ pub use subscription::{
     SubscriptionHandle, WaitResult,
 };
 pub use types::{FfiBuf, FfiError, FfiOption, FfiSlice, FfiString};
+#[cfg(target_arch = "wasm32")]
+pub use wasm::WasmCallbackOutBuf;
 pub use wasm::WASM_ABI_VERSION;
 
 #[derive(Debug, Clone, PartialEq, Eq)]

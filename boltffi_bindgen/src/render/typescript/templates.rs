@@ -93,6 +93,12 @@ pub struct FunctionTemplate<'a> {
 }
 
 #[derive(Template)]
+#[template(path = "render_typescript/callback.txt", escape = "none")]
+pub struct CallbackTemplate<'a> {
+    pub callback: &'a TsCallback,
+}
+
+#[derive(Template)]
 #[template(path = "render_typescript/wasm_exports.txt", escape = "none")]
 pub struct WasmExportsTemplate<'a> {
     pub wasm_imports: &'a [TsWasmImportView<'a>],
@@ -195,6 +201,11 @@ impl TypeScriptEmitter {
                 .render()
                 .unwrap(),
             );
+            output.push_str("\n\n");
+        }
+
+        for callback in &module.callbacks {
+            output.push_str(&CallbackTemplate { callback }.render().unwrap());
             output.push_str("\n\n");
         }
 

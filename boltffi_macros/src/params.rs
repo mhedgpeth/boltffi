@@ -213,10 +213,18 @@ pub fn transform_params(
                     acc.call_args.push(quote! { #name });
                 }
                 ParamTransform::BoxedDynTrait(trait_path) => {
-                    acc.ffi_params.push(quote! { #name: ::boltffi::__private::CallbackHandle });
+                    acc.ffi_params.push(quote! {
+                        #[cfg(not(target_arch = "wasm32"))]
+                        #name: ::boltffi::__private::CallbackHandle,
+                        #[cfg(target_arch = "wasm32")]
+                        #name: u32
+                    });
 
                     acc.conversions.push(quote! {
+                        #[cfg(not(target_arch = "wasm32"))]
                         assert!(!#name.is_null(), concat!(stringify!(#name), ": null callback handle"));
+                        #[cfg(target_arch = "wasm32")]
+                        let #name = ::boltffi::__private::CallbackHandle::from_wasm_handle(#name);
                         let #name: Box<dyn #trait_path> = unsafe {
                             <dyn #trait_path as ::boltffi::__private::FromCallbackHandle>::box_from_callback_handle(#name)
                         };
@@ -225,10 +233,18 @@ pub fn transform_params(
                     acc.call_args.push(quote! { #name });
                 }
                 ParamTransform::ArcDynTrait(trait_path) => {
-                    acc.ffi_params.push(quote! { #name: ::boltffi::__private::CallbackHandle });
+                    acc.ffi_params.push(quote! {
+                        #[cfg(not(target_arch = "wasm32"))]
+                        #name: ::boltffi::__private::CallbackHandle,
+                        #[cfg(target_arch = "wasm32")]
+                        #name: u32
+                    });
 
                     acc.conversions.push(quote! {
+                        #[cfg(not(target_arch = "wasm32"))]
                         assert!(!#name.is_null(), concat!(stringify!(#name), ": null callback handle"));
+                        #[cfg(target_arch = "wasm32")]
+                        let #name = ::boltffi::__private::CallbackHandle::from_wasm_handle(#name);
                         let #name: ::std::sync::Arc<dyn #trait_path> = unsafe {
                             <dyn #trait_path as ::boltffi::__private::FromCallbackHandle>::arc_from_callback_handle(#name)
                         };
@@ -237,9 +253,16 @@ pub fn transform_params(
                     acc.call_args.push(quote! { #name });
                 }
                 ParamTransform::OptionArcDynTrait(trait_path) => {
-                    acc.ffi_params.push(quote! { #name: ::boltffi::__private::CallbackHandle });
+                    acc.ffi_params.push(quote! {
+                        #[cfg(not(target_arch = "wasm32"))]
+                        #name: ::boltffi::__private::CallbackHandle,
+                        #[cfg(target_arch = "wasm32")]
+                        #name: u32
+                    });
 
                     acc.conversions.push(quote! {
+                        #[cfg(target_arch = "wasm32")]
+                        let #name = ::boltffi::__private::CallbackHandle::from_wasm_handle(#name);
                         let #name: Option<::std::sync::Arc<dyn #trait_path>> = if #name.is_null() {
                             None
                         } else {
@@ -378,10 +401,18 @@ pub fn transform_params(
                     }
                     let foreign_type = resolution.foreign_type;
 
-                    acc.ffi_params.push(quote! { #name: ::boltffi::__private::CallbackHandle });
+                    acc.ffi_params.push(quote! {
+                        #[cfg(not(target_arch = "wasm32"))]
+                        #name: ::boltffi::__private::CallbackHandle,
+                        #[cfg(target_arch = "wasm32")]
+                        #name: u32
+                    });
 
                     acc.conversions.push(quote! {
+                        #[cfg(not(target_arch = "wasm32"))]
                         assert!(!#name.is_null(), concat!(stringify!(#name), ": null callback handle"));
+                        #[cfg(target_arch = "wasm32")]
+                        let #name = ::boltffi::__private::CallbackHandle::from_wasm_handle(#name);
                         let #name = unsafe {
                             <#foreign_type as ::boltffi::__private::FromCallbackHandle>::box_from_callback_handle(#name)
                         };
@@ -653,10 +684,18 @@ pub fn transform_params_async(
                     let foreign_type = resolution.foreign_type;
                     let boxed_name = syn::Ident::new(&format!("{}_boxed", name), name.span());
 
-                    acc.ffi_params.push(quote! { #name: ::boltffi::__private::CallbackHandle });
+                    acc.ffi_params.push(quote! {
+                        #[cfg(not(target_arch = "wasm32"))]
+                        #name: ::boltffi::__private::CallbackHandle,
+                        #[cfg(target_arch = "wasm32")]
+                        #name: u32
+                    });
 
                     acc.pre_spawn.push(quote! {
+                        #[cfg(not(target_arch = "wasm32"))]
                         assert!(!#name.is_null(), concat!(stringify!(#name), ": null callback handle"));
+                        #[cfg(target_arch = "wasm32")]
+                        let #name = ::boltffi::__private::CallbackHandle::from_wasm_handle(#name);
                         let #boxed_name = unsafe {
                             <#foreign_type as ::boltffi::__private::FromCallbackHandle>::box_from_callback_handle(#name)
                         };
@@ -833,10 +872,18 @@ pub fn transform_method_params(
                     acc.call_args.push(quote! { #name });
                 }
                 ParamTransform::BoxedDynTrait(trait_path) => {
-                    acc.ffi_params.push(quote! { #name: ::boltffi::__private::CallbackHandle });
+                    acc.ffi_params.push(quote! {
+                        #[cfg(not(target_arch = "wasm32"))]
+                        #name: ::boltffi::__private::CallbackHandle,
+                        #[cfg(target_arch = "wasm32")]
+                        #name: u32
+                    });
 
                     acc.conversions.push(quote! {
+                        #[cfg(not(target_arch = "wasm32"))]
                         assert!(!#name.is_null(), concat!(stringify!(#name), ": null callback handle"));
+                        #[cfg(target_arch = "wasm32")]
+                        let #name = ::boltffi::__private::CallbackHandle::from_wasm_handle(#name);
                         let #name: Box<dyn #trait_path> = unsafe {
                             <dyn #trait_path as ::boltffi::__private::FromCallbackHandle>::box_from_callback_handle(#name)
                         };
@@ -845,10 +892,18 @@ pub fn transform_method_params(
                     acc.call_args.push(quote! { #name });
                 }
                 ParamTransform::ArcDynTrait(trait_path) => {
-                    acc.ffi_params.push(quote! { #name: ::boltffi::__private::CallbackHandle });
+                    acc.ffi_params.push(quote! {
+                        #[cfg(not(target_arch = "wasm32"))]
+                        #name: ::boltffi::__private::CallbackHandle,
+                        #[cfg(target_arch = "wasm32")]
+                        #name: u32
+                    });
 
                     acc.conversions.push(quote! {
+                        #[cfg(not(target_arch = "wasm32"))]
                         assert!(!#name.is_null(), concat!(stringify!(#name), ": null callback handle"));
+                        #[cfg(target_arch = "wasm32")]
+                        let #name = ::boltffi::__private::CallbackHandle::from_wasm_handle(#name);
                         let #name: ::std::sync::Arc<dyn #trait_path> = unsafe {
                             <dyn #trait_path as ::boltffi::__private::FromCallbackHandle>::arc_from_callback_handle(#name)
                         };
@@ -857,9 +912,16 @@ pub fn transform_method_params(
                     acc.call_args.push(quote! { #name });
                 }
                 ParamTransform::OptionArcDynTrait(trait_path) => {
-                    acc.ffi_params.push(quote! { #name: ::boltffi::__private::CallbackHandle });
+                    acc.ffi_params.push(quote! {
+                        #[cfg(not(target_arch = "wasm32"))]
+                        #name: ::boltffi::__private::CallbackHandle,
+                        #[cfg(target_arch = "wasm32")]
+                        #name: u32
+                    });
 
                     acc.conversions.push(quote! {
+                        #[cfg(target_arch = "wasm32")]
+                        let #name = ::boltffi::__private::CallbackHandle::from_wasm_handle(#name);
                         let #name: Option<::std::sync::Arc<dyn #trait_path>> = if #name.is_null() {
                             None
                         } else {
@@ -998,10 +1060,18 @@ pub fn transform_method_params(
                     }
                     let foreign_type = resolution.foreign_type;
 
-                    acc.ffi_params.push(quote! { #name: ::boltffi::__private::CallbackHandle });
+                    acc.ffi_params.push(quote! {
+                        #[cfg(not(target_arch = "wasm32"))]
+                        #name: ::boltffi::__private::CallbackHandle,
+                        #[cfg(target_arch = "wasm32")]
+                        #name: u32
+                    });
 
                     acc.conversions.push(quote! {
+                        #[cfg(not(target_arch = "wasm32"))]
                         assert!(!#name.is_null(), concat!(stringify!(#name), ": null callback handle"));
+                        #[cfg(target_arch = "wasm32")]
+                        let #name = ::boltffi::__private::CallbackHandle::from_wasm_handle(#name);
                         let #name = unsafe {
                             <#foreign_type as ::boltffi::__private::FromCallbackHandle>::box_from_callback_handle(#name)
                         };
@@ -1237,10 +1307,18 @@ pub fn transform_method_params_async(
                     let foreign_type = resolution.foreign_type;
                     let boxed_name = syn::Ident::new(&format!("{}_boxed", name), name.span());
 
-                    acc.ffi_params.push(quote! { #name: ::boltffi::__private::CallbackHandle });
+                    acc.ffi_params.push(quote! {
+                        #[cfg(not(target_arch = "wasm32"))]
+                        #name: ::boltffi::__private::CallbackHandle,
+                        #[cfg(target_arch = "wasm32")]
+                        #name: u32
+                    });
 
                     acc.pre_spawn.push(quote! {
+                        #[cfg(not(target_arch = "wasm32"))]
                         assert!(!#name.is_null(), concat!(stringify!(#name), ": null callback handle"));
+                        #[cfg(target_arch = "wasm32")]
+                        let #name = ::boltffi::__private::CallbackHandle::from_wasm_handle(#name);
                         let #boxed_name = unsafe {
                             <#foreign_type as ::boltffi::__private::FromCallbackHandle>::box_from_callback_handle(#name)
                         };

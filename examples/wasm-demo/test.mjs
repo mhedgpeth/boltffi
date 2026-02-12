@@ -24,6 +24,11 @@ import {
   echoSystemTime, systemTimeToMillis, millisToSystemTime,
   echoUuid, uuidToString,
   echoUrl, urlToString,
+  invokeCallback, invokeCallbackTwice,
+  transformPoint,
+  mapStatus,
+  processVecI32,
+  processVecPoint,
 } from './dist/wasm/pkg/node.js';
 
 await initialized;
@@ -286,5 +291,58 @@ const testUrl = 'https://example.com/path?query=1';
 const echoedUrl = echoUrl(testUrl);
 assert(echoedUrl === testUrl, 'echoUrl');
 assert(urlToString(testUrl) === testUrl, 'urlToString');
+
+console.log('Testing Callbacks...');
+const doubler = { onValue: (v) => v * 2 };
+assert(invokeCallback(doubler, 5) === 10, 'invokeCallback doubler');
+assert(invokeCallback(doubler, -3) === -6, 'invokeCallback negative');
+
+const adder = { onValue: (v) => v + 100 };
+assert(invokeCallbackTwice(adder, 1, 2) === 203, 'invokeCallbackTwice');
+
+const accumulator = { sum: 0, onValue(v) { this.sum += v; return this.sum; } };
+invokeCallback(accumulator, 10);
+invokeCallback(accumulator, 20);
+assert(accumulator.sum === 30, 'callback with state');
+
+console.log('Testing Wire-type Callbacks (Record - Point)...');
+const pointDoubler = { transform: (p) => ({ x: p.x * 2, y: p.y * 2 }) };
+const doubled = transformPoint(pointDoubler, { x: 5, y: 10 });
+assert(doubled.x === 10 && doubled.y === 20, 'transformPoint doubler');
+
+const pointNegator = { transform: (p) => ({ x: -p.x, y: -p.y }) };
+const negated = transformPoint(pointNegator, { x: 3, y: -7 });
+assert(negated.x === -3 && negated.y === 7, 'transformPoint negator');
+
+const pointOffset = { transform: (p) => ({ x: p.x + 100, y: p.y + 200 }) };
+const offset1 = transformPoint(pointOffset, { x: 1, y: 2 });
+assert(offset1.x === 101 && offset1.y === 202, 'transformPoint offset 1');
+
+console.log('Testing Wire-type Callbacks (Enum - Status)...');
+const statusToggle = { mapStatus: (s) => s === Status.Active ? Status.Inactive : Status.Active };
+const toggled1 = mapStatus(statusToggle, Status.Active);
+assert(toggled1 === Status.Inactive, 'mapStatus Active->Inactive');
+const toggled2 = mapStatus(statusToggle, Status.Inactive);
+assert(toggled2 === Status.Active, 'mapStatus Inactive->Active');
+const toggled3 = mapStatus(statusToggle, Status.Pending);
+assert(toggled3 === Status.Active, 'mapStatus Pending->Active');
+
+console.log('Testing Wire-type Callbacks (Vec<Point>)...');
+const pointsDoubler = { process: (pts) => pts.map(p => ({ x: p.x * 2, y: p.y * 2 })) };
+const doubledPoints = processVecPoint(pointsDoubler, [{ x: 1, y: 2 }, { x: 3, y: 4 }]);
+assert(doubledPoints.length === 2, 'processVecPoint length');
+assert(doubledPoints[0].x === 2 && doubledPoints[0].y === 4, 'processVecPoint[0]');
+assert(doubledPoints[1].x === 6 && doubledPoints[1].y === 8, 'processVecPoint[1]');
+
+const pointsFilter = { process: (pts) => pts.filter(p => p.x > 0) };
+const filtered = processVecPoint(pointsFilter, [{ x: -1, y: 0 }, { x: 5, y: 10 }, { x: -2, y: 3 }]);
+assert(filtered.length === 1, 'processVecPoint filter length');
+assert(filtered[0].x === 5 && filtered[0].y === 10, 'processVecPoint filter result');
+
+console.log('Testing Wire-type Callbacks (Vec<i32>)...');
+const vecDoubler = { process: (values) => values.map(v => v * 2) };
+const vecResult = processVecI32(vecDoubler, [1, 2, 3, 4, 5]);
+assert(vecResult.length === 5, 'processVecI32 length');
+assert(vecResult[0] === 2 && vecResult[4] === 10, 'processVecI32 values');
 
 console.log('\nAll tests passed!');

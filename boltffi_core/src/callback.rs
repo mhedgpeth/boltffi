@@ -36,6 +36,15 @@ impl CallbackHandle {
     pub fn is_null(&self) -> bool {
         self.handle == 0 || self.vtable.is_null()
     }
+
+    #[inline]
+    #[cfg(target_arch = "wasm32")]
+    pub fn from_wasm_handle(handle: u32) -> Self {
+        Self {
+            handle: handle as u64,
+            vtable: std::ptr::null(),
+        }
+    }
 }
 
 pub trait FromCallbackHandle {

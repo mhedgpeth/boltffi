@@ -21,6 +21,7 @@ pub enum PendingKind {
     Record,
     Enum,
     Class,
+    Callback,
 }
 
 pub enum TypeShape {
@@ -102,11 +103,30 @@ impl TypeRegistry {
             TypeShape::Pending(PendingKind::Class) | TypeShape::Class { .. } => {
                 MType::Object(name.to_string())
             }
+            TypeShape::Pending(PendingKind::Callback) => {
+                MType::BoxedTrait(name.to_string())
+            }
             TypeShape::Custom { repr } => MType::Custom {
                 name: name.to_string(),
                 repr: Box::new(repr.clone()),
             },
         })
+    }
+
+    pub fn register_callback(&mut self, name: String) {
+        self.types.insert(
+            name,
+            TypeMeta {
+                shape: TypeShape::Pending(PendingKind::Callback),
+                doc: None,
+            },
+        );
+    }
+
+    pub fn has_callback(&self, name: &str) -> bool {
+        self.types
+            .get(name)
+            .is_some_and(|m| matches!(m.shape, TypeShape::Pending(PendingKind::Callback)))
     }
 }
 
@@ -1053,6 +1073,7 @@ impl SourceScanner {
             .fold(CallbackTrait::new(&name), |ct, m| ct.with_method(m))
             .maybe_doc(extract_doc_string(&item_trait.attrs));
 
+        self.type_registry.register_callback(name);
         self.callback_traits.push(callback);
     }
 
@@ -1750,6 +1771,10 @@ fn rust_type_to_ffi_type(
                         };
 
                         return Some(MType::Closure(MClosureSignature::new(params, returns)));
+                    }
+
+                    if registry.has_callback(&trait_name) {
+                        return Some(MType::BoxedTrait(trait_name));
                     }
                 }
             }

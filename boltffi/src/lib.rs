@@ -9,7 +9,9 @@ pub mod __private {
     pub use boltffi_core::{
         CallbackForeignType, CallbackHandle, EventSubscription, FfiBuf, FfiStatus,
         FromCallbackHandle, RustFutureContinuationCallback, RustFutureHandle,
-        StreamContinuationCallback, StreamPollResult, SubscriptionHandle, WaitResult, rustfuture,
-        set_last_error, wire,
+        StreamContinuationCallback, StreamPollResult, SubscriptionHandle, WaitResult,
+        rustfuture, set_last_error, wire,
     };
+    #[cfg(target_arch = "wasm32")]
+    pub use boltffi_core::WasmCallbackOutBuf;
 }

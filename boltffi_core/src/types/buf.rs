@@ -9,6 +9,14 @@ pub struct FfiBuf<T> {
 }
 
 impl<T> FfiBuf<T> {
+    pub const fn empty() -> Self {
+        Self {
+            ptr: core::ptr::null_mut(),
+            len: 0,
+            cap: 0,
+        }
+    }
+
     pub fn from_vec(vec: Vec<T>) -> Self {
         let mut vec = ManuallyDrop::new(vec);
         Self {
@@ -41,6 +49,14 @@ impl<T> FfiBuf<T> {
 
     pub fn as_mut_ptr(&mut self) -> *mut T {
         self.ptr
+    }
+
+    pub unsafe fn as_slice(&self) -> &[T] {
+        if self.ptr.is_null() || self.len == 0 {
+            &[]
+        } else {
+            unsafe { core::slice::from_raw_parts(self.ptr, self.len) }
+        }
     }
 }
 

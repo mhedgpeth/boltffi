@@ -1,10 +1,11 @@
 import { WireReader, WireWriter, BoltFFIModule, instantiateBoltFFI, wireStringSize } from "@boltffi/runtime";
-import type { WireCodec } from "@boltffi/runtime";
+import type { WireCodec, BoltFFIImports } from "@boltffi/runtime";
 
 const EXPECTED_ABI_VERSION = {{ abi_version }};
 
 let _module: BoltFFIModule;
+const _callbackImports: Record<string, WebAssembly.ImportValue> = {};
 
 export default async function init(source: BufferSource | Response): Promise<void> {
-  _module = await instantiateBoltFFI(source, EXPECTED_ABI_VERSION);
+  _module = await instantiateBoltFFI(source, EXPECTED_ABI_VERSION, { env: _callbackImports });
 }
