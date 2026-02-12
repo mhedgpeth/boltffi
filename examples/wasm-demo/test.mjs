@@ -32,6 +32,8 @@ import {
   asyncAdd,
   asyncEcho,
   asyncDoubleAll,
+  fetchWithCallback,
+  fetchStringWithCallback,
 } from './dist/wasm/pkg/node.js';
 
 await initialized;
@@ -361,5 +363,24 @@ const asyncDoubleResult = await asyncDoubleAll([1, 2, 3, 4, 5]);
 console.log(`  asyncDoubleAll([1,2,3,4,5]) = [${asyncDoubleResult.join(', ')}]`);
 assert(asyncDoubleResult.length === 5, 'asyncDoubleAll length');
 assert(asyncDoubleResult[0] === 2 && asyncDoubleResult[4] === 10, 'asyncDoubleAll values');
+
+console.log('Testing Async Callbacks...');
+const asyncFetcher = {
+  fetchValue: async (key) => {
+    await new Promise(r => setTimeout(r, 10));
+    return key * 10;
+  },
+  fetchString: async (input) => {
+    await new Promise(r => setTimeout(r, 10));
+    return `async: ${input}`;
+  }
+};
+const fetchedValue = await fetchWithCallback(asyncFetcher, 5);
+console.log(`  fetchWithCallback(5) = ${fetchedValue}`);
+assert(fetchedValue === 50, 'fetchWithCallback');
+
+const fetchedString = await fetchStringWithCallback(asyncFetcher, 'hello');
+console.log(`  fetchStringWithCallback('hello') = "${fetchedString}"`);
+assert(fetchedString === 'async: hello', 'fetchStringWithCallback');
 
 console.log('\nAll tests passed!');

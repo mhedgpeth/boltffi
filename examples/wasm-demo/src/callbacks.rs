@@ -3,6 +3,13 @@ use crate::records::Point;
 use boltffi::*;
 
 #[export]
+#[async_trait::async_trait]
+pub trait AsyncDataFetcher: Send + Sync {
+    async fn fetch_value(&self, key: i32) -> i32;
+    async fn fetch_string(&self, input: String) -> String;
+}
+
+#[export]
 pub trait ValueCallback {
     fn on_value(&self, value: i32) -> i32;
 }
@@ -55,4 +62,14 @@ pub trait VecPointProcessor {
 #[export]
 pub fn process_vec_point(processor: impl VecPointProcessor, points: Vec<Point>) -> Vec<Point> {
     processor.process(points)
+}
+
+#[export]
+pub async fn fetch_with_callback(fetcher: impl AsyncDataFetcher, key: i32) -> i32 {
+    fetcher.fetch_value(key).await
+}
+
+#[export]
+pub async fn fetch_string_with_callback(fetcher: impl AsyncDataFetcher, input: String) -> String {
+    fetcher.fetch_string(input).await
 }
