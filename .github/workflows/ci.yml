@@ -107,5 +107,6 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           cache-on-failure: true
+          key: miri
       - run: cargo miri setup
       - run: cargo miri test -p boltffi -p boltffi_tests
