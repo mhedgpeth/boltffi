@@ -5,13 +5,8 @@ use boltffi_ffi_rules::naming;
 
 use crate::ir::abi::{
     AbiCall, AbiCallbackInvocation, AbiCallbackMethod, AbiContract, AbiEnum, AbiEnumField,
-    AbiEnumPayload, AbiEnumVariant, AbiParam, AbiRecord, AbiStream, AsyncCall,
-    AsyncResultTransport, CallId, CallMode, ErrorTransport, ParamRole, ReturnTransport,
-    StreamItemTransport,
-};
-use crate::ir::callback_plan::{
-    CallbackInvocationPlan, CallbackMethodPlan, CallbackParamPlan, CallbackParamStrategy,
-    CallbackReturnPlan,
+    AbiEnumPayload, AbiEnumVariant, AbiParam, AbiRecord, AbiStream, AsyncCall, CallId, CallMode,
+    ErrorTransport, InputShape, OutputShape, StreamItemTransport, ValueShape,
 };
 use crate::ir::codec::{
     BlittableField, CodecPlan, EncodedField, EnumLayout, RecordLayout, VariantLayout,
@@ -23,7 +18,7 @@ use crate::ir::definitions::{
     MethodDef, ParamDef, ParamPassing, Receiver, RecordDef, ReturnDef, StreamDef, VariantPayload,
 };
 use crate::ir::ids::{
-    BuiltinId, CallbackId, ClassId, EnumId, FieldName, FunctionId, MethodId, ParamName, RecordId,
+    BuiltinId, ClassId, EnumId, FieldName, FunctionId, MethodId, ParamName, RecordId,
 };
 use crate::ir::ops::{
     FieldReadOp, FieldWriteOp, OffsetExpr, ReadOp, ReadSeq, SizeExpr, ValueExpr, WireShape,
@@ -35,6 +30,18 @@ use crate::ir::plan::{
     ReturnValuePlan,
 };
 use crate::ir::types::{PrimitiveType, TypeExpr};
+
+#[derive(Debug, Clone)]
+struct AbiCallbackParamPlan {
+    name: ParamName,
+    strategy: AbiCallbackParamStrategy,
+}
+
+#[derive(Debug, Clone)]
+enum AbiCallbackParamStrategy {
+    Direct(DirectPlan),
+    Encoded { codec: CodecPlan },
+}
 
 /// Walks an [`FfiContract`] and produces an [`AbiContract`].
 ///
@@ -127,7 +134,7 @@ impl<'c> Lowerer<'c> {
             })
             .collect();
 
-        AbiContract {
+        let abi_contract = AbiContract {
             package: self.contract.package.clone(),
             calls,
             callbacks,
@@ -136,21 +143,24 @@ impl<'c> Lowerer<'c> {
             enums,
             free_buf: naming::free_buf_u8(),
             atomic_cas: naming::atomic_u8_cas(),
-        }
+        };
+        abi_contract.assert_shape_consistency();
+        abi_contract
     }
 
     fn abi_call_for_function(&self, func: &FunctionDef) -> AbiCall {
         let plan = self.lower_function(func);
         let symbol = self.call_symbol(&plan);
         let params = self.abi_params_from_plan(&plan.params);
-        let (mode, return_, error) = self.abi_mode_return_error_for_function(func, &plan.kind);
+        let (mode, output_shape, error) =
+            self.abi_mode_output_shape_error_for_function(func, &plan.kind);
 
         AbiCall {
             id: CallId::Function(func.id.clone()),
             symbol,
             mode,
             params,
-            return_,
+            output_shape,
             error,
         }
     }
@@ -159,8 +169,8 @@ impl<'c> Lowerer<'c> {
         let plan = self.lower_method(class, method);
         let symbol = self.call_symbol(&plan);
         let params = self.abi_params_from_plan(&plan.params);
-        let (mode, return_, error) =
-            self.abi_mode_return_error_for_method(class, method, &plan.kind);
+        let (mode, output_shape, error) =
+            self.abi_mode_output_shape_error_for_method(class, method, &plan.kind);
 
         AbiCall {
             id: CallId::Method {
@@ -170,7 +180,7 @@ impl<'c> Lowerer<'c> {
             symbol,
             mode,
             params,
-            return_,
+            output_shape,
             error,
         }
     }
@@ -184,7 +194,7 @@ impl<'c> Lowerer<'c> {
         let plan = self.lower_constructor(class, ctor);
         let symbol = self.call_symbol(&plan);
         let params = self.abi_params_from_plan(&plan.params);
-        let (return_, error) = self.sync_return_and_error(match &plan.kind {
+        let (output_shape, error) = self.sync_output_shape_and_error(match &plan.kind {
             CallPlanKind::Sync { returns } => returns,
             CallPlanKind::Async { .. } => panic!("constructors cannot be async"),
         });
@@ -197,7 +207,7 @@ impl<'c> Lowerer<'c> {
             symbol,
             mode: CallMode::Sync,
             params,
-            return_,
+            output_shape,
             error,
         }
     }
@@ -208,14 +218,14 @@ impl<'c> Lowerer<'c> {
             .iter()
             .map(|method| {
                 let params = self.abi_callback_params(callback, method).collect();
-                let (return_, error) = self.callback_return_and_error(&method.returns);
+                let (output_shape, error) = self.callback_output_shape_and_error(&method.returns);
 
                 AbiCallbackMethod {
                     id: method.id.clone(),
                     vtable_field: naming::vtable_field_name(method.id.as_str()),
                     is_async: method.is_async,
                     params,
-                    return_,
+                    output_shape,
                     error,
                 }
             })
@@ -366,38 +376,38 @@ impl<'c> Lowerer<'c> {
         }
     }
 
-    fn abi_mode_return_error_for_function(
+    fn abi_mode_output_shape_error_for_function(
         &self,
         func: &FunctionDef,
         kind: &CallPlanKind,
-    ) -> (CallMode, ReturnTransport, ErrorTransport) {
+    ) -> (CallMode, OutputShape, ErrorTransport) {
         match kind {
             CallPlanKind::Sync { returns } => {
-                let (return_, error) = self.sync_return_and_error(returns);
-                (CallMode::Sync, return_, error)
+                let (output_shape, error) = self.sync_output_shape_and_error(returns);
+                (CallMode::Sync, output_shape, error)
             }
             CallPlanKind::Async { async_plan } => {
                 let mode =
                     CallMode::Async(Box::new(self.async_call_for_function(func, async_plan)));
                 (
                     mode,
-                    ReturnTransport::Direct(AbiType::Pointer),
+                    OutputShape::Value(ValueShape::Scalar(AbiType::Pointer)),
                     ErrorTransport::None,
                 )
             }
         }
     }
 
-    fn abi_mode_return_error_for_method(
+    fn abi_mode_output_shape_error_for_method(
         &self,
         class: &ClassDef,
         method: &MethodDef,
         kind: &CallPlanKind,
-    ) -> (CallMode, ReturnTransport, ErrorTransport) {
+    ) -> (CallMode, OutputShape, ErrorTransport) {
         match kind {
             CallPlanKind::Sync { returns } => {
-                let (return_, error) = self.sync_return_and_error(returns);
-                (CallMode::Sync, return_, error)
+                let (output_shape, error) = self.sync_output_shape_and_error(returns);
+                (CallMode::Sync, output_shape, error)
             }
             CallPlanKind::Async { async_plan } => {
                 let mode = CallMode::Async(Box::new(
@@ -405,7 +415,7 @@ impl<'c> Lowerer<'c> {
                 ));
                 (
                     mode,
-                    ReturnTransport::Direct(AbiType::Pointer),
+                    OutputShape::Value(ValueShape::Scalar(AbiType::Pointer)),
                     ErrorTransport::None,
                 )
             }
@@ -413,14 +423,12 @@ impl<'c> Lowerer<'c> {
     }
 
     fn async_call_for_function(&self, func: &FunctionDef, plan: &AsyncPlan) -> AsyncCall {
-        let result = self.async_result_transport(&plan.result);
-
         AsyncCall {
             poll: naming::function_ffi_poll(func.id.as_str()),
             complete: naming::function_ffi_complete(func.id.as_str()),
             cancel: naming::function_ffi_cancel(func.id.as_str()),
             free: naming::function_ffi_free(func.id.as_str()),
-            result,
+            result_shape: self.output_shape_from_async_result(&plan.result),
             error: ErrorTransport::StatusCode,
         }
     }
@@ -431,42 +439,20 @@ impl<'c> Lowerer<'c> {
         method: &MethodDef,
         plan: &AsyncPlan,
     ) -> AsyncCall {
-        let result = self.async_result_transport(&plan.result);
-
         AsyncCall {
             poll: naming::method_ffi_poll(class.id.as_str(), method.id.as_str()),
             complete: naming::method_ffi_complete(class.id.as_str(), method.id.as_str()),
             cancel: naming::method_ffi_cancel(class.id.as_str(), method.id.as_str()),
             free: naming::method_ffi_free(class.id.as_str(), method.id.as_str()),
-            result,
+            result_shape: self.output_shape_from_async_result(&plan.result),
             error: ErrorTransport::StatusCode,
         }
     }
 
-    fn async_result_transport(&self, result: &AsyncResult) -> AsyncResultTransport {
+    fn output_shape_from_async_result(&self, result: &AsyncResult) -> OutputShape {
         match result {
-            AsyncResult::Void => AsyncResultTransport::Void,
-            AsyncResult::Value(value) => match self.return_transport_from_value(value) {
-                ReturnTransport::Void => AsyncResultTransport::Void,
-                ReturnTransport::Direct(abi) => AsyncResultTransport::Direct(abi),
-                ReturnTransport::Encoded {
-                    decode_ops,
-                    encode_ops,
-                } => AsyncResultTransport::Encoded {
-                    decode_ops,
-                    encode_ops,
-                },
-                ReturnTransport::Handle { class_id, nullable } => {
-                    AsyncResultTransport::Handle { class_id, nullable }
-                }
-                ReturnTransport::Callback {
-                    callback_id,
-                    nullable,
-                } => AsyncResultTransport::Callback {
-                    callback_id,
-                    nullable,
-                },
-            },
+            AsyncResult::Void => OutputShape::Unit,
+            AsyncResult::Value(value) => self.output_shape_from_return_value(value),
             AsyncResult::Fallible { ok, err_codec } => {
                 let ok_codec = self.codec_from_return_value(ok);
                 let result_codec = CodecPlan::Result {
@@ -475,17 +461,14 @@ impl<'c> Lowerer<'c> {
                 };
                 let decode_ops = self.expand_decode(&result_codec);
                 let encode_ops = self.expand_encode(&result_codec, ValueExpr::Var("value".into()));
-                AsyncResultTransport::Encoded {
-                    decode_ops,
-                    encode_ops,
-                }
+                OutputShape::Value(self.value_shape_from_read_write(&decode_ops, &encode_ops))
             }
         }
     }
 
-    fn sync_return_and_error(&self, returns: &ReturnPlan) -> (ReturnTransport, ErrorTransport) {
+    fn sync_output_shape_and_error(&self, returns: &ReturnPlan) -> (OutputShape, ErrorTransport) {
         match returns {
-            ReturnPlan::Value(v) => (self.return_transport_from_value(v), ErrorTransport::None),
+            ReturnPlan::Value(v) => (self.output_shape_from_return_value(v), ErrorTransport::None),
             // fallible constructors cant be wire-encoded becuase the ok side
             // is a handle (opaque pointer) not a value. so we just return a
             // nullable handle here and let null signal the error case
@@ -493,7 +476,7 @@ impl<'c> Lowerer<'c> {
                 ok: ReturnValuePlan::Handle { class_id, .. },
                 err_codec,
             } => (
-                ReturnTransport::Handle {
+                OutputShape::Handle {
                     class_id: class_id.clone(),
                     nullable: true,
                 },
@@ -511,10 +494,7 @@ impl<'c> Lowerer<'c> {
                 let decode_ops = self.expand_decode(&result_codec);
                 let encode_ops = self.expand_encode(&result_codec, ValueExpr::Var("value".into()));
                 (
-                    ReturnTransport::Encoded {
-                        decode_ops,
-                        encode_ops,
-                    },
+                    OutputShape::Value(self.value_shape_from_read_write(&decode_ops, &encode_ops)),
                     ErrorTransport::Encoded {
                         decode_ops: self.expand_decode(err_codec),
                         encode_ops: None,
@@ -524,25 +504,108 @@ impl<'c> Lowerer<'c> {
         }
     }
 
-    fn return_transport_from_value(&self, value: &ReturnValuePlan) -> ReturnTransport {
+    fn output_shape_from_return_value(&self, value: &ReturnValuePlan) -> OutputShape {
         match value {
-            ReturnValuePlan::Void => ReturnTransport::Void,
-            ReturnValuePlan::Direct(d) => ReturnTransport::Direct(d.abi_type),
-            ReturnValuePlan::Encoded { codec } => ReturnTransport::Encoded {
-                decode_ops: self.expand_decode(codec),
-                encode_ops: self.expand_encode(codec, ValueExpr::Var("value".into())),
-            },
-            ReturnValuePlan::Handle { class_id, nullable } => ReturnTransport::Handle {
+            ReturnValuePlan::Void => OutputShape::Unit,
+            ReturnValuePlan::Direct(d) => OutputShape::Value(ValueShape::Scalar(d.abi_type)),
+            ReturnValuePlan::Encoded { codec } => {
+                let decode_ops = self.expand_decode(codec);
+                let encode_ops = self.expand_encode(codec, ValueExpr::Var("value".into()));
+                OutputShape::Value(self.value_shape_from_read_write(&decode_ops, &encode_ops))
+            }
+            ReturnValuePlan::Handle { class_id, nullable } => OutputShape::Handle {
                 class_id: class_id.clone(),
                 nullable: *nullable,
             },
             ReturnValuePlan::Callback {
                 callback_id,
                 nullable,
-            } => ReturnTransport::Callback {
+            } => OutputShape::Callback {
                 callback_id: callback_id.clone(),
                 nullable: *nullable,
             },
+        }
+    }
+
+    fn value_shape_from_read_write(&self, read: &ReadSeq, write: &WriteSeq) -> ValueShape {
+        read.ops
+            .first()
+            .and_then(|op| self.classify_value_shape_from_read_op(op, read, write))
+            .unwrap_or_else(|| ValueShape::WireEncoded {
+                read: read.clone(),
+                write: write.clone(),
+            })
+    }
+
+    fn classify_value_shape_from_read_op(
+        &self,
+        op: &ReadOp,
+        read: &ReadSeq,
+        write: &WriteSeq,
+    ) -> Option<ValueShape> {
+        match op {
+            ReadOp::Primitive { primitive, .. } => {
+                Some(ValueShape::Scalar(primitive_to_abi(*primitive)))
+            }
+            ReadOp::Option { some, .. } => some
+                .ops
+                .first()
+                .and_then(|inner| self.primitive_abi_from_read_op(inner))
+                .map(|abi| ValueShape::OptionScalar {
+                    abi,
+                    read: read.clone(),
+                    write: write.clone(),
+                }),
+            ReadOp::Result { ok, err, .. } => ok
+                .ops
+                .first()
+                .and_then(|ok_op| self.primitive_abi_from_read_op(ok_op))
+                .zip(
+                    err.ops
+                        .first()
+                        .and_then(|err_op| self.primitive_abi_from_read_op(err_op)),
+                )
+                .map(|(ok, err)| ValueShape::ResultScalar {
+                    ok,
+                    err,
+                    read: read.clone(),
+                    write: write.clone(),
+                }),
+            ReadOp::Vec { element_type, .. } => match element_type {
+                TypeExpr::Primitive(primitive) => Some(ValueShape::PrimitiveVec {
+                    element_abi: primitive_to_abi(*primitive),
+                    read: read.clone(),
+                    write: write.clone(),
+                }),
+                _ => None,
+            },
+            ReadOp::Record { id, .. } => {
+                self.blittable_record_size_by_id(id)
+                    .map(|size| ValueShape::BlittableRecord {
+                        id: id.clone(),
+                        size,
+                        read: read.clone(),
+                        write: write.clone(),
+                    })
+            }
+            _ => None,
+        }
+    }
+
+    fn primitive_abi_from_read_op(&self, op: &ReadOp) -> Option<AbiType> {
+        match op {
+            ReadOp::Primitive { primitive, .. } => Some(primitive_to_abi(*primitive)),
+            _ => None,
+        }
+    }
+
+    fn blittable_record_size_by_id(&self, record_id: &RecordId) -> Option<u32> {
+        match self.build_codec(&TypeExpr::Record(record_id.clone())) {
+            CodecPlan::Record {
+                layout: RecordLayout::Blittable { size, .. },
+                ..
+            } => u32::try_from(size).ok(),
+            _ => None,
         }
     }
 
@@ -937,7 +1000,7 @@ impl<'c> Lowerer<'c> {
             ParamStrategy::Direct(d) => vec![AbiParam {
                 name: param.name.clone(),
                 ffi_type: d.abi_type,
-                role: ParamRole::InDirect,
+                input_shape: InputShape::Value(ValueShape::Scalar(d.abi_type)),
             }],
             ParamStrategy::Buffer {
                 mutability,
@@ -946,7 +1009,7 @@ impl<'c> Lowerer<'c> {
                 AbiParam {
                     name: param.name.clone(),
                     ffi_type: AbiType::Pointer,
-                    role: ParamRole::InBuffer {
+                    input_shape: InputShape::PrimitiveSlice {
                         len_param: len_name.clone(),
                         mutability: *mutability,
                         element_abi: *element_abi,
@@ -955,7 +1018,7 @@ impl<'c> Lowerer<'c> {
                 AbiParam {
                     name: len_name,
                     ffi_type: AbiType::U64,
-                    role: ParamRole::SyntheticLen {
+                    input_shape: InputShape::HiddenSyntheticLen {
                         for_param: param.name.clone(),
                     },
                 },
@@ -964,43 +1027,43 @@ impl<'c> Lowerer<'c> {
                 AbiParam {
                     name: param.name.clone(),
                     ffi_type: AbiType::Pointer,
-                    role: ParamRole::InString {
+                    input_shape: InputShape::Utf8Slice {
                         len_param: len_name.clone(),
                     },
                 },
                 AbiParam {
                     name: len_name,
                     ffi_type: AbiType::U64,
-                    role: ParamRole::SyntheticLen {
+                    input_shape: InputShape::HiddenSyntheticLen {
                         for_param: param.name.clone(),
                     },
                 },
             ],
             ParamStrategy::Encoded { codec, mutability } => {
-                let role = match mutability {
-                    Mutability::Mutable => ParamRole::OutBuffer {
+                let decode_ops = self.expand_decode(codec);
+                let encode_ops =
+                    self.expand_encode(codec, ValueExpr::Named(param.name.as_str().to_string()));
+                let value_shape = self.value_shape_from_read_write(&decode_ops, &encode_ops);
+                let input_shape = match mutability {
+                    Mutability::Mutable => InputShape::OutputBuffer {
                         len_param: len_name.clone(),
-                        decode_ops: self.expand_decode(codec),
+                        value: value_shape.clone(),
                     },
-                    Mutability::Shared => ParamRole::InEncoded {
+                    Mutability::Shared => InputShape::WirePacket {
                         len_param: len_name.clone(),
-                        decode_ops: self.expand_decode(codec),
-                        encode_ops: self.expand_encode(
-                            codec,
-                            ValueExpr::Named(param.name.as_str().to_string()),
-                        ),
+                        value: value_shape,
                     },
                 };
                 vec![
                     AbiParam {
                         name: param.name.clone(),
                         ffi_type: AbiType::Pointer,
-                        role,
+                        input_shape,
                     },
                     AbiParam {
                         name: len_name,
                         ffi_type: AbiType::U64,
-                        role: ParamRole::SyntheticLen {
+                        input_shape: InputShape::HiddenSyntheticLen {
                             for_param: param.name.clone(),
                         },
                     },
@@ -1009,7 +1072,7 @@ impl<'c> Lowerer<'c> {
             ParamStrategy::Handle { class_id, nullable } => vec![AbiParam {
                 name: param.name.clone(),
                 ffi_type: AbiType::Pointer,
-                role: ParamRole::InHandle {
+                input_shape: InputShape::Handle {
                     class_id: class_id.clone(),
                     nullable: *nullable,
                 },
@@ -1021,7 +1084,7 @@ impl<'c> Lowerer<'c> {
             } => vec![AbiParam {
                 name: param.name.clone(),
                 ffi_type: AbiType::Pointer,
-                role: ParamRole::InCallback {
+                input_shape: InputShape::Callback {
                     callback_id: callback_id.clone(),
                     nullable: *nullable,
                     style: *style,
@@ -1030,13 +1093,16 @@ impl<'c> Lowerer<'c> {
         }
     }
 
-    fn callback_return_and_error(&self, returns: &ReturnDef) -> (ReturnTransport, ErrorTransport) {
+    fn callback_output_shape_and_error(
+        &self,
+        returns: &ReturnDef,
+    ) -> (OutputShape, ErrorTransport) {
         match returns {
-            ReturnDef::Void => (ReturnTransport::Void, ErrorTransport::None),
+            ReturnDef::Void => (OutputShape::Unit, ErrorTransport::None),
             ReturnDef::Value(ty) => {
                 let plan = self.lower_value_type(ty);
                 (
-                    self.return_transport_from_value(&plan),
+                    self.output_shape_from_return_value(&plan),
                     ErrorTransport::None,
                 )
             }
@@ -1047,11 +1113,10 @@ impl<'c> Lowerer<'c> {
                     ok: Box::new(ok_codec.clone()),
                     err: Box::new(err_codec.clone()),
                 };
+                let decode_ops = self.expand_decode(&result_codec);
+                let encode_ops = self.expand_encode(&result_codec, ValueExpr::Var("result".into()));
                 (
-                    ReturnTransport::Encoded {
-                        decode_ops: self.expand_decode(&result_codec),
-                        encode_ops: self.expand_encode(&ok_codec, ValueExpr::Var("result".into())),
-                    },
+                    OutputShape::Value(self.value_shape_from_read_write(&decode_ops, &encode_ops)),
                     ErrorTransport::Encoded {
                         decode_ops: self.expand_decode(&err_codec),
                         encode_ops: Some(
@@ -1071,7 +1136,7 @@ impl<'c> Lowerer<'c> {
         let handle_param = AbiParam {
             name: ParamName::new("handle"),
             ffi_type: AbiType::Pointer,
-            role: ParamRole::InCallback {
+            input_shape: InputShape::Callback {
                 callback_id: callback.id.clone(),
                 nullable: false,
                 style: CallbackStyle::BoxedDyn,
@@ -1091,37 +1156,39 @@ impl<'c> Lowerer<'c> {
             .chain(out_params)
     }
 
-    fn abi_callback_param_from_plan(&self, param: CallbackParamPlan) -> Vec<AbiParam> {
+    fn abi_callback_param_from_plan(&self, param: AbiCallbackParamPlan) -> Vec<AbiParam> {
         let base_name = param.name.as_str();
         let len_name = ParamName::new(format!("{}_len", base_name));
 
         match param.strategy {
-            CallbackParamStrategy::Direct(d) => vec![AbiParam {
+            AbiCallbackParamStrategy::Direct(d) => vec![AbiParam {
                 name: param.name,
                 ffi_type: d.abi_type,
-                role: ParamRole::InDirect,
+                input_shape: InputShape::Value(ValueShape::Scalar(d.abi_type)),
             }],
-            CallbackParamStrategy::Encoded { codec } => vec![
-                AbiParam {
-                    name: param.name.clone(),
-                    ffi_type: AbiType::Pointer,
-                    role: ParamRole::InEncoded {
-                        len_param: len_name.clone(),
-                        decode_ops: self.expand_decode(&codec),
-                        encode_ops: self.expand_encode(
-                            &codec,
-                            ValueExpr::Named(param.name.as_str().to_string()),
-                        ),
+            AbiCallbackParamStrategy::Encoded { codec } => {
+                let decode_ops = self.expand_decode(&codec);
+                let encode_ops =
+                    self.expand_encode(&codec, ValueExpr::Named(param.name.as_str().to_string()));
+                let value_shape = self.value_shape_from_read_write(&decode_ops, &encode_ops);
+                vec![
+                    AbiParam {
+                        name: param.name.clone(),
+                        ffi_type: AbiType::Pointer,
+                        input_shape: InputShape::WirePacket {
+                            len_param: len_name.clone(),
+                            value: value_shape,
+                        },
                     },
-                },
-                AbiParam {
-                    name: len_name,
-                    ffi_type: AbiType::U64,
-                    role: ParamRole::SyntheticLen {
-                        for_param: param.name.clone(),
+                    AbiParam {
+                        name: len_name,
+                        ffi_type: AbiType::U64,
+                        input_shape: InputShape::HiddenSyntheticLen {
+                            for_param: param.name.clone(),
+                        },
                     },
-                },
-            ],
+                ]
+            }
         }
     }
 
@@ -1134,145 +1201,47 @@ impl<'c> Lowerer<'c> {
             return Vec::new();
         }
 
-        let (return_transport, _) = self.callback_return_and_error(returns);
+        let (output_shape, _) = self.callback_output_shape_and_error(returns);
 
-        match return_transport {
-            ReturnTransport::Encoded { decode_ops, .. } => vec![
-                AbiParam {
-                    name: out_ptr_name.clone(),
-                    ffi_type: AbiType::Pointer,
-                    role: ParamRole::OutBuffer {
-                        len_param: out_len_name.clone(),
-                        decode_ops,
-                    },
-                },
-                AbiParam {
-                    name: out_len_name,
-                    ffi_type: AbiType::U64,
-                    role: ParamRole::OutLen {
-                        for_param: out_ptr_name,
-                    },
-                },
-            ],
-            ReturnTransport::Direct(abi) => std::iter::once(AbiParam {
+        match output_shape {
+            OutputShape::Value(ValueShape::Scalar(abi)) => std::iter::once(AbiParam {
                 name: out_ptr_name,
                 ffi_type: abi,
-                role: ParamRole::OutDirect,
+                input_shape: InputShape::HiddenOutDirect,
             })
             .collect(),
-            ReturnTransport::Handle { .. }
-            | ReturnTransport::Callback { .. }
-            | ReturnTransport::Void => std::iter::once(AbiParam {
-                name: out_ptr_name,
-                ffi_type: AbiType::Pointer,
-                role: ParamRole::OutDirect,
-            })
-            .collect(),
+            OutputShape::Value(value_shape) => {
+                vec![
+                    AbiParam {
+                        name: out_ptr_name.clone(),
+                        ffi_type: AbiType::Pointer,
+                        input_shape: InputShape::OutputBuffer {
+                            len_param: out_len_name.clone(),
+                            value: value_shape,
+                        },
+                    },
+                    AbiParam {
+                        name: out_len_name,
+                        ffi_type: AbiType::U64,
+                        input_shape: InputShape::HiddenOutLen {
+                            for_param: out_ptr_name,
+                        },
+                    },
+                ]
+            }
+            OutputShape::Handle { .. } | OutputShape::Callback { .. } | OutputShape::Unit => {
+                std::iter::once(AbiParam {
+                    name: out_ptr_name,
+                    ffi_type: AbiType::Pointer,
+                    input_shape: InputShape::HiddenOutDirect,
+                })
+                .collect()
+            }
         }
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// CallPlan Generation (Legacy)
-// TODO: Remove after Kotlin backend migrates to AbiContract
-// ─────────────────────────────────────────────────────────────────────────────
-
 impl<'c> Lowerer<'c> {
-    /// Lowers the contract to the legacy CallPlan-based representation.
-    ///
-    /// DEPRECATED: Use `to_abi_contract()` instead. This method exists only for
-    /// backends that haven't migrated to AbiContract yet (e.g., Kotlin).
-    /// Remove after all backends use AbiContract.
-    pub fn to_lowered_contract(&self) -> LoweredContract {
-        let functions = self
-            .contract
-            .functions
-            .iter()
-            .map(|func| (func.id.clone(), self.lower_function(func)))
-            .collect();
-
-        let methods = self
-            .contract
-            .catalog
-            .all_classes()
-            .flat_map(|class| {
-                class.methods.iter().map(|method| {
-                    (
-                        (class.id.clone(), method.id.clone()),
-                        self.lower_method(class, method),
-                    )
-                })
-            })
-            .collect();
-
-        let constructors = self
-            .contract
-            .catalog
-            .all_classes()
-            .flat_map(|class| {
-                class.constructors.iter().enumerate().map(|(index, ctor)| {
-                    (
-                        (class.id.clone(), index),
-                        self.lower_constructor(class, ctor),
-                    )
-                })
-            })
-            .collect();
-
-        let callbacks = self
-            .contract
-            .catalog
-            .all_callbacks()
-            .map(|callback| (callback.id.clone(), self.lower_callback(callback)))
-            .collect();
-
-        let callback_invocations = self
-            .contract
-            .catalog
-            .all_callbacks()
-            .map(|callback| {
-                (
-                    callback.id.clone(),
-                    self.lower_callback_invocation(callback),
-                )
-            })
-            .collect();
-
-        let record_codecs = self
-            .contract
-            .catalog
-            .all_records()
-            .map(|record| {
-                (
-                    record.id.clone(),
-                    self.build_codec(&TypeExpr::Record(record.id.clone())),
-                )
-            })
-            .collect();
-
-        let enum_codecs = self
-            .contract
-            .catalog
-            .all_enums()
-            .map(|enumeration| {
-                (
-                    enumeration.id.clone(),
-                    self.build_codec(&TypeExpr::Enum(enumeration.id.clone())),
-                )
-            })
-            .collect();
-
-        LoweredContract {
-            functions,
-            methods,
-            constructors,
-            callbacks,
-            callback_invocations,
-            record_codecs,
-            enum_codecs,
-        }
-    }
-
     fn lower_function(&self, func: &FunctionDef) -> CallPlan {
         let params = func.params.iter().map(|p| self.lower_param(p)).collect();
 
@@ -1393,42 +1362,6 @@ impl<'c> Lowerer<'c> {
                 }
             })
             .collect()
-    }
-
-    fn lower_callback_invocation(&self, callback: &CallbackTraitDef) -> CallbackInvocationPlan {
-        let vtable_type = naming::callback_vtable_name(callback.id.as_str());
-        let register_fn = naming::callback_register_fn(callback.id.as_str());
-        let create_fn = naming::callback_create_fn(callback.id.as_str());
-        let methods = callback
-            .methods
-            .iter()
-            .map(|method| {
-                let params = method
-                    .params
-                    .iter()
-                    .map(|p| self.lower_callback_param(p))
-                    .collect();
-
-                let returns = self.lower_callback_return(&method.returns, method.is_async);
-                let vtable_field = naming::vtable_field_name(method.id.as_str());
-
-                CallbackMethodPlan {
-                    id: method.id.clone(),
-                    vtable_field,
-                    params,
-                    returns,
-                    is_async: method.is_async,
-                }
-            })
-            .collect();
-
-        CallbackInvocationPlan {
-            callback_id: callback.id.clone(),
-            vtable_type,
-            register_fn,
-            create_fn,
-            methods,
-        }
     }
 }
 
@@ -1595,77 +1528,20 @@ impl<'c> Lowerer<'c> {
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Callback Lowering
-// ─────────────────────────────────────────────────────────────────────────────
-
 impl<'c> Lowerer<'c> {
-    fn lower_callback_param(&self, param: &ParamDef) -> CallbackParamPlan {
+    fn lower_callback_param(&self, param: &ParamDef) -> AbiCallbackParamPlan {
         let strategy = match &param.type_expr {
-            TypeExpr::Primitive(p) => CallbackParamStrategy::Direct(DirectPlan {
+            TypeExpr::Primitive(p) => AbiCallbackParamStrategy::Direct(DirectPlan {
                 abi_type: primitive_to_abi(*p),
             }),
-            _ => CallbackParamStrategy::Encoded {
+            _ => AbiCallbackParamStrategy::Encoded {
                 codec: self.build_codec(&param.type_expr),
             },
         };
 
-        CallbackParamPlan {
+        AbiCallbackParamPlan {
             name: param.name.clone(),
             strategy,
-        }
-    }
-
-    fn lower_callback_return(&self, returns: &ReturnDef, is_async: bool) -> CallbackReturnPlan {
-        match returns {
-            ReturnDef::Void => {
-                if is_async {
-                    CallbackReturnPlan::Async {
-                        completion_codec: None,
-                    }
-                } else {
-                    CallbackReturnPlan::Void
-                }
-            }
-            ReturnDef::Value(ty) => {
-                if is_async {
-                    CallbackReturnPlan::Async {
-                        completion_codec: Some(self.build_codec(ty)),
-                    }
-                } else if matches!(ty, TypeExpr::Primitive(_)) {
-                    CallbackReturnPlan::Direct(DirectPlan {
-                        abi_type: self.type_to_abi(ty),
-                    })
-                } else {
-                    CallbackReturnPlan::Encoded {
-                        codec: self.build_codec(ty),
-                    }
-                }
-            }
-            ReturnDef::Result { ok, err } => {
-                if is_async {
-                    CallbackReturnPlan::Async {
-                        completion_codec: Some(CodecPlan::Result {
-                            ok: Box::new(self.build_codec(ok)),
-                            err: Box::new(self.build_codec(err)),
-                        }),
-                    }
-                } else {
-                    CallbackReturnPlan::Encoded {
-                        codec: CodecPlan::Result {
-                            ok: Box::new(self.build_codec(ok)),
-                            err: Box::new(self.build_codec(err)),
-                        },
-                    }
-                }
-            }
-        }
-    }
-
-    fn type_to_abi(&self, ty: &TypeExpr) -> AbiType {
-        match ty {
-            TypeExpr::Primitive(p) => primitive_to_abi(*p),
-            _ => AbiType::Pointer,
         }
     }
 }
@@ -1959,25 +1835,6 @@ fn compute_blittable_layout(def: &RecordDef) -> (usize, Vec<BlittableField>) {
 
     let size = align_up(final_offset, max_align);
     (size, fields)
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Types (Legacy)
-// TODO: Remove after Kotlin backend migrates to AbiContract
-// ─────────────────────────────────────────────────────────────────────────────
-
-/// Legacy lowered contract using CallPlan-based representation.
-///
-/// DEPRECATED: Use `AbiContract` instead. This type exists only for backends
-/// that haven't migrated yet (e.g., Kotlin). Remove after all backends use AbiContract.
-pub struct LoweredContract {
-    pub functions: HashMap<FunctionId, CallPlan>,
-    pub methods: HashMap<(ClassId, MethodId), CallPlan>,
-    pub constructors: HashMap<(ClassId, usize), CallPlan>,
-    pub callbacks: HashMap<CallbackId, Vec<CallPlan>>,
-    pub callback_invocations: HashMap<CallbackId, CallbackInvocationPlan>,
-    pub record_codecs: HashMap<RecordId, CodecPlan>,
-    pub enum_codecs: HashMap<EnumId, CodecPlan>,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -3105,13 +2962,16 @@ mod tests {
         let abi = lowerer.abi_call_for_function(&func);
 
         assert_eq!(abi.params.len(), 2);
-        assert!(matches!(abi.params[0].role, ParamRole::InString { .. }));
+        assert!(matches!(
+            abi.params[0].input_shape,
+            InputShape::Utf8Slice { .. }
+        ));
         assert_eq!(abi.params[0].name.as_str(), "name");
-        match &abi.params[1].role {
-            ParamRole::SyntheticLen { for_param } => {
+        match &abi.params[1].input_shape {
+            InputShape::HiddenSyntheticLen { for_param } => {
                 assert_eq!(for_param.as_str(), "name");
             }
-            other => panic!("expected SyntheticLen, got {:?}", other),
+            other => panic!("expected HiddenSyntheticLen, got {:?}", other),
         }
     }
 
@@ -3158,13 +3018,16 @@ mod tests {
         let abi = lowerer.abi_call_for_function(&func);
 
         assert_eq!(abi.params.len(), 2);
-        assert!(matches!(abi.params[0].role, ParamRole::InEncoded { .. }));
+        assert!(matches!(
+            abi.params[0].input_shape,
+            InputShape::WirePacket { .. }
+        ));
         assert_eq!(abi.params[0].name.as_str(), "point");
-        match &abi.params[1].role {
-            ParamRole::SyntheticLen { for_param } => {
+        match &abi.params[1].input_shape {
+            InputShape::HiddenSyntheticLen { for_param } => {
                 assert_eq!(for_param.as_str(), "point");
             }
-            other => panic!("expected SyntheticLen, got {:?}", other),
+            other => panic!("expected HiddenSyntheticLen, got {:?}", other),
         }
     }
 
@@ -3196,8 +3059,8 @@ mod tests {
         let abi = lowerer.abi_call_for_constructor(class, &class.constructors[0], 0);
 
         assert!(matches!(
-            abi.return_,
-            ReturnTransport::Handle { nullable: true, .. }
+            abi.output_shape,
+            OutputShape::Handle { nullable: true, .. }
         ));
         assert!(matches!(abi.error, ErrorTransport::Encoded { .. }));
     }

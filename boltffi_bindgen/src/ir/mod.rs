@@ -14,7 +14,6 @@
 //! They never see [`CodecPlan`], which stays internal to the lowering step.
 
 pub mod build;
-pub mod callback_plan;
 pub mod codec;
 pub mod contract;
 pub mod definitions;
@@ -22,11 +21,11 @@ pub mod ids;
 pub mod lower;
 pub mod ops;
 pub mod plan;
+pub mod transport;
 pub mod types;
 pub mod validate;
 
 pub use build::build_contract;
-pub use callback_plan::*;
 pub use codec::*;
 pub use contract::*;
 pub use definitions::*;
@@ -34,6 +33,7 @@ pub use ids::*;
 pub use lower::Lowerer;
 pub use ops::*;
 pub use plan::*;
+pub use transport::*;
 pub use types::*;
 pub use validate::{ValidationError, validate_contract};
 pub mod abi;
