@@ -1,7 +1,17 @@
 @Suppress("FunctionName")
 private object Native {
     init {
-        System.loadLibrary("{{ lib_name }}")
+        val preferredLibrary = "{{ lib_name }}_jni"
+        val fallbackLibrary = "{{ lib_name }}"
+        val vmName = System.getProperty("java.vm.name").orEmpty()
+        val isAndroidRuntime =
+            vmName.contains("dalvik", ignoreCase = true) ||
+            vmName.contains("art", ignoreCase = true)
+        if (isAndroidRuntime) {
+            System.loadLibrary(fallbackLibrary)
+        } else {
+            System.loadLibrary(preferredLibrary)
+        }
     }
 
     @JvmStatic external fun {{ prefix }}_free_string(ptr: Long)
