@@ -15,10 +15,10 @@ tools_version = "5.9"
 tuple_storage = false
 
 [targets.apple.xcframework]
-output = "dist"
+output = "BoltFFIPackage"
 
 [targets.apple.spm]
-output = "dist"
+output = "BoltFFIPackage"
 distribution = "local"
 
 [targets.android]
@@ -27,11 +27,11 @@ min_sdk = 24
 
 [targets.android.kotlin]
 package = "com.example.bench_boltffi"
-output = "bindings/kotlin"
+output = "dist/android/kotlin"
 factory_style = "constructors"
 
 [targets.android.pack]
-output = "dist/jniLibs"
+output = "dist/android/jniLibs"
 
 [targets.wasm]
 enabled = true

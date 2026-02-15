@@ -6,7 +6,7 @@ RUST_RIFF_DIR="$SCRIPT_DIR/../rust-boltffi"
 RUST_UNIFFI_DIR="$SCRIPT_DIR/../rust-uniffi"
 JNI_LIBS_DIR="$SCRIPT_DIR/app/src/main/jniLibs"
 JNI_SRC="$RUST_RIFF_DIR/dist/android/kotlin/jni/jni_glue.c"
-HEADER_DIR="$RUST_RIFF_DIR/dist/include"
+HEADER_DIR="$RUST_RIFF_DIR/dist/android/include"
 
 ANDROID_NDK_HOME="${ANDROID_NDK_HOME:-$ANDROID_HOME/ndk/28.0.13004108}"
 TOOLCHAIN="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/darwin-x86_64"

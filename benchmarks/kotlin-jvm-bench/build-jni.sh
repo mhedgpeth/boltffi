@@ -4,7 +4,7 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 RUST_DIR="$SCRIPT_DIR/../rust-boltffi"
 JNI_SRC="$RUST_DIR/dist/android/kotlin/jni/jni_glue.c"
-HEADER_DIR="$RUST_DIR/dist/include"
+HEADER_DIR="$RUST_DIR/dist/android/include"
 OUTPUT_DIR="$RUST_DIR/target/release"
 
 if [ -z "$JAVA_HOME" ]; then

@@ -80,24 +80,20 @@ if [[ "$PLATFORM" == "apple" ]]; then
         "$BOLTFFI_CLI" build apple
     fi
 
-    echo "=== Generating Swift bindings ==="
-    "$BOLTFFI_CLI" generate swift
-
     echo "=== Packaging Apple artifacts ==="
+    rm -rf ./BoltFFIPackage/Sources
     if [[ "$BUILD_MODE" == "release" ]]; then
-        "$BOLTFFI_CLI" pack apple --release
+        "$BOLTFFI_CLI" pack apple --release --regenerate
     else
-        "$BOLTFFI_CLI" pack apple
+        "$BOLTFFI_CLI" pack apple --regenerate
     fi
-
-    echo "=== Updating BoltFFIPackage ==="
-    rm -rf ./BoltFFIPackage/BenchBoltffi.xcframework
-    rm -rf ./BoltFFIPackage/.build
-    cp -r ./dist/apple/BenchBoltffi.xcframework ./BoltFFIPackage/
-    cp ./dist/apple/Sources/BoltFFI/Bench_boltffiBoltFFI.swift ./BoltFFIPackage/Sources/BenchBoltFFI.swift
 
     if [[ "$SKIP_BENCH" == false ]]; then
         echo "=== Building & Running Swift Bench ==="
+        if [[ ! -d "$ROOT_DIR/benchmarks/rust-uniffi/UniffiPackage" ]]; then
+            echo "=== Preparing UniFFI baseline package ==="
+            "$ROOT_DIR/benchmarks/rust-uniffi/build-xcframework.sh"
+        fi
         cd ../swift-macos-bench
         rm -rf .build
         if [[ "$BUILD_MODE" == "release" ]]; then
@@ -111,11 +107,11 @@ if [[ "$PLATFORM" == "apple" ]]; then
 
 elif [[ "$PLATFORM" == "android" ]]; then
     echo "=== Building Rust for host ==="
-    cargo build --release --manifest-path "$SCRIPT_DIR/Cargo.toml"
-
-    echo "=== Generating Kotlin + JNI bindings ==="
-    "$BOLTFFI_CLI" generate kotlin
-    "$BOLTFFI_CLI" generate header
+    if [[ "$BUILD_MODE" == "release" ]]; then
+        cargo build --release --manifest-path "$SCRIPT_DIR/Cargo.toml"
+    else
+        cargo build --manifest-path "$SCRIPT_DIR/Cargo.toml"
+    fi
 
     echo "=== Building for Android targets ==="
     if [[ "$BUILD_MODE" == "release" ]]; then
@@ -126,9 +122,9 @@ elif [[ "$PLATFORM" == "android" ]]; then
 
     echo "=== Packaging Android jniLibs ==="
     if [[ "$BUILD_MODE" == "release" ]]; then
-        "$BOLTFFI_CLI" pack android --release
+        "$BOLTFFI_CLI" pack android --release --regenerate
     else
-        "$BOLTFFI_CLI" pack android
+        "$BOLTFFI_CLI" pack android --regenerate
     fi
 
     if [[ "$SKIP_BENCH" == false ]]; then
