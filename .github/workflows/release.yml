@@ -7,6 +7,11 @@ on:
         description: 'Version to release (e.g., 0.2.0 or 0.2.0-beta.1)'
         required: true
         type: string
+      skip_publish:
+        description: 'Skip crates.io publish (for testing releases)'
+        required: false
+        type: boolean
+        default: false
 
 env:
   CARGO_TERM_COLOR: always
@@ -156,6 +161,7 @@ jobs:
   publish-crates:
     name: Publish to crates.io
     needs: [release, build-release]
+    if: ${{ !inputs.skip_publish }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
