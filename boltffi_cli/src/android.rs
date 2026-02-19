@@ -87,12 +87,12 @@ impl AndroidNdk {
     }
 
     pub fn clang_for_abi(&self, abi: AndroidAbi, min_sdk: u32) -> PathBuf {
-        self.bin_dir
-            .join(format!("{}{}-clang", abi.clang_prefix(), min_sdk))
+        let name = format!("{}{}-clang", abi.clang_prefix(), min_sdk);
+        self.bin_dir.join(with_platform_ext(&name, "cmd"))
     }
 
     pub fn llvm_ar(&self) -> PathBuf {
-        self.bin_dir.join("llvm-ar")
+        self.bin_dir.join(with_platform_ext("llvm-ar", "exe"))
     }
 }
 
@@ -133,6 +133,14 @@ fn cargo_env_triple_upper(triple: &str) -> String {
 
 fn cargo_env_triple_lower(triple: &str) -> String {
     triple.replace('-', "_").to_lowercase()
+}
+
+fn with_platform_ext(name: &str, windows_ext: &str) -> String {
+    if cfg!(windows) {
+        format!("{}.{}", name, windows_ext)
+    } else {
+        name.to_string()
+    }
 }
 
 fn resolve_ndk_root(ndk_version_hint: Option<&str>) -> Option<PathBuf> {
