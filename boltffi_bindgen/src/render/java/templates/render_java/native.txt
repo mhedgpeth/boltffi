@@ -1,0 +1,21 @@
+final class Native {
+    static {
+        String preferredLibrary = "{{ module.lib_name }}_jni";
+        String fallbackLibrary = "{{ module.lib_name }}";
+        String vmName = System.getProperty("java.vm.name");
+        if (vmName == null) vmName = "";
+        boolean isAndroidRuntime =
+            vmName.toLowerCase().contains("dalvik") ||
+            vmName.toLowerCase().contains("art");
+        if (isAndroidRuntime) {
+            System.loadLibrary(fallbackLibrary);
+        } else {
+            System.loadLibrary(preferredLibrary);
+        }
+    }
+
+    private Native() {}
+
+    static native void {{ prefix }}_free_string(long ptr);
+    static native String {{ prefix }}_last_error_message();
+}
