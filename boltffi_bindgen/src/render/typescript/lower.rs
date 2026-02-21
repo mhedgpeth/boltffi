@@ -92,18 +92,30 @@ enum TsExecutionModel {
     Async,
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct TypeScriptExperimental {
+    pub async_streams: bool,
+}
+
 pub struct TypeScriptLowerer<'a> {
     contract: &'a FfiContract,
     abi: &'a AbiContract,
     module_name: String,
+    experimental: TypeScriptExperimental,
 }
 
 impl<'a> TypeScriptLowerer<'a> {
-    pub fn new(contract: &'a FfiContract, abi: &'a AbiContract, module_name: String) -> Self {
+    pub fn new(
+        contract: &'a FfiContract,
+        abi: &'a AbiContract,
+        module_name: String,
+        experimental: TypeScriptExperimental,
+    ) -> Self {
         Self {
             contract,
             abi,
             module_name,
+            experimental,
         }
     }
 
@@ -1545,7 +1557,13 @@ mod tests {
 
     fn lower_contract(contract: &FfiContract) -> TsModule {
         let abi = IrLowerer::new(contract).to_abi_contract();
-        TypeScriptLowerer::new(contract, &abi, "Test".to_string()).lower()
+        TypeScriptLowerer::new(
+            contract,
+            &abi,
+            "Test".to_string(),
+            TypeScriptExperimental::default(),
+        )
+        .lower()
     }
 
     fn class_with_sync_and_async_methods() -> ClassDef {

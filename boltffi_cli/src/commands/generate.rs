@@ -7,7 +7,7 @@ use boltffi_bindgen::{
 };
 
 use crate::config::{
-    Config, FactoryStyle as ConfigFactoryStyle, KotlinApiStyle,
+    Config, Experimental, FactoryStyle as ConfigFactoryStyle, KotlinApiStyle, Target,
     TypeConversion as ConfigTypeConversion,
 };
 use crate::error::{CliError, Result};
@@ -15,6 +15,7 @@ use crate::error::{CliError, Result};
 pub enum GenerateTarget {
     Swift,
     Kotlin,
+    Java,
     Header,
     Typescript,
     All,
@@ -23,25 +24,43 @@ pub enum GenerateTarget {
 pub struct GenerateOptions {
     pub target: GenerateTarget,
     pub output: Option<PathBuf>,
+    pub experimental: bool,
+}
+
+fn require_experimental(target: Target, experimental_flag: bool) -> Result<()> {
+    if Experimental::is_target_experimental(target) && !experimental_flag {
+        return Err(CliError::CommandFailed {
+            command: format!("{} is experimental, use --experimental flag", target.name()),
+            status: None,
+        });
+    }
+    Ok(())
 }
 
 pub fn run_generate_with_output(config: &Config, options: GenerateOptions) -> Result<()> {
     match options.target {
         GenerateTarget::Swift => generate_swift(config, options.output),
         GenerateTarget::Kotlin => generate_kotlin(config, options.output),
+        GenerateTarget::Java => {
+            require_experimental(Target::Java, options.experimental)?;
+            generate_java(config, options.output)
+        }
         GenerateTarget::Header => generate_header(config, options.output),
         GenerateTarget::Typescript => generate_typescript(config, options.output),
         GenerateTarget::All => {
-            if config.is_apple_enabled() {
+            if config.should_process(Target::Swift, options.experimental) {
                 generate_swift(config, options.output.clone())?;
             }
-            if config.is_android_enabled() {
+            if config.should_process(Target::Kotlin, options.experimental) {
                 generate_kotlin(config, options.output.clone())?;
             }
-            if config.is_apple_enabled() || config.is_android_enabled() {
+            if config.should_process(Target::Java, options.experimental) {
+                generate_java(config, options.output.clone())?;
+            }
+            if config.should_process(Target::Header, options.experimental) {
                 generate_header(config, options.output.clone())?;
             }
-            if config.is_wasm_enabled() {
+            if config.should_process(Target::TypeScript, options.experimental) {
                 generate_typescript(config, options.output)?;
             }
             Ok(())
@@ -211,6 +230,85 @@ fn generate_kotlin(config: &Config, output: Option<PathBuf>) -> Result<()> {
     Ok(())
 }
 
+fn generate_java(config: &Config, output: Option<PathBuf>) -> Result<()> {
+    let jvm_enabled = config.is_java_jvm_enabled();
+    let android_enabled = config.is_java_android_enabled();
+
+    if !jvm_enabled && !android_enabled {
+        return Err(CliError::CommandFailed {
+            command: "both targets.java.jvm.enabled and targets.java.android.enabled are false"
+                .to_string(),
+            status: None,
+        });
+    }
+
+    let package_name = config.java_package();
+    let package_path = package_name.replace('.', "/");
+    let module_name = config.java_module_name();
+
+    let output_dir = output.unwrap_or_else(|| {
+        if jvm_enabled {
+            config.java_jvm_output()
+        } else {
+            config.java_android_output()
+        }
+    });
+    let java_dir = output_dir.join(&package_path);
+    let jni_dir = output_dir.join("jni");
+
+    std::fs::create_dir_all(&java_dir).map_err(|source| CliError::CreateDirectoryFailed {
+        path: java_dir.clone(),
+        source,
+    })?;
+    std::fs::create_dir_all(&jni_dir).map_err(|source| CliError::CreateDirectoryFailed {
+        path: jni_dir.clone(),
+        source,
+    })?;
+
+    let crate_dir = std::env::current_dir()
+        .and_then(|p| p.canonicalize())
+        .unwrap_or_else(|_| PathBuf::from("."));
+    let crate_name = config.library_name();
+
+    let mut module = scan_crate(&crate_dir, crate_name).map_err(|e| CliError::CommandFailed {
+        command: format!("scan_crate: {}", e),
+        status: None,
+    })?;
+
+    let contract = ir::build_contract(&mut module);
+    let abi_contract = ir::Lowerer::new(&contract).to_abi_contract();
+
+    let java_options = render::java::JavaOptions {
+        library_name: Some(crate_name.to_string()),
+        ..Default::default()
+    };
+
+    let java_output = render::java::JavaEmitter::emit(
+        &contract,
+        &abi_contract,
+        package_name.clone(),
+        module_name.clone(),
+        java_options,
+    );
+
+    let java_path = java_dir.join(format!("{}.java", module_name));
+    std::fs::write(&java_path, &java_output.source).map_err(|source| CliError::WriteFailed {
+        path: java_path.clone(),
+        source,
+    })?;
+
+    let jni_module =
+        render::jni::JniLowerer::new(&contract, &abi_contract, package_name, module_name).lower();
+    let jni_code = render::jni::JniEmitter::emit(&jni_module);
+    let jni_path = jni_dir.join("jni_glue.c");
+    std::fs::write(&jni_path, &jni_code).map_err(|source| CliError::WriteFailed {
+        path: jni_path.clone(),
+        source,
+    })?;
+
+    Ok(())
+}
+
 fn generate_header(config: &Config, output: Option<PathBuf>) -> Result<()> {
     if !config.is_apple_enabled() && !config.is_android_enabled() {
         return Err(CliError::CommandFailed {
@@ -261,6 +359,8 @@ fn generate_typescript(config: &Config, output: Option<PathBuf>) -> Result<()> {
         });
     }
 
+    let experimental = config.typescript_experimental();
+
     let output_dir = output.unwrap_or_else(|| config.wasm_typescript_output());
     let module_name = config.wasm_typescript_module_name();
     let output_path = output_dir.join(format!("{}.ts", module_name));
@@ -284,8 +384,13 @@ fn generate_typescript(config: &Config, output: Option<PathBuf>) -> Result<()> {
     let contract = ir::build_contract(&mut module);
     let abi_contract = ir::Lowerer::new(&contract).to_abi_contract();
 
-    let ts_module =
-        TypeScriptLowerer::new(&contract, &abi_contract, crate_name.to_string()).lower();
+    let ts_module = TypeScriptLowerer::new(
+        &contract,
+        &abi_contract,
+        crate_name.to_string(),
+        experimental,
+    )
+    .lower();
     let runtime_package = config.wasm_runtime_package();
 
     let ts_code = TypeScriptEmitter::emit(&ts_module).replacen(

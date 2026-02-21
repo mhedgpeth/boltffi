@@ -62,6 +62,28 @@ impl<'a> Builder<'a> {
         self.build_targets(RustTarget::ALL_MACOS)
     }
 
+    pub fn build_host(&self) -> Result<BuildResult> {
+        let mut command = Command::new("cargo");
+        command.arg("build");
+
+        if self.options.release {
+            command.arg("--release");
+        }
+
+        if let Some(ref package) = self.options.package {
+            command.arg("-p").arg(package);
+        } else {
+            command.arg("-p").arg(self.config.library_name());
+        }
+
+        let success = run_command_streaming(&mut command, self.options.on_output.as_ref());
+
+        Ok(BuildResult {
+            triple: "host".to_string(),
+            success,
+        })
+    }
+
     pub fn build_wasm_with_triple(&self, triple: &str) -> Result<Vec<BuildResult>> {
         let mut command = Command::new("cargo");
         command.arg("build");

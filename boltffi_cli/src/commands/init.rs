@@ -2,8 +2,8 @@ use std::path::{Path, PathBuf};
 
 use crate::config::{
     AndroidConfig, AndroidKotlinConfig, AndroidPackConfig, AppleConfig, AppleSwiftConfig, Config,
-    ErrorStyle, FactoryStyle, HeaderConfig, PackageConfig, SpmConfig, TargetsConfig, WasmConfig,
-    XcframeworkConfig,
+    ErrorStyle, FactoryStyle, HeaderConfig, JavaConfig, PackageConfig, SpmConfig, TargetsConfig,
+    WasmConfig, XcframeworkConfig,
 };
 use crate::error::Result;
 
@@ -65,6 +65,7 @@ fn create_default_config(package_name: &str) -> Config {
     let normalized_kotlin_name = package_name.replace('-', "_");
 
     Config {
+        experimental: Vec::new(),
         package: PackageConfig {
             name: package_name.to_string(),
             crate_name: None,
@@ -121,6 +122,7 @@ fn create_default_config(package_name: &str) -> Config {
                 pack: AndroidPackConfig { output: None },
             },
             wasm: WasmConfig::default(),
+            java: JavaConfig::default(),
         },
     }
 }

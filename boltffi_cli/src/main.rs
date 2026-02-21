@@ -17,7 +17,8 @@ use commands::doctor::DoctorOptions;
 use commands::generate::{GenerateOptions, GenerateTarget, run_generate_with_output};
 use commands::init::InitOptions;
 use commands::pack::{
-    PackAllOptions, PackAndroidOptions, PackAppleOptions, PackCommand, PackWasmOptions,
+    PackAllOptions, PackAndroidOptions, PackAppleOptions, PackCommand, PackJavaOptions,
+    PackWasmOptions,
 };
 use commands::verify::VerifyOptions;
 use commands::{run_build, run_check, run_doctor, run_init, run_pack, run_verify};
@@ -97,6 +98,9 @@ enum Commands {
             help = "Override output directory (default comes from boltffi.toml)"
         )]
         output: Option<PathBuf>,
+
+        #[arg(long, help = "Enable experimental targets/features")]
+        experimental: bool,
     },
 
     #[command(
@@ -141,6 +145,8 @@ enum GenerateTargetArg {
     Swift,
     #[value(help = "Generate Kotlin bindings + JNI glue")]
     Kotlin,
+    #[value(help = "Generate Java bindings + JNI glue")]
+    Java,
     #[value(help = "Generate C header")]
     Header,
     #[value(help = "Generate TypeScript bindings for WASM")]
@@ -173,6 +179,9 @@ enum PackTargetArg {
 
         #[arg(long)]
         no_build: bool,
+
+        #[arg(long, help = "Include experimental targets")]
+        experimental: bool,
     },
 
     #[command(
@@ -222,6 +231,21 @@ enum PackTargetArg {
         long_about = "Build + package WASM artifacts.\n\nOutputs:\n  - wasm binary: {targets.wasm.npm.output}/{module_name}_bg.wasm\n  - JS/TS files: {targets.wasm.npm.output}\n  - npm metadata: package.json/README.md (when enabled)\n"
     )]
     Wasm {
+        #[arg(long)]
+        release: bool,
+
+        #[arg(long, default_value = "true")]
+        regenerate: bool,
+
+        #[arg(long)]
+        no_build: bool,
+    },
+
+    #[command(
+        about = "Build + package Java artifacts (experimental)",
+        long_about = "Build + package Java artifacts.\n\nOutputs:\n  - Java bindings: {targets.java.jvm.output}\n"
+    )]
+    Java {
         #[arg(long)]
         release: bool,
 
@@ -332,19 +356,25 @@ fn execute_command(command: Commands, reporter: &reporter::Reporter) -> Result<(
             run_doctor(options)
         }
 
-        Commands::Generate { target, output } => {
+        Commands::Generate {
+            target,
+            output,
+            experimental,
+        } => {
             let config = load_config()?;
             let options = GenerateOptions {
                 target: target
                     .map(|t| match t {
                         GenerateTargetArg::Swift => GenerateTarget::Swift,
                         GenerateTargetArg::Kotlin => GenerateTarget::Kotlin,
+                        GenerateTargetArg::Java => GenerateTarget::Java,
                         GenerateTargetArg::Header => GenerateTarget::Header,
                         GenerateTargetArg::Typescript => GenerateTarget::Typescript,
                         GenerateTargetArg::All => GenerateTarget::All,
                     })
                     .unwrap_or(GenerateTarget::All),
                 output,
+                experimental,
             };
             run_generate_with_output(&config, options)
         }
@@ -372,10 +402,12 @@ fn execute_command(command: Commands, reporter: &reporter::Reporter) -> Result<(
                     release,
                     regenerate,
                     no_build,
+                    experimental,
                 } => PackCommand::All(PackAllOptions {
                     release,
                     regenerate,
                     no_build,
+                    experimental,
                 }),
                 PackTargetArg::Apple {
                     release,
@@ -412,6 +444,15 @@ fn execute_command(command: Commands, reporter: &reporter::Reporter) -> Result<(
                     regenerate,
                     no_build,
                 } => PackCommand::Wasm(PackWasmOptions {
+                    release,
+                    regenerate,
+                    no_build,
+                }),
+                PackTargetArg::Java {
+                    release,
+                    regenerate,
+                    no_build,
+                } => PackCommand::Java(PackJavaOptions {
                     release,
                     regenerate,
                     no_build,
@@ -502,6 +543,7 @@ fn run_release(
         GenerateOptions {
             target: GenerateTarget::All,
             output: None,
+            experimental: true,
         },
     )?;
     println!();

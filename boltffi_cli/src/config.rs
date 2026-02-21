@@ -2,9 +2,54 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Target {
+    Swift,
+    Kotlin,
+    Java,
+    TypeScript,
+    Header,
+}
+
+impl Target {
+    pub const fn name(self) -> &'static str {
+        match self {
+            Target::Swift => "swift",
+            Target::Kotlin => "kotlin",
+            Target::Java => "java",
+            Target::TypeScript => "typescript",
+            Target::Header => "header",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Experimental {
+    WholeTarget(Target),
+    Feature { target: Target, name: &'static str },
+}
+
+impl Experimental {
+    pub const ALL: &'static [Experimental] = &[
+        Experimental::WholeTarget(Target::Java),
+        Experimental::Feature {
+            target: Target::TypeScript,
+            name: "async_streams",
+        },
+    ];
+
+    pub fn is_target_experimental(target: Target) -> bool {
+        Self::ALL
+            .iter()
+            .any(|e| matches!(e, Experimental::WholeTarget(t) if *t == target))
+    }
+}
+
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
+    #[serde(default)]
+    pub experimental: Vec<String>,
     pub package: PackageConfig,
     #[serde(default)]
     pub targets: TargetsConfig,
@@ -29,6 +74,8 @@ pub struct TargetsConfig {
     pub android: AndroidConfig,
     #[serde(default)]
     pub wasm: WasmConfig,
+    #[serde(default)]
+    pub java: JavaConfig,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone, Copy, PartialEq, Eq, Default)]
@@ -170,6 +217,61 @@ pub struct SpmConfig {
 #[derive(Debug, Deserialize, Serialize, Clone, Default)]
 pub struct AndroidPackConfig {
     pub output: Option<PathBuf>,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, Default)]
+pub struct JavaConfig {
+    pub package: Option<String>,
+    pub module_name: Option<String>,
+    #[serde(default)]
+    pub jvm: JavaJvmConfig,
+    #[serde(default)]
+    pub android: JavaAndroidConfig,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct JavaJvmConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_java_jvm_output")]
+    pub output: PathBuf,
+}
+
+impl Default for JavaJvmConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            output: default_java_jvm_output(),
+        }
+    }
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct JavaAndroidConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_java_android_output")]
+    pub output: PathBuf,
+    #[serde(default = "default_android_min_sdk")]
+    pub min_sdk: u32,
+}
+
+impl Default for JavaAndroidConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            output: default_java_android_output(),
+            min_sdk: default_android_min_sdk(),
+        }
+    }
+}
+
+fn default_java_jvm_output() -> PathBuf {
+    PathBuf::from("dist/java")
+}
+
+fn default_java_android_output() -> PathBuf {
+    PathBuf::from("dist/java/android")
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone, Copy, PartialEq, Eq, Default)]
@@ -619,6 +721,72 @@ impl Config {
 
     pub fn kotlin_type_mappings(&self) -> &HashMap<String, TypeMapping> {
         &self.targets.android.kotlin.type_mappings
+    }
+
+    pub fn is_java_jvm_enabled(&self) -> bool {
+        self.targets.java.jvm.enabled
+    }
+
+    pub fn is_java_android_enabled(&self) -> bool {
+        self.targets.java.android.enabled
+    }
+
+    pub fn is_enabled(&self, target: Target) -> bool {
+        match target {
+            Target::Swift => self.is_apple_enabled(),
+            Target::Kotlin => self.is_android_enabled(),
+            Target::Java => self.is_java_jvm_enabled(),
+            Target::TypeScript => self.is_wasm_enabled(),
+            Target::Header => self.is_apple_enabled() || self.is_android_enabled(),
+        }
+    }
+
+    pub fn should_process(&self, target: Target, experimental_flag: bool) -> bool {
+        self.is_enabled(target)
+            && (!Experimental::is_target_experimental(target) || experimental_flag)
+    }
+
+    fn is_experimental_enabled(&self, exp: &Experimental) -> bool {
+        let key = match exp {
+            Experimental::WholeTarget(t) => t.name().to_string(),
+            Experimental::Feature { target, name } => format!("{}.{}", target.name(), name),
+        };
+        self.experimental.contains(&key)
+    }
+
+    pub fn typescript_experimental(
+        &self,
+    ) -> boltffi_bindgen::render::typescript::TypeScriptExperimental {
+        boltffi_bindgen::render::typescript::TypeScriptExperimental {
+            async_streams: self.is_experimental_enabled(&Experimental::Feature {
+                target: Target::TypeScript,
+                name: "async_streams",
+            }),
+        }
+    }
+
+    pub fn java_package(&self) -> String {
+        self.targets
+            .java
+            .package
+            .clone()
+            .unwrap_or_else(|| format!("com.example.{}", self.package.name.replace('-', "_")))
+    }
+
+    pub fn java_module_name(&self) -> String {
+        self.targets
+            .java
+            .module_name
+            .clone()
+            .unwrap_or_else(|| to_pascal_case(&self.package.name))
+    }
+
+    pub fn java_jvm_output(&self) -> PathBuf {
+        self.targets.java.jvm.output.clone()
+    }
+
+    pub fn java_android_output(&self) -> PathBuf {
+        self.targets.java.android.output.clone()
     }
 
     pub fn wasm_triple(&self) -> &str {
