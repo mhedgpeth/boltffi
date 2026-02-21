@@ -518,12 +518,15 @@ fn compile_jni_library(config: &Config, release: bool) -> Result<()> {
         });
     }
 
-    std::fs::copy(&rust_lib, java_output.join(format!("lib{}.dylib", config.library_name())))
-        .map_err(|e| CliError::CopyFailed {
-            from: rust_lib,
-            to: java_output.join(format!("lib{}.dylib", config.library_name())),
-            source: e,
-        })?;
+    std::fs::copy(
+        &rust_lib,
+        java_output.join(format!("lib{}.dylib", config.library_name())),
+    )
+    .map_err(|e| CliError::CopyFailed {
+        from: rust_lib,
+        to: java_output.join(format!("lib{}.dylib", config.library_name())),
+        source: e,
+    })?;
 
     Ok(())
 }

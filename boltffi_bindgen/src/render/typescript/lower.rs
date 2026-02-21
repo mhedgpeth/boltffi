@@ -1557,7 +1557,13 @@ mod tests {
 
     fn lower_contract(contract: &FfiContract) -> TsModule {
         let abi = IrLowerer::new(contract).to_abi_contract();
-        TypeScriptLowerer::new(contract, &abi, "Test".to_string(), TypeScriptExperimental::default()).lower()
+        TypeScriptLowerer::new(
+            contract,
+            &abi,
+            "Test".to_string(),
+            TypeScriptExperimental::default(),
+        )
+        .lower()
     }
 
     fn class_with_sync_and_async_methods() -> ClassDef {

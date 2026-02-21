@@ -384,8 +384,13 @@ fn generate_typescript(config: &Config, output: Option<PathBuf>) -> Result<()> {
     let contract = ir::build_contract(&mut module);
     let abi_contract = ir::Lowerer::new(&contract).to_abi_contract();
 
-    let ts_module =
-        TypeScriptLowerer::new(&contract, &abi_contract, crate_name.to_string(), experimental).lower();
+    let ts_module = TypeScriptLowerer::new(
+        &contract,
+        &abi_contract,
+        crate_name.to_string(),
+        experimental,
+    )
+    .lower();
     let runtime_package = config.wasm_runtime_package();
 
     let ts_code = TypeScriptEmitter::emit(&ts_module).replacen(
