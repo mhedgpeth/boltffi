@@ -837,7 +837,7 @@ impl<'a> JniLowerer<'a> {
     ) -> String {
         if matches!(ty, TypeExpr::String) {
             return format!(
-                "(const uint8_t*)_{}_c, {} ? strlen(_{}_c) : 0",
+                "(const uint8_t*)_{}_c, (_{}_c != NULL) ? strlen(_{}_c) : 0",
                 name, name, name
             );
         }
@@ -1346,6 +1346,12 @@ impl<'a> JniLowerer<'a> {
             .flat_map(|param| param.setup_lines.iter().cloned())
             .collect();
 
+        let cleanup_lines = lowered_params
+            .iter()
+            .rev()
+            .flat_map(|param| param.cleanup_lines.iter().cloned())
+            .collect();
+
         let jni_args = lowered_params
             .iter()
             .map(|param| param.jni_arg.clone())
@@ -1359,6 +1365,7 @@ impl<'a> JniLowerer<'a> {
             jni_signature: self.build_callback_jni_signature(&method.params, &method.returns),
             c_params,
             setup_lines,
+            cleanup_lines,
             jni_args,
             return_info,
         }
@@ -1396,6 +1403,12 @@ impl<'a> JniLowerer<'a> {
             .flat_map(|param| param.setup_lines.iter().cloned())
             .collect();
 
+        let cleanup_lines = lowered_params
+            .iter()
+            .rev()
+            .flat_map(|param| param.cleanup_lines.iter().cloned())
+            .collect();
+
         let jni_args = lowered_params
             .iter()
             .map(|param| param.jni_arg.clone())
@@ -1408,6 +1421,7 @@ impl<'a> JniLowerer<'a> {
             jni_signature: self.build_async_callback_jni_signature(&method.params),
             c_params,
             setup_lines,
+            cleanup_lines,
             jni_args,
             return_c_type,
             invoker_jni_name: format!(
@@ -1546,6 +1560,7 @@ impl<'a> JniLowerer<'a> {
                 c_type,
             }],
             setup_lines: Vec::new(),
+            cleanup_lines: Vec::new(),
             jni_arg,
         }
     }
@@ -1576,6 +1591,9 @@ impl<'a> JniLowerer<'a> {
                 },
             ],
             setup_lines,
+            cleanup_lines: vec![format!(
+                "if ({buf_name} != NULL) (*env)->DeleteLocalRef(env, {buf_name});"
+            )],
             jni_arg: buf_name,
         }
     }
@@ -1591,26 +1609,28 @@ impl<'a> JniLowerer<'a> {
 
         let setup_lines = if is_async {
             vec![
+                format!("jobject {buf_name} = NULL;"),
                 format!(
-                    "if ({ptr_name} == NULL) {{ if (attached) (*g_jvm)->DetachCurrentThread(g_jvm); return; }}"
+                    "if ({ptr_name} == NULL) {{ goto cleanup; }}"
                 ),
                 format!(
-                    "jobject {buf_name} = (*env)->NewDirectByteBuffer(env, (void*){ptr_name}, (jlong){len_name});"
+                    "{buf_name} = (*env)->NewDirectByteBuffer(env, (void*){ptr_name}, (jlong){len_name});"
                 ),
                 format!(
-                    "if ({buf_name} == NULL) {{ if (attached) (*g_jvm)->DetachCurrentThread(g_jvm); return; }}"
+                    "if ({buf_name} == NULL) {{ goto cleanup; }}"
                 ),
             ]
         } else {
             vec![
+                format!("jobject {buf_name} = NULL;"),
                 format!(
-                    "if ({ptr_name} == NULL) {{ status->code = 1; if (attached) (*g_jvm)->DetachCurrentThread(g_jvm); return; }}"
+                    "if ({ptr_name} == NULL) {{ status->code = 1; goto cleanup; }}"
                 ),
                 format!(
-                    "jobject {buf_name} = (*env)->NewDirectByteBuffer(env, (void*){ptr_name}, (jlong){len_name});"
+                    "{buf_name} = (*env)->NewDirectByteBuffer(env, (void*){ptr_name}, (jlong){len_name});"
                 ),
                 format!(
-                    "if ({buf_name} == NULL) {{ status->code = 1; if (attached) (*g_jvm)->DetachCurrentThread(g_jvm); return; }}"
+                    "if ({buf_name} == NULL) {{ status->code = 1; goto cleanup; }}"
                 ),
             ]
         };
@@ -1627,6 +1647,9 @@ impl<'a> JniLowerer<'a> {
                 },
             ],
             setup_lines,
+            cleanup_lines: vec![format!(
+                "if ({buf_name} != NULL) (*env)->DeleteLocalRef(env, {buf_name});"
+            )],
             jni_arg: buf_name,
         }
     }
@@ -1677,6 +1700,7 @@ impl<'a> JniLowerer<'a> {
                 c_type,
             }],
             setup_lines: Vec::new(),
+            cleanup_lines: Vec::new(),
             jni_arg,
         }
     }
@@ -1692,26 +1716,28 @@ impl<'a> JniLowerer<'a> {
 
         let setup_lines = if is_async {
             vec![
+                format!("jobject {buf_name} = NULL;"),
                 format!(
-                    "if ({ptr_name} == NULL) {{ if (attached) (*g_jvm)->DetachCurrentThread(g_jvm); return; }}"
+                    "if ({ptr_name} == NULL) {{ goto cleanup; }}"
                 ),
                 format!(
-                    "jobject {buf_name} = (*env)->NewDirectByteBuffer(env, (void*){ptr_name}, (jlong){len_name});"
+                    "{buf_name} = (*env)->NewDirectByteBuffer(env, (void*){ptr_name}, (jlong){len_name});"
                 ),
                 format!(
-                    "if ({buf_name} == NULL) {{ if (attached) (*g_jvm)->DetachCurrentThread(g_jvm); return; }}"
+                    "if ({buf_name} == NULL) {{ goto cleanup; }}"
                 ),
             ]
         } else {
             vec![
+                format!("jobject {buf_name} = NULL;"),
                 format!(
-                    "if ({ptr_name} == NULL) {{ status->code = 1; if (attached) (*g_jvm)->DetachCurrentThread(g_jvm); return; }}"
+                    "if ({ptr_name} == NULL) {{ status->code = 1; goto cleanup; }}"
                 ),
                 format!(
-                    "jobject {buf_name} = (*env)->NewDirectByteBuffer(env, (void*){ptr_name}, (jlong){len_name});"
+                    "{buf_name} = (*env)->NewDirectByteBuffer(env, (void*){ptr_name}, (jlong){len_name});"
                 ),
                 format!(
-                    "if ({buf_name} == NULL) {{ status->code = 1; if (attached) (*g_jvm)->DetachCurrentThread(g_jvm); return; }}"
+                    "if ({buf_name} == NULL) {{ status->code = 1; goto cleanup; }}"
                 ),
             ]
         };
@@ -1728,6 +1754,9 @@ impl<'a> JniLowerer<'a> {
                 },
             ],
             setup_lines,
+            cleanup_lines: vec![format!(
+                "if ({buf_name} != NULL) (*env)->DeleteLocalRef(env, {buf_name});"
+            )],
             jni_arg: buf_name,
         }
     }
@@ -2070,6 +2099,7 @@ struct DataEnumParamInfo {
 struct LoweredCallbackParam {
     c_params: Vec<JniCallbackCParam>,
     setup_lines: Vec<String>,
+    cleanup_lines: Vec<String>,
     jni_arg: String,
 }
 

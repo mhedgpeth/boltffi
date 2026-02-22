@@ -10,6 +10,53 @@ static inline void boltffi_free_buf(uint8_t* ptr, size_t len) {
     {{ prefix }}_free_buf_u8(buf);
 }
 
+static inline jbyteArray boltffi_buf_to_jbytearray(JNIEnv* env, FfiBuf_u8 buf) {
+    if (buf.ptr == NULL) return NULL;
+    jbyteArray arr = (*env)->NewByteArray(env, (jint)buf.len);
+    if (arr == NULL) {
+        boltffi_free_buf(buf.ptr, buf.len);
+        return NULL;
+    }
+    (*env)->SetByteArrayRegion(env, arr, 0, (jint)buf.len, (const jbyte*)buf.ptr);
+    boltffi_free_buf(buf.ptr, buf.len);
+    return arr;
+}
+
+static inline jbyteArray boltffi_status_buf_to_jbytearray(JNIEnv* env, FfiStatus status, FfiBuf_u8 buf) {
+    if (status.code != 0) {
+        if (buf.ptr != NULL) {
+            boltffi_free_buf(buf.ptr, buf.len);
+        }
+        return NULL;
+    }
+    return boltffi_buf_to_jbytearray(env, buf);
+}
+
+static inline jobject boltffi_buf_to_direct_bytebuffer(JNIEnv* env, FfiBuf_u8 buf) {
+    if (buf.ptr == NULL) return NULL;
+    jobject result = (*env)->NewDirectByteBuffer(env, (void*)buf.ptr, (jlong)buf.len);
+    if (result == NULL) {
+        boltffi_free_buf(buf.ptr, buf.len);
+        return NULL;
+    }
+    return result;
+}
+
+static inline bool boltffi_lookup_static_method(
+    JNIEnv* env,
+    jclass cls,
+    const char* name,
+    const char* signature,
+    jmethodID* out_method
+) {
+    *out_method = (*env)->GetStaticMethodID(env, cls, name, signature);
+    if (*out_method != NULL) return true;
+    if ((*env)->ExceptionCheck(env)) {
+        (*env)->ExceptionClear(env);
+    }
+    return false;
+}
+
 {%- if has_async %}
 static JavaVM* g_jvm = NULL;
 static jclass g_callback_class = NULL;
@@ -23,7 +70,7 @@ static jint boltffi_attach_current_thread(JavaVM* vm, JNIEnv** env) {
 }
 
 {%- for cb in callback_traits %}
-static void init_{{ cb.trait_name }}_callbacks(JNIEnv* env);
+static bool init_{{ cb.trait_name }}_callbacks(JNIEnv* env);
 {%- endfor %}
 
 JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM* vm, void* reserved) {
@@ -37,12 +84,15 @@ JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM* vm, void* reserved) {
         return JNI_ERR;
     }
     g_callback_class = (*env)->NewGlobalRef(env, local_class);
+    (*env)->DeleteLocalRef(env, local_class);
     g_callback_method = (*env)->GetStaticMethodID(env, g_callback_class, "boltffiFutureContinuationCallback", "(JB)V");
     if (g_callback_method == NULL) {
         return JNI_ERR;
     }
 {%- for cb in callback_traits %}
-    init_{{ cb.trait_name }}_callbacks(env);
+    if (!init_{{ cb.trait_name }}_callbacks(env)) {
+        return JNI_ERR;
+    }
 {%- endfor %}
     return JNI_VERSION_1_6;
 }
@@ -97,6 +147,9 @@ static {{ trampoline.c_return_type() }} {{ trampoline.trampoline_name }}(void* u
     if (g_{{ trampoline.signature_id }}_class == NULL) {
         jclass local_class = (*env)->FindClass(env, "{{ trampoline.callbacks_class_jni_path }}");
         if (local_class == NULL) {
+{%- for rp in trampoline.record_params %}
+            if (buf_p{{ rp.index }} != NULL) (*env)->DeleteLocalRef(env, buf_p{{ rp.index }});
+{%- endfor %}
             if (attached) (*g_jvm)->DetachCurrentThread(g_jvm);
 {%- if trampoline.is_void() %}
             return;
@@ -105,10 +158,25 @@ static {{ trampoline.c_return_type() }} {{ trampoline.trampoline_name }}(void* u
 {%- endif %}
         }
         g_{{ trampoline.signature_id }}_class = (*env)->NewGlobalRef(env, local_class);
+        (*env)->DeleteLocalRef(env, local_class);
         g_{{ trampoline.signature_id }}_call = (*env)->GetStaticMethodID(env, g_{{ trampoline.signature_id }}_class, "call", "(J{{ trampoline.jni_params_signature }}){{ trampoline.jni_return_signature() }}");
+        if (g_{{ trampoline.signature_id }}_call == NULL) {
+{%- for rp in trampoline.record_params %}
+            if (buf_p{{ rp.index }} != NULL) (*env)->DeleteLocalRef(env, buf_p{{ rp.index }});
+{%- endfor %}
+            if (attached) (*g_jvm)->DetachCurrentThread(g_jvm);
+{%- if trampoline.is_void() %}
+            return;
+{%- else %}
+            {{ trampoline.c_return_type() }} zero = {0}; return zero;
+{%- endif %}
+        }
     }
 {%- if trampoline.is_void() %}
     (*env)->CallStaticVoidMethod(env, g_{{ trampoline.signature_id }}_class, g_{{ trampoline.signature_id }}_call, handle{% if !trampoline.jni_call_args.is_empty() %}, {{ trampoline.jni_call_args }}{% endif %});
+{%- for rp in trampoline.record_params %}
+    if (buf_p{{ rp.index }} != NULL) (*env)->DeleteLocalRef(env, buf_p{{ rp.index }});
+{%- endfor %}
     if (attached) {
         (*g_jvm)->DetachCurrentThread(g_jvm);
     }
@@ -125,7 +193,11 @@ static {{ trampoline.c_return_type() }} {{ trampoline.trampoline_name }}(void* u
             _result.len = (size_t)_len;
             _result.cap = (size_t)_len;
         }
+        (*env)->DeleteLocalRef(env, _jarr);
     }
+{%- for rp in trampoline.record_params %}
+    if (buf_p{{ rp.index }} != NULL) (*env)->DeleteLocalRef(env, buf_p{{ rp.index }});
+{%- endfor %}
     if (attached) {
         (*g_jvm)->DetachCurrentThread(g_jvm);
     }
@@ -133,12 +205,18 @@ static {{ trampoline.c_return_type() }} {{ trampoline.trampoline_name }}(void* u
 {%- elif trampoline.is_callback_handle_return() %}
     jlong _handle_val = (*env)->CallStaticLongMethod(env, g_{{ trampoline.signature_id }}_class, g_{{ trampoline.signature_id }}_call, handle{% if !trampoline.jni_call_args.is_empty() %}, {{ trampoline.jni_call_args }}{% endif %});
     BoltFFICallbackHandle _result = {{ trampoline.callback_create_fn() }}((uint64_t)_handle_val);
+{%- for rp in trampoline.record_params %}
+    if (buf_p{{ rp.index }} != NULL) (*env)->DeleteLocalRef(env, buf_p{{ rp.index }});
+{%- endfor %}
     if (attached) {
         (*g_jvm)->DetachCurrentThread(g_jvm);
     }
     return _result;
 {%- else %}
     {{ trampoline.c_return_type() }} _result = {{ trampoline.jni_return_cast() }}(*env)->{{ trampoline.jni_call_method() }}(env, g_{{ trampoline.signature_id }}_class, g_{{ trampoline.signature_id }}_call, handle{% if !trampoline.jni_call_args.is_empty() %}, {{ trampoline.jni_call_args }}{% endif %});
+{%- for rp in trampoline.record_params %}
+    if (buf_p{{ rp.index }} != NULL) (*env)->DeleteLocalRef(env, buf_p{{ rp.index }});
+{%- endfor %}
     if (attached) {
         (*g_jvm)->DetachCurrentThread(g_jvm);
     }
@@ -217,6 +295,7 @@ JNIEXPORT jlong JNICALL {{ func.jni_create_name }}(JNIEnv *env, jclass cls, jlon
 {%- if param.is_primitive_array() %}
     uintptr_t _{{ param.name }}_len = (uintptr_t)(*env)->GetArrayLength(env, {{ param.name }});
     {{ param.array_c_type() }}* _{{ param.name }}_ptr = ({{ param.array_c_type() }}*)(*env)->GetPrimitiveArrayCritical(env, {{ param.name }}, NULL);
+    if (_{{ param.name }}_ptr == NULL) _{{ param.name }}_len = 0;
 {%- endif %}
 {%- if param.is_buffer() %}
     jlong _{{ param.name }}_size = (*env)->GetDirectBufferCapacity(env, {{ param.name }});
@@ -227,10 +306,10 @@ JNIEXPORT jlong JNICALL {{ func.jni_create_name }}(JNIEnv *env, jclass cls, jlon
     RustFutureHandle _handle = {{ func.ffi_name }}((void*)handle{% for param in func.params %}, {{ param.ffi_arg() }}{% endfor %});
 {%- for param in func.params %}
 {%- if param.is_primitive_array() %}
-    (*env)->ReleasePrimitiveArrayCritical(env, {{ param.name }}, _{{ param.name }}_ptr, {{ param.array_release_mode() }});
+    if (_{{ param.name }}_ptr != NULL) (*env)->ReleasePrimitiveArrayCritical(env, {{ param.name }}, _{{ param.name }}_ptr, {{ param.array_release_mode() }});
 {%- endif %}
 {%- if param.is_string() %}
-    if ({{ param.name }}) (*env)->ReleaseStringUTFChars(env, {{ param.name }}, _{{ param.name }}_c);
+    if (_{{ param.name }}_c) (*env)->ReleaseStringUTFChars(env, {{ param.name }}, _{{ param.name }}_c);
 {%- endif %}
 {%- endfor %}
     return (jlong)_handle;
@@ -247,11 +326,7 @@ JNIEXPORT {{ func.complete_kind.jni_return() }} JNICALL {{ func.jni_complete_nam
 {%- elif func.complete_kind.is_wire_encoded() %}
     FfiStatus _status;
     FfiBuf_u8 _buf = {{ func.ffi_complete }}((RustFutureHandle)future, &_status);
-    if (_status.code != 0 || _buf.ptr == NULL) return NULL;
-    jbyteArray _arr = (*env)->NewByteArray(env, (jint)_buf.len);
-    (*env)->SetByteArrayRegion(env, _arr, 0, (jint)_buf.len, (const jbyte*)_buf.ptr);
-    boltffi_free_buf(_buf.ptr, _buf.len);
-    return _arr;
+    return boltffi_status_buf_to_jbytearray(env, _status, _buf);
 {%- else %}
     FfiStatus _status;
     {{ func.complete_kind.c_type() }} _result = {{ func.ffi_complete }}((RustFutureHandle)future, &_status);
@@ -283,14 +358,11 @@ JNIEXPORT void JNICALL {{ stream.poll_jni }}(JNIEnv *env, jclass cls, jlong subs
 JNIEXPORT jbyteArray JNICALL {{ stream.pop_batch_jni }}(JNIEnv *env, jclass cls, jlong subscription_handle, jlong max_count) {
     if (subscription_handle == 0) return NULL;
     FfiBuf_u8 _buf = {{ stream.pop_batch_ffi }}((SubscriptionHandle)subscription_handle, (uintptr_t)max_count);
-    if (_buf.ptr == NULL || _buf.len == 0) {
+    if (_buf.len == 0) {
         if (_buf.ptr != NULL) boltffi_free_buf(_buf.ptr, _buf.len);
         return NULL;
     }
-    jbyteArray _arr = (*env)->NewByteArray(env, (jint)_buf.len);
-    (*env)->SetByteArrayRegion(env, _arr, 0, (jint)_buf.len, (const jbyte*)_buf.ptr);
-    boltffi_free_buf(_buf.ptr, _buf.len);
-    return _arr;
+    return boltffi_buf_to_jbytearray(env, _buf);
 }
 
 JNIEXPORT jint JNICALL {{ stream.wait_jni }}(JNIEnv *env, jclass cls, jlong subscription_handle, jint timeout) {
@@ -321,6 +393,7 @@ JNIEXPORT jlong JNICALL {{ func.jni_create_name }}(JNIEnv *env, jclass cls{{ fun
 {%- if param.is_primitive_array() %}
     uintptr_t _{{ param.name }}_len = (uintptr_t)(*env)->GetArrayLength(env, {{ param.name }});
     {{ param.array_c_type() }}* _{{ param.name }}_ptr = ({{ param.array_c_type() }}*)(*env)->GetPrimitiveArrayCritical(env, {{ param.name }}, NULL);
+    if (_{{ param.name }}_ptr == NULL) _{{ param.name }}_len = 0;
 {%- endif %}
 {%- if param.is_buffer() %}
     jlong _{{ param.name }}_size = (*env)->GetDirectBufferCapacity(env, {{ param.name }});
@@ -331,10 +404,10 @@ JNIEXPORT jlong JNICALL {{ func.jni_create_name }}(JNIEnv *env, jclass cls{{ fun
     RustFutureHandle _handle = {{ func.ffi_name }}({% for param in func.params %}{{ param.ffi_arg() }}{% if !loop.last %}, {% endif %}{% endfor %});
 {%- for param in func.params %}
 {%- if param.is_primitive_array() %}
-    (*env)->ReleasePrimitiveArrayCritical(env, {{ param.name }}, _{{ param.name }}_ptr, {{ param.array_release_mode() }});
+    if (_{{ param.name }}_ptr != NULL) (*env)->ReleasePrimitiveArrayCritical(env, {{ param.name }}, _{{ param.name }}_ptr, {{ param.array_release_mode() }});
 {%- endif %}
 {%- if param.is_string() %}
-    if ({{ param.name }}) (*env)->ReleaseStringUTFChars(env, {{ param.name }}, _{{ param.name }}_c);
+    if (_{{ param.name }}_c) (*env)->ReleaseStringUTFChars(env, {{ param.name }}, _{{ param.name }}_c);
 {%- endif %}
 {%- endfor %}
     return (jlong)_handle;
@@ -351,11 +424,7 @@ JNIEXPORT {{ func.complete_kind.jni_return() }} JNICALL {{ func.jni_complete_nam
 {%- elif func.complete_kind.is_wire_encoded() %}
     FfiStatus _status;
     FfiBuf_u8 _buf = {{ func.ffi_complete }}((RustFutureHandle)future, &_status);
-    if (_status.code != 0 || _buf.ptr == NULL) return NULL;
-    jbyteArray _arr = (*env)->NewByteArray(env, (jint)_buf.len);
-    (*env)->SetByteArrayRegion(env, _arr, 0, (jint)_buf.len, (const jbyte*)_buf.ptr);
-    boltffi_free_buf(_buf.ptr, _buf.len);
-    return _arr;
+    return boltffi_status_buf_to_jbytearray(env, _status, _buf);
 {%- else %}
     FfiStatus _status;
     {{ func.complete_kind.c_type() }} _result = {{ func.ffi_complete }}((RustFutureHandle)future, &_status);
@@ -435,6 +504,10 @@ static void {{ cb.trait_name }}_vtable_{{ method.ffi_name }}(uint64_t handle{% f
     (*env)->CallStaticVoidMethod(env, g_{{ cb.trait_name }}_callbacks_class, g_{{ cb.trait_name }}_{{ method.ffi_name }}_method, (jlong)handle{% for arg in method.jni_args %}, {{ arg }}{% endfor %});
 {%- endif %}
     status->code = 0;
+cleanup:
+{%- for line in method.cleanup_lines %}
+    {{ line }}
+{%- endfor %}
     if (attached) (*g_jvm)->DetachCurrentThread(g_jvm);
 }
 {%- endfor %}
@@ -452,6 +525,10 @@ static void {{ cb.trait_name }}_vtable_{{ method.ffi_name }}(uint64_t handle{% f
     {{ line }}
 {%- endfor %}
     (*env)->CallStaticVoidMethod(env, g_{{ cb.trait_name }}_callbacks_class, g_{{ cb.trait_name }}_{{ method.ffi_name }}_method, (jlong)handle{% for arg in method.jni_args %}, {{ arg }}{% endfor %}, (jlong)callback, (jlong)callback_data);
+cleanup:
+{%- for line in method.cleanup_lines %}
+    {{ line }}
+{%- endfor %}
     if (attached) (*g_jvm)->DetachCurrentThread(g_jvm);
 }
 {%- endfor %}
@@ -467,22 +544,34 @@ static {{ cb.vtable_type }} g_{{ cb.trait_name }}_vtable = {
 {%- endfor %}
 };
 
-static void init_{{ cb.trait_name }}_callbacks(JNIEnv* env) {
+static bool init_{{ cb.trait_name }}_callbacks(JNIEnv* env) {
     jclass local_class = (*env)->FindClass(env, "{{ cb.callbacks_class }}");
     if (local_class == NULL) {
         (*env)->ExceptionClear(env);
-        return;
+        return false;
     }
     g_{{ cb.trait_name }}_callbacks_class = (*env)->NewGlobalRef(env, local_class);
-    g_{{ cb.trait_name }}_free_method = (*env)->GetStaticMethodID(env, g_{{ cb.trait_name }}_callbacks_class, "free", "(J)V");
-    g_{{ cb.trait_name }}_clone_method = (*env)->GetStaticMethodID(env, g_{{ cb.trait_name }}_callbacks_class, "clone", "(J)J");
+    (*env)->DeleteLocalRef(env, local_class);
+    if (g_{{ cb.trait_name }}_callbacks_class == NULL) {
+        if ((*env)->ExceptionCheck(env)) {
+            (*env)->ExceptionClear(env);
+        }
+        return false;
+    }
+    if (!boltffi_lookup_static_method(env, g_{{ cb.trait_name }}_callbacks_class, "free", "(J)V", &g_{{ cb.trait_name }}_free_method)) goto fail;
+    if (!boltffi_lookup_static_method(env, g_{{ cb.trait_name }}_callbacks_class, "clone", "(J)J", &g_{{ cb.trait_name }}_clone_method)) goto fail;
 {%- for method in cb.sync_methods %}
-    g_{{ cb.trait_name }}_{{ method.ffi_name }}_method = (*env)->GetStaticMethodID(env, g_{{ cb.trait_name }}_callbacks_class, "{{ method.jni_method_name }}", "{{ method.jni_signature }}");
+    if (!boltffi_lookup_static_method(env, g_{{ cb.trait_name }}_callbacks_class, "{{ method.jni_method_name }}", "{{ method.jni_signature }}", &g_{{ cb.trait_name }}_{{ method.ffi_name }}_method)) goto fail;
 {%- endfor %}
 {%- for method in cb.async_methods %}
-    g_{{ cb.trait_name }}_{{ method.ffi_name }}_method = (*env)->GetStaticMethodID(env, g_{{ cb.trait_name }}_callbacks_class, "{{ method.jni_method_name }}", "{{ method.jni_signature }}");
+    if (!boltffi_lookup_static_method(env, g_{{ cb.trait_name }}_callbacks_class, "{{ method.jni_method_name }}", "{{ method.jni_signature }}", &g_{{ cb.trait_name }}_{{ method.ffi_name }}_method)) goto fail;
 {%- endfor %}
     {{ cb.register_fn }}(&g_{{ cb.trait_name }}_vtable);
+    return true;
+fail:
+    (*env)->DeleteGlobalRef(env, g_{{ cb.trait_name }}_callbacks_class);
+    g_{{ cb.trait_name }}_callbacks_class = NULL;
+    return false;
 }
 {%- endfor %}
 
@@ -497,6 +586,10 @@ JNIEXPORT void JNICALL {{ invoker.jni_fn_name }}(JNIEnv* env, jclass cls, jlong 
     }
     jsize _len = (*env)->GetArrayLength(env, result);
     jbyte* _ptr = (*env)->GetByteArrayElements(env, result, NULL);
+    if (_ptr == NULL) {
+        callback((uint64_t)callback_data, NULL, 0, (FfiStatus){.code = 1});
+        return;
+    }
     callback((uint64_t)callback_data, (const uint8_t*)_ptr, (size_t)_len, (FfiStatus){.code = 0});
     (*env)->ReleaseByteArrayElements(env, result, _ptr, JNI_ABORT);
 {%- elif invoker.has_result() %}

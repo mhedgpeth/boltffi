@@ -121,6 +121,7 @@ pub struct JniAsyncCallbackMethod {
     pub jni_signature: String,
     pub c_params: Vec<JniCallbackCParam>,
     pub setup_lines: Vec<String>,
+    pub cleanup_lines: Vec<String>,
     pub jni_args: Vec<String>,
     pub return_c_type: Option<String>,
     pub invoker_jni_name: String,
@@ -148,6 +149,7 @@ pub struct JniCallbackMethod {
     pub jni_signature: String,
     pub c_params: Vec<JniCallbackCParam>,
     pub setup_lines: Vec<String>,
+    pub cleanup_lines: Vec<String>,
     pub jni_args: Vec<String>,
     pub return_info: Option<JniCallbackReturn>,
 }

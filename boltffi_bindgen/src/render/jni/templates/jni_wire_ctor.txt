@@ -6,6 +6,7 @@ JNIEXPORT jlong JNICALL {{ jni_name }}(JNIEnv *env, jclass cls{{ jni_params }}) 
 {%- if param.is_primitive_array() %}
     uintptr_t _{{ param.name }}_len = (uintptr_t)(*env)->GetArrayLength(env, {{ param.name }});
     {{ param.array_c_type() }}* _{{ param.name }}_ptr = ({{ param.array_c_type() }}*)(*env)->GetPrimitiveArrayCritical(env, {{ param.name }}, NULL);
+    if (_{{ param.name }}_ptr == NULL) _{{ param.name }}_len = 0;
 {%- endif %}
 {%- if param.is_buffer() %}
     jlong _{{ param.name }}_size = (*env)->GetDirectBufferCapacity(env, {{ param.name }});
@@ -17,10 +18,10 @@ JNIEXPORT jlong JNICALL {{ jni_name }}(JNIEnv *env, jclass cls{{ jni_params }}) 
     void* _handle = {{ ffi_name }}({% for param in params %}{{ param.ffi_arg() }}{% if !loop.last %}, {% endif %}{% endfor %});
 {%- for param in params %}
 {%- if param.is_primitive_array() %}
-    (*env)->ReleasePrimitiveArrayCritical(env, {{ param.name }}, _{{ param.name }}_ptr, {{ param.array_release_mode() }});
+    if (_{{ param.name }}_ptr != NULL) (*env)->ReleasePrimitiveArrayCritical(env, {{ param.name }}, _{{ param.name }}_ptr, {{ param.array_release_mode() }});
 {%- endif %}
 {%- if param.is_string() %}
-    if ({{ param.name }}) (*env)->ReleaseStringUTFChars(env, {{ param.name }}, _{{ param.name }}_c);
+    if (_{{ param.name }}_c) (*env)->ReleaseStringUTFChars(env, {{ param.name }}, _{{ param.name }}_c);
 {%- endif %}
 
 {%- endfor %}
