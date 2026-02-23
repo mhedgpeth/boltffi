@@ -15,6 +15,7 @@ pub mod rustfuture;
 pub mod safety;
 pub mod status;
 pub mod subscription;
+pub mod passable;
 pub mod types;
 pub mod wasm;
 pub mod wire;
@@ -47,7 +48,8 @@ pub use subscription::{
     EventSubscription, StreamContinuationCallback, StreamPollResult, StreamProducer,
     SubscriptionHandle, WaitResult,
 };
-pub use types::{FfiBuf, FfiError, FfiOption, FfiSlice, FfiString};
+pub use passable::{Passable, WirePassable};
+pub use types::{FfiBuf, FfiError, FfiOption, FfiSlice, FfiSpan, FfiString};
 pub use wasm::WASM_ABI_VERSION;
 #[cfg(target_arch = "wasm32")]
 pub use wasm::WasmCallbackOutBuf;
