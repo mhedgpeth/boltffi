@@ -9,5 +9,4 @@ crate-type = ["staticlib", "cdylib"]
 [dependencies]
 boltffi = { path = "../../boltffi" }
 
-[build-dependencies]
-boltffi_bindgen = { path = "../../boltffi_bindgen" }
+

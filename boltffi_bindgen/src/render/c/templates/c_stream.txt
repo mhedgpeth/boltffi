@@ -1,0 +1,6 @@
+SubscriptionHandle {{ subscribe }}(const struct {{ class_name }} *handle);
+FfiBuf_u8 {{ pop_batch }}(SubscriptionHandle sub, uintptr_t max_count);
+int32_t {{ wait }}(SubscriptionHandle sub, uint32_t timeout_milliseconds);
+void {{ poll }}(SubscriptionHandle sub, uint64_t callback_data, StreamContinuationCallback callback);
+void {{ unsubscribe }}(SubscriptionHandle sub);
+void {{ free }}(SubscriptionHandle sub);

@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use boltffi_bindgen::render::typescript::{TypeScriptEmitter, TypeScriptLowerer};
 use boltffi_bindgen::{
-    CHeaderGenerator, FactoryStyle, KotlinOptions, TypeConversion as BindgenTypeConversion,
+    CHeaderLowerer, FactoryStyle, KotlinOptions, TypeConversion as BindgenTypeConversion,
     TypeMapping as BindgenTypeMapping, TypeMappings, ir, render, scan_crate,
 };
 
@@ -336,12 +336,14 @@ fn generate_header(config: &Config, output: Option<PathBuf>) -> Result<()> {
         .unwrap_or_else(|_| PathBuf::from("."));
     let crate_name = config.library_name();
 
-    let module = scan_crate(&crate_dir, crate_name).map_err(|e| CliError::CommandFailed {
+    let mut module = scan_crate(&crate_dir, crate_name).map_err(|e| CliError::CommandFailed {
         command: format!("scan_crate: {}", e),
         status: None,
     })?;
 
-    let header_code = CHeaderGenerator::generate(&module);
+    let contract = ir::build_contract(&mut module);
+    let abi = ir::Lowerer::new(&contract).to_abi_contract();
+    let header_code = CHeaderLowerer::new(&contract, &abi).generate();
 
     std::fs::write(&output_path, header_code).map_err(|source| CliError::WriteFailed {
         path: output_path.clone(),

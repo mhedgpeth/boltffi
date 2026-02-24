@@ -16,6 +16,7 @@
 //!
 //! All backends implement the [`Renderer`] trait.
 
+pub mod c;
 pub mod java;
 pub mod jni;
 pub mod kotlin;

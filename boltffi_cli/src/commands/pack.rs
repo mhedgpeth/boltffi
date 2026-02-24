@@ -459,8 +459,7 @@ fn pack_java(config: &Config, options: PackJavaOptions, reporter: &Reporter) -> 
 }
 
 fn generate_java_header(config: &Config) -> Result<()> {
-    use boltffi_bindgen::cheader::CHeaderGenerator;
-    use boltffi_bindgen::scan_crate;
+    use boltffi_bindgen::{CHeaderLowerer, ir, scan_crate};
 
     let output_dir = config.java_jvm_output().join("jni");
     let output_path = output_dir.join(format!("{}.h", config.library_name()));
@@ -475,12 +474,14 @@ fn generate_java_header(config: &Config) -> Result<()> {
         .unwrap_or_else(|_| PathBuf::from("."));
     let crate_name = config.library_name();
 
-    let module = scan_crate(&crate_dir, crate_name).map_err(|e| CliError::CommandFailed {
+    let mut module = scan_crate(&crate_dir, crate_name).map_err(|e| CliError::CommandFailed {
         command: format!("scan_crate: {}", e),
         status: None,
     })?;
 
-    let header_code = CHeaderGenerator::generate(&module);
+    let contract = ir::build_contract(&mut module);
+    let abi = ir::Lowerer::new(&contract).to_abi_contract();
+    let header_code = CHeaderLowerer::new(&contract, &abi).generate();
     std::fs::write(&output_path, header_code).map_err(|source| CliError::WriteFailed {
         path: output_path,
         source,
