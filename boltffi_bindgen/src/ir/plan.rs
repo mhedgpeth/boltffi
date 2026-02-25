@@ -1,8 +1,10 @@
 use boltffi_ffi_rules::naming::{GlobalSymbol, Name, VtableField};
 
 use crate::ir::codec::CodecPlan;
-use crate::ir::ids::{CallbackId, ClassId, FieldName, ParamName, RecordId};
+use crate::ir::ids::{CallbackId, ClassId, EnumId, FieldName, ParamName, RecordId};
 use crate::ir::types::PrimitiveType;
+
+pub type PointerType = PrimitiveType;
 
 #[derive(Debug, Clone)]
 pub struct CallPlan {
@@ -26,17 +28,7 @@ pub enum CallPlanKind {
 #[derive(Debug, Clone)]
 pub struct AsyncPlan {
     pub completion_callback: CompletionCallback,
-    pub result: AsyncResult,
-}
-
-#[derive(Debug, Clone)]
-pub enum AsyncResult {
-    Void,
-    Value(Transport),
-    Fallible {
-        ok: Transport,
-        err_codec: CodecPlan,
-    },
+    pub result: ReturnPlan,
 }
 
 #[derive(Debug, Clone)]
@@ -54,7 +46,7 @@ pub struct ParamPlan {
 
 #[derive(Debug, Clone)]
 pub enum Transport {
-    Scalar(PrimitiveType),
+    Scalar(ScalarOrigin),
     Composite(CompositeLayout),
     Span(SpanContent),
     Handle {
@@ -70,10 +62,25 @@ pub enum Transport {
 
 #[derive(Debug, Clone)]
 pub enum SpanContent {
-    Scalar(PrimitiveType),
+    Scalar(ScalarOrigin),
     Composite(CompositeLayout),
     Utf8,
     Encoded(CodecPlan),
+}
+
+#[derive(Debug, Clone)]
+pub enum ScalarOrigin {
+    Primitive(PrimitiveType),
+    CStyleEnum { tag_type: PrimitiveType, enum_id: EnumId },
+}
+
+impl ScalarOrigin {
+    pub fn primitive(&self) -> PrimitiveType {
+        match self {
+            Self::Primitive(p) => *p,
+            Self::CStyleEnum { tag_type, .. } => *tag_type,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -106,7 +113,7 @@ pub enum AbiType {
     USize,
     F32,
     F64,
-    Pointer,
+    Pointer(PointerType),
     InlineCallbackFn(Vec<AbiType>),
     Handle(ClassId),
     CallbackHandle,

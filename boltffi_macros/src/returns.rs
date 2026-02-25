@@ -162,7 +162,7 @@ fn result_rust_type(ok: syn::Type, err: syn::Type) -> syn::Type {
     syn::parse_quote!(Result<#ok, #err>)
 }
 
-fn type_is_primitive(ty: &Type) -> bool {
+pub fn type_is_primitive(ty: &Type) -> bool {
     let type_str = quote!(#ty).to_string().replace(' ', "");
     is_primitive_type(&type_str)
 }

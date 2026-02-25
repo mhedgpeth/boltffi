@@ -26,9 +26,9 @@ use crate::ir::ops::{
     WriteOp, WriteSeq,
 };
 use crate::ir::plan::{
-    AbiType, AsyncPlan, AsyncResult, CallPlan, CallPlanKind, CallTarget, CallbackStyle,
+    AbiType, AsyncPlan, CallPlan, CallPlanKind, CallTarget, CallbackStyle,
     CompletionCallback, CompositeField, CompositeLayout, Mutability, ParamPlan, ReturnPlan,
-    SpanContent, Transport,
+    ScalarOrigin, SpanContent, Transport,
 };
 use crate::ir::types::{PrimitiveType, TypeExpr};
 
@@ -156,7 +156,7 @@ impl<'c> Lowerer<'c> {
             streams,
             records,
             enums,
-            free_buf: naming::free_buf_u8(),
+            free_buf: naming::free_buf(),
             atomic_cas: naming::atomic_u8_cas(),
         }
     }
@@ -207,7 +207,7 @@ impl<'c> Lowerer<'c> {
         let plan = self.lower_constructor(class, ctor);
         let symbol = self.call_symbol(&plan);
         let params = self.abi_params_from_plan(&plan.params);
-        let (returns, error) = self.sync_return_shape_and_error(match &plan.kind {
+        let (returns, error) = self.return_shape_and_error(match &plan.kind {
             CallPlanKind::Sync { returns } => returns,
             CallPlanKind::Async { .. } => panic!("constructors cannot be async"),
         });
@@ -396,14 +396,14 @@ impl<'c> Lowerer<'c> {
     ) -> (CallMode, ReturnShape, ErrorTransport) {
         match kind {
             CallPlanKind::Sync { returns } => {
-                let (ret, error) = self.sync_return_shape_and_error(returns);
+                let (ret, error) = self.return_shape_and_error(returns);
                 (CallMode::Sync, ret, error)
             }
             CallPlanKind::Async { async_plan } => {
                 let mode =
                     CallMode::Async(Box::new(self.async_call_for_function(func, async_plan)));
                 let ret = ReturnShape {
-                    transport: Some(Transport::Scalar(PrimitiveType::USize)),
+                    transport: Some(Transport::Scalar(ScalarOrigin::Primitive(PrimitiveType::USize))),
                     decode_ops: None,
                     encode_ops: None,
                 };
@@ -420,7 +420,7 @@ impl<'c> Lowerer<'c> {
     ) -> (CallMode, ReturnShape, ErrorTransport) {
         match kind {
             CallPlanKind::Sync { returns } => {
-                let (ret, error) = self.sync_return_shape_and_error(returns);
+                let (ret, error) = self.return_shape_and_error(returns);
                 (CallMode::Sync, ret, error)
             }
             CallPlanKind::Async { async_plan } => {
@@ -428,7 +428,7 @@ impl<'c> Lowerer<'c> {
                     self.async_call_for_method(class, method, async_plan),
                 ));
                 let ret = ReturnShape {
-                    transport: Some(Transport::Scalar(PrimitiveType::USize)),
+                    transport: Some(Transport::Scalar(ScalarOrigin::Primitive(PrimitiveType::USize))),
                     decode_ops: None,
                     encode_ops: None,
                 };
@@ -438,12 +438,13 @@ impl<'c> Lowerer<'c> {
     }
 
     fn async_call_for_function(&self, func: &FunctionDef, plan: &AsyncPlan) -> AsyncCall {
+        let (result, _) = self.return_shape_and_error(&plan.result);
         AsyncCall {
             poll: naming::function_ffi_poll(func.id.as_str()),
             complete: naming::function_ffi_complete(func.id.as_str()),
             cancel: naming::function_ffi_cancel(func.id.as_str()),
             free: naming::function_ffi_free(func.id.as_str()),
-            result: self.return_shape_from_async_result(&plan.result),
+            result,
             error: ErrorTransport::StatusCode,
         }
     }
@@ -454,35 +455,18 @@ impl<'c> Lowerer<'c> {
         method: &MethodDef,
         plan: &AsyncPlan,
     ) -> AsyncCall {
+        let (result, _) = self.return_shape_and_error(&plan.result);
         AsyncCall {
             poll: naming::method_ffi_poll(class.id.as_str(), method.id.as_str()),
             complete: naming::method_ffi_complete(class.id.as_str(), method.id.as_str()),
             cancel: naming::method_ffi_cancel(class.id.as_str(), method.id.as_str()),
             free: naming::method_ffi_free(class.id.as_str(), method.id.as_str()),
-            result: self.return_shape_from_async_result(&plan.result),
+            result,
             error: ErrorTransport::StatusCode,
         }
     }
 
-    fn return_shape_from_async_result(&self, result: &AsyncResult) -> ReturnShape {
-        match result {
-            AsyncResult::Void => ReturnShape::void(),
-            AsyncResult::Value(value) => self.return_shape_from_transport(value),
-            AsyncResult::Fallible { ok, err_codec } => {
-                let ok_codec = self.codec_from_transport(ok);
-                let result_codec = CodecPlan::Result {
-                    ok: Box::new(ok_codec),
-                    err: Box::new(err_codec.clone()),
-                };
-                let decode_ops = self.expand_decode(&result_codec);
-                let encode_ops = self.expand_encode(&result_codec, ValueExpr::Var("value".into()));
-                let wire_transport = Transport::Span(SpanContent::Encoded(result_codec));
-                return_shape_from_transport_with_ops(wire_transport, decode_ops, encode_ops)
-            }
-        }
-    }
-
-    fn sync_return_shape_and_error(&self, returns: &ReturnPlan) -> (ReturnShape, ErrorTransport) {
+    fn return_shape_and_error(&self, returns: &ReturnPlan) -> (ReturnShape, ErrorTransport) {
         match returns {
             ReturnPlan::Void => (ReturnShape::void(), ErrorTransport::None),
             ReturnPlan::Value(v) => (self.return_shape_from_transport(v), ErrorTransport::None),
@@ -511,8 +495,9 @@ impl<'c> Lowerer<'c> {
                 };
                 let decode_ops = self.expand_decode(&result_codec);
                 let encode_ops = self.expand_encode(&result_codec, ValueExpr::Var("value".into()));
+                let wire_transport = Transport::Span(SpanContent::Encoded(result_codec));
                 (
-                    return_shape_from_transport_with_ops(ok.clone(), decode_ops, encode_ops),
+                    return_shape_from_transport_with_ops(wire_transport, decode_ops, encode_ops),
                     ErrorTransport::Encoded {
                         decode_ops: self.expand_decode(err_codec),
                         encode_ops: None,
@@ -524,8 +509,8 @@ impl<'c> Lowerer<'c> {
 
     fn return_shape_from_transport(&self, value: &Transport) -> ReturnShape {
         match value {
-            Transport::Scalar(p) => ReturnShape {
-                transport: Some(Transport::Scalar(*p)),
+            Transport::Scalar(origin) => ReturnShape {
+                transport: Some(Transport::Scalar(origin.clone())),
                 decode_ops: None,
                 encode_ops: None,
             },
@@ -555,7 +540,7 @@ impl<'c> Lowerer<'c> {
 
     fn codec_from_transport(&self, value: &Transport) -> CodecPlan {
         match value {
-            Transport::Scalar(p) => CodecPlan::Primitive(*p),
+            Transport::Scalar(origin) => CodecPlan::Primitive(origin.primitive()),
             Transport::Composite(layout) => {
                 self.build_codec(&TypeExpr::Record(layout.record_id.clone()))
             }
@@ -568,10 +553,13 @@ impl<'c> Lowerer<'c> {
 
     fn codec_from_span_content(&self, content: &SpanContent) -> CodecPlan {
         match content {
-            SpanContent::Scalar(p) => CodecPlan::Vec {
-                element: Box::new(CodecPlan::Primitive(*p)),
-                layout: VecLayout::Blittable { element_size: p.wire_size_bytes() },
-            },
+            SpanContent::Scalar(origin) => {
+                let p = origin.primitive();
+                CodecPlan::Vec {
+                    element: Box::new(CodecPlan::Primitive(p)),
+                    layout: VecLayout::Blittable { element_size: p.wire_size_bytes() },
+                }
+            }
             SpanContent::Composite(layout) => {
                 let element_codec = self.build_codec(&TypeExpr::Record(layout.record_id.clone()));
                 CodecPlan::Vec {
@@ -600,7 +588,7 @@ impl<'c> Lowerer<'c> {
             AbiType::F32 => PrimitiveType::F32,
             AbiType::F64 => PrimitiveType::F64,
             AbiType::Void
-            | AbiType::Pointer
+            | AbiType::Pointer(_)
             | AbiType::InlineCallbackFn(_)
             | AbiType::Handle(_)
             | AbiType::CallbackHandle
@@ -969,10 +957,14 @@ impl<'c> Lowerer<'c> {
                                 decode_ops: Option<ReadSeq>,
                                 encode_ops: Option<WriteSeq>|
          -> Vec<AbiParam> {
+            let ptr_element = match &transport {
+                Transport::Span(SpanContent::Scalar(origin)) => origin.primitive(),
+                _ => PrimitiveType::U8,
+            };
             vec![
                 AbiParam {
                     name: param.name.clone(),
-                    abi_type: AbiType::Pointer,
+                    abi_type: AbiType::Pointer(ptr_element),
                     role: ParamRole::Input {
                         transport,
                         mutability,
@@ -992,9 +984,9 @@ impl<'c> Lowerer<'c> {
         };
 
         match &param.transport {
-            Transport::Scalar(p) => vec![AbiParam {
+            Transport::Scalar(origin) => vec![AbiParam {
                 name: param.name.clone(),
-                abi_type: AbiType::from(*p),
+                abi_type: AbiType::from(origin.primitive()),
                 role: ParamRole::Input {
                     transport: param.transport.clone(),
                     mutability: param.mutability,
@@ -1093,7 +1085,7 @@ impl<'c> Lowerer<'c> {
                     },
                     AbiParam {
                         name: ud_name,
-                        abi_type: AbiType::Pointer,
+                        abi_type: AbiType::Pointer(PrimitiveType::U8),
                         role: ParamRole::CallbackContext {
                             for_param: param.name.clone(),
                         },
@@ -1116,11 +1108,11 @@ impl<'c> Lowerer<'c> {
             for param in &method.params {
                 let transport = self.classify_type(&param.type_expr);
                 match &transport {
-                    Transport::Scalar(p) => {
-                        abi_params.push(AbiType::from(*p));
+                    Transport::Scalar(origin) => {
+                        abi_params.push(AbiType::from(origin.primitive()));
                     }
                     _ => {
-                        abi_params.push(AbiType::Pointer);
+                        abi_params.push(AbiType::Pointer(PrimitiveType::U8));
                         abi_params.push(AbiType::USize);
                     }
                 }
@@ -1157,7 +1149,6 @@ impl<'c> Lowerer<'c> {
                 (shape, ErrorTransport::None)
             }
             ReturnDef::Result { ok, err } => {
-                let ok_transport = self.classify_type(ok);
                 let ok_codec = self.build_codec(ok);
                 let err_codec = self.build_codec(err);
                 let result_codec = CodecPlan::Result {
@@ -1166,8 +1157,9 @@ impl<'c> Lowerer<'c> {
                 };
                 let decode_ops = self.expand_decode(&result_codec);
                 let encode_ops = self.expand_encode(&result_codec, ValueExpr::Var("result".into()));
+                let wire_transport = Transport::Span(SpanContent::Encoded(result_codec));
                 (
-                    return_shape_from_transport_with_ops(ok_transport, decode_ops, encode_ops),
+                    return_shape_from_transport_with_ops(wire_transport, decode_ops, encode_ops),
                     ErrorTransport::Encoded {
                         decode_ops: self.expand_decode(&err_codec),
                         encode_ops: Some(
@@ -1186,7 +1178,7 @@ impl<'c> Lowerer<'c> {
     ) -> impl Iterator<Item = AbiParam> + 'a {
         let handle_param = AbiParam {
             name: ParamName::new("handle"),
-            abi_type: AbiType::Pointer,
+            abi_type: AbiType::Pointer(PrimitiveType::U8),
             role: ParamRole::Input {
                 transport: Transport::Callback {
                     callback_id: callback.id.clone(),
@@ -1221,7 +1213,7 @@ impl<'c> Lowerer<'c> {
                 name: param.name,
                 abi_type: AbiType::from(p),
                 role: ParamRole::Input {
-                    transport: Transport::Scalar(p),
+                    transport: Transport::Scalar(ScalarOrigin::Primitive(p)),
                     mutability: Mutability::Shared,
                     len_param: None,
                     decode_ops: None,
@@ -1254,7 +1246,7 @@ impl<'c> Lowerer<'c> {
                 vec![
                     AbiParam {
                         name: param.name.clone(),
-                        abi_type: AbiType::Pointer,
+                        abi_type: AbiType::Pointer(PrimitiveType::U8),
                         role: ParamRole::Input {
                             transport: Transport::Span(SpanContent::Encoded(codec)),
                             mutability: Mutability::Shared,
@@ -1287,15 +1279,15 @@ impl<'c> Lowerer<'c> {
         let (ret, _) = self.callback_return_shape_and_error(returns);
 
         match &ret.transport {
-            Some(Transport::Scalar(p)) => vec![AbiParam {
+            Some(Transport::Scalar(origin)) => vec![AbiParam {
                 name: out_ptr_name,
-                abi_type: AbiType::from(*p),
+                abi_type: AbiType::from(origin.primitive()),
                 role: ParamRole::OutDirect,
             }],
             Some(Transport::Handle { .. } | Transport::Callback { .. }) | None => {
                 vec![AbiParam {
                     name: out_ptr_name,
-                    abi_type: AbiType::Pointer,
+                    abi_type: AbiType::Pointer(PrimitiveType::U8),
                     role: ParamRole::OutDirect,
                 }]
             }
@@ -1303,7 +1295,7 @@ impl<'c> Lowerer<'c> {
                 vec![
                     AbiParam {
                         name: out_ptr_name.clone(),
-                        abi_type: AbiType::Pointer,
+                        abi_type: AbiType::Pointer(PrimitiveType::U8),
                         role: ParamRole::OutDirect,
                     },
                     AbiParam {
@@ -1483,16 +1475,20 @@ impl<'c> Lowerer<'c> {
 
     fn classify_type(&self, type_expr: &TypeExpr) -> Transport {
         match type_expr {
-            TypeExpr::Primitive(p) => Transport::Scalar(*p),
+            TypeExpr::Primitive(p) => Transport::Scalar(ScalarOrigin::Primitive(*p)),
 
             TypeExpr::Enum(id) => self.classify_enum(id),
 
             TypeExpr::String => Transport::Span(SpanContent::Utf8),
 
-            TypeExpr::Bytes => Transport::Span(SpanContent::Scalar(PrimitiveType::U8)),
+            TypeExpr::Bytes => Transport::Span(SpanContent::Scalar(ScalarOrigin::Primitive(PrimitiveType::U8))),
 
             TypeExpr::Vec(inner) => match inner.as_ref() {
-                TypeExpr::Primitive(p) => Transport::Span(SpanContent::Scalar(*p)),
+                TypeExpr::Primitive(p) => Transport::Span(SpanContent::Scalar(ScalarOrigin::Primitive(*p))),
+                TypeExpr::Enum(id) => match self.classify_enum(id) {
+                    Transport::Scalar(origin) => Transport::Span(SpanContent::Scalar(origin)),
+                    _ => Transport::Span(SpanContent::Encoded(self.build_codec(type_expr))),
+                },
                 _ => Transport::Span(SpanContent::Encoded(self.build_codec(type_expr))),
             },
 
@@ -1528,7 +1524,7 @@ impl<'c> Lowerer<'c> {
                 Transport::Span(SpanContent::Encoded(self.build_codec(type_expr)))
             }
 
-            TypeExpr::Void => Transport::Scalar(PrimitiveType::U8),
+            TypeExpr::Void => Transport::Scalar(ScalarOrigin::Primitive(PrimitiveType::U8)),
         }
     }
 
@@ -1540,7 +1536,10 @@ impl<'c> Lowerer<'c> {
             .unwrap_or_else(|| panic!("unresolved enum: {}", id.as_str()));
 
         match &def.repr {
-            EnumRepr::CStyle { tag_type, .. } => Transport::Scalar(*tag_type),
+            EnumRepr::CStyle { tag_type, .. } => Transport::Scalar(ScalarOrigin::CStyleEnum {
+                tag_type: *tag_type,
+                enum_id: id.clone(),
+            }),
             EnumRepr::Data { .. } => {
                 Transport::Span(SpanContent::Encoded(self.build_codec(&TypeExpr::Enum(id.clone()))))
             }
@@ -1588,21 +1587,12 @@ impl<'c> Lowerer<'c> {
     }
 
     fn build_async_plan(&self, returns: &ReturnDef) -> AsyncPlan {
-        let result = match returns {
-            ReturnDef::Void => AsyncResult::Void,
-            ReturnDef::Value(ty) => AsyncResult::Value(self.classify_type(ty)),
-            ReturnDef::Result { ok, err } => AsyncResult::Fallible {
-                ok: self.classify_type(ok),
-                err_codec: self.build_codec(err),
-            },
-        };
-
         AsyncPlan {
             completion_callback: CompletionCallback {
                 param_name: ParamName::new("completion"),
-                abi_type: AbiType::Pointer,
+                abi_type: AbiType::Pointer(PrimitiveType::U8),
             },
-            result,
+            result: self.lower_return(returns),
         }
     }
 }
@@ -1957,7 +1947,7 @@ mod tests {
 
         assert!(matches!(
             strategy,
-            Transport::Scalar(PrimitiveType::I32)
+            Transport::Scalar(ScalarOrigin::Primitive(PrimitiveType::I32))
         ));
     }
 
@@ -1986,7 +1976,7 @@ mod tests {
 
         assert!(matches!(
             strategy,
-            Transport::Span(SpanContent::Scalar(PrimitiveType::F32))
+            Transport::Span(SpanContent::Scalar(ScalarOrigin::Primitive(PrimitiveType::F32)))
         ));
     }
 
@@ -2084,7 +2074,7 @@ mod tests {
 
         assert!(matches!(
             plan,
-            ReturnPlan::Value(Transport::Scalar(PrimitiveType::Bool))
+            ReturnPlan::Value(Transport::Scalar(ScalarOrigin::Primitive(PrimitiveType::Bool)))
         ));
     }
 
@@ -2571,7 +2561,7 @@ mod tests {
         });
 
         match async_plan.result {
-            AsyncResult::Fallible { ok, err_codec } => {
+            ReturnPlan::Fallible { ok, err_codec } => {
                 match ok {
                     Transport::Handle {
                         class_id: id,
@@ -2600,7 +2590,7 @@ mod tests {
 
         assert!(matches!(
             strategy,
-            Transport::Span(SpanContent::Scalar(PrimitiveType::U8))
+            Transport::Span(SpanContent::Scalar(ScalarOrigin::Primitive(PrimitiveType::U8)))
         ));
     }
 
@@ -2629,7 +2619,7 @@ mod tests {
 
         assert!(matches!(
             strategy,
-            Transport::Span(SpanContent::Scalar(PrimitiveType::U8))
+            Transport::Span(SpanContent::Scalar(ScalarOrigin::Primitive(PrimitiveType::U8)))
         ));
     }
 

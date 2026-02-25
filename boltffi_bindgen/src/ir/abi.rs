@@ -9,7 +9,9 @@ use crate::ir::ids::{
     VariantName,
 };
 use crate::ir::ops::{ReadSeq, WriteSeq};
-use crate::ir::plan::{AbiType, Mutability, Transport};
+use crate::ir::plan::{
+    AbiType, Mutability, Transport,
+};
 use crate::ir::types::TypeExpr;
 
 /// The resolved FFI boundary for the whole crate.
@@ -227,6 +229,7 @@ impl AbiParam {
 mod tests {
     use super::*;
     use crate::ir::ids::FunctionId;
+    use crate::ir::plan::ScalarOrigin;
     use crate::ir::types::PrimitiveType;
     use boltffi_ffi_rules::naming;
 
@@ -235,7 +238,7 @@ mod tests {
             name: ParamName::new(name),
             abi_type: abi,
             role: ParamRole::Input {
-                transport: Transport::Scalar(PrimitiveType::I32),
+                transport: Transport::Scalar(ScalarOrigin::Primitive(PrimitiveType::I32)),
                 mutability: Mutability::Shared,
                 len_param: None,
                 decode_ops: None,
@@ -249,7 +252,7 @@ mod tests {
         let param = scalar_param("v", AbiType::I32);
         assert!(matches!(
             param.transport(),
-            Some(Transport::Scalar(PrimitiveType::I32))
+            Some(Transport::Scalar(ScalarOrigin::Primitive(PrimitiveType::I32)))
         ));
     }
 
@@ -282,7 +285,7 @@ mod tests {
             mode: CallMode::Sync,
             params: vec![scalar_param("x", AbiType::I32)],
             returns: ReturnShape {
-                transport: Some(Transport::Scalar(PrimitiveType::I32)),
+                transport: Some(Transport::Scalar(ScalarOrigin::Primitive(PrimitiveType::I32))),
                 decode_ops: None,
                 encode_ops: None,
             },
@@ -290,7 +293,7 @@ mod tests {
         };
         assert!(matches!(
             call.returns.transport,
-            Some(Transport::Scalar(PrimitiveType::I32))
+            Some(Transport::Scalar(ScalarOrigin::Primitive(PrimitiveType::I32)))
         ));
     }
 }

@@ -7,7 +7,7 @@ use syn::ItemFn;
 use crate::callback_registry;
 use crate::custom_types;
 use crate::params::{FfiParams, transform_params, transform_params_async};
-use crate::returns::{ReturnAbi, classify_return, encoded_return_body, lower_return_abi};
+use crate::returns::{ReturnAbi, classify_return, encoded_return_body, extract_vec_inner, lower_return_abi, type_is_primitive};
 use crate::safety;
 
 fn build_encoded_return_exports(
@@ -317,26 +317,51 @@ pub fn ffi_export_impl(item: TokenStream) -> TokenStream {
                     let #result_ident: #inner_ty = #fn_name(#(#call_args),*);
                 };
 
-                let wasm_body = quote! {
-                    #call_and_bind
-                    let __buf = <::boltffi::__private::Seal as ::boltffi::__private::VecTransport<_>>::pack(#result_ident);
-                    let __byte_len = __buf.len() * core::mem::size_of::<<#inner_ty as IntoIterator>::Item>();
-                    ::boltffi::__private::write_return_slot(__buf.as_ptr() as u32, __byte_len as u32);
-                    core::mem::forget(__buf);
-                };
-
                 let native_body = quote! {
                     #call_and_bind
                     <::boltffi::__private::Seal as ::boltffi::__private::VecTransport<_>>::pack(#result_ident)
                 };
 
-                return build_void_wasm_return_exports(
+                let element_is_primitive = extract_vec_inner(&inner_ty)
+                    .map(|el| type_is_primitive(&el))
+                    .unwrap_or(false);
+
+                if element_is_primitive {
+                    let wasm_body = quote! {
+                        #call_and_bind
+                        let __buf = ::boltffi::__private::FfiBuf::from_vec(#result_ident);
+                        ::boltffi::__private::write_return_slot(__buf.as_ptr() as u32, __buf.len() as u32);
+                        core::mem::forget(__buf);
+                    };
+
+                    return build_void_wasm_return_exports(
+                        &input,
+                        fn_vis,
+                        &export_ident,
+                        &ffi_params,
+                        wasm_body,
+                        native_body,
+                    );
+                }
+
+                let encode_body = quote! {
+                    #call_and_bind
+                    #[cfg(target_arch = "wasm32")]
+                    {
+                        ::boltffi::__private::FfiBuf::wire_encode(&#result_ident)
+                    }
+                    #[cfg(not(target_arch = "wasm32"))]
+                    {
+                        <::boltffi::__private::Seal as ::boltffi::__private::VecTransport<_>>::pack(#result_ident)
+                    }
+                };
+
+                return build_encoded_return_exports(
                     &input,
                     fn_vis,
                     &export_ident,
                     &ffi_params,
-                    wasm_body,
-                    native_body,
+                    encode_body,
                 );
             }
 
