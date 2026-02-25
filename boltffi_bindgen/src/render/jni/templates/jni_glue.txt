@@ -7,9 +7,9 @@
 #include <stdatomic.h>
 #include "{{ module_name }}.h"
 
-static inline void boltffi_free_buf(uint8_t* ptr, size_t len) {
-    FfiBuf_u8 buf = { ptr, len, len };
-    {{ prefix }}_free_buf_u8(buf);
+static inline void boltffi_free_buf_raw(uint8_t* ptr, size_t len) {
+    FfiBuf_u8 buf = { ptr, len, len, 1 };
+    {{ prefix }}_free_buf(buf);
 }
 
 static inline bool boltffi_exception_pending(JNIEnv* env) {
@@ -52,18 +52,18 @@ static inline jbyteArray boltffi_buf_to_jbytearray(JNIEnv* env, FfiBuf_u8 buf) {
         return NULL;
     }
     if (buf.len > (size_t)INT32_MAX) {
-        boltffi_free_buf(buf.ptr, buf.len);
+        boltffi_free_buf_raw(buf.ptr, buf.len);
         boltffi_throw_out_of_memory(env, "BoltFFI buffer too large for Java byte array");
         return NULL;
     }
     jsize len = (jsize)buf.len;
     jbyteArray arr = (*env)->NewByteArray(env, len);
     if (arr == NULL) {
-        boltffi_free_buf(buf.ptr, buf.len);
+        boltffi_free_buf_raw(buf.ptr, buf.len);
         return NULL;
     }
     (*env)->SetByteArrayRegion(env, arr, 0, len, (const jbyte*)buf.ptr);
-    boltffi_free_buf(buf.ptr, buf.len);
+    boltffi_free_buf_raw(buf.ptr, buf.len);
     if (boltffi_exception_pending(env)) {
         (*env)->DeleteLocalRef(env, arr);
         return NULL;
@@ -74,7 +74,7 @@ static inline jbyteArray boltffi_buf_to_jbytearray(JNIEnv* env, FfiBuf_u8 buf) {
 static inline jbyteArray boltffi_status_buf_to_jbytearray(JNIEnv* env, FfiStatus status, FfiBuf_u8 buf) {
     if (status.code != 0) {
         if (buf.ptr != NULL) {
-            boltffi_free_buf(buf.ptr, buf.len);
+            boltffi_free_buf_raw(buf.ptr, buf.len);
         }
         return NULL;
     }
@@ -471,6 +471,17 @@ JNIEXPORT jlong JNICALL {{ func.jni_create_name }}(JNIEnv *env, jclass cls, jlon
     uint8_t* _{{ param.name }}_ptr = (uint8_t*)(*env)->GetDirectBufferAddress(env, {{ param.name }});
     uintptr_t _{{ param.name }}_len = (_{{ param.name }}_ptr && _{{ param.name }}_size > 0) ? (uintptr_t)_{{ param.name }}_size : 0;
 {%- endif %}
+{%- if param.is_composite() %}
+    jlong _{{ param.name }}_size = (*env)->GetDirectBufferCapacity(env, {{ param.name }});
+    uint8_t* _{{ param.name }}_ptr = (uint8_t*)(*env)->GetDirectBufferAddress(env, {{ param.name }});
+    {{ param.composite_c_type() }} _{{ param.name }}_val;
+    if (_{{ param.name }}_ptr && _{{ param.name }}_size >= (jlong)sizeof({{ param.composite_c_type() }})) {
+        memcpy(&_{{ param.name }}_val, _{{ param.name }}_ptr, sizeof({{ param.composite_c_type() }}));
+    } else {
+        memset(&_{{ param.name }}_val, 0, sizeof({{ param.composite_c_type() }}));
+        _boltffi_input_error = true;
+    }
+{%- endif %}
 {%- endfor %}
     RustFutureHandle _handle = 0;
     if (_boltffi_input_error) goto boltffi_input_cleanup;
@@ -537,7 +548,7 @@ JNIEXPORT jbyteArray JNICALL {{ stream.pop_batch_jni }}(JNIEnv *env, jclass cls,
     }
     FfiBuf_u8 _buf = {{ stream.pop_batch_ffi }}((SubscriptionHandle)subscription_handle, _max_count);
     if (_buf.len == 0) {
-        if (_buf.ptr != NULL) boltffi_free_buf(_buf.ptr, _buf.len);
+        if (_buf.ptr != NULL) boltffi_free_buf_raw(_buf.ptr, _buf.len);
         return (*env)->NewByteArray(env, 0);
     }
     return boltffi_buf_to_jbytearray(env, _buf);
@@ -579,6 +590,17 @@ JNIEXPORT jlong JNICALL {{ func.jni_create_name }}(JNIEnv *env, jclass cls{{ fun
     jlong _{{ param.name }}_size = (*env)->GetDirectBufferCapacity(env, {{ param.name }});
     uint8_t* _{{ param.name }}_ptr = (uint8_t*)(*env)->GetDirectBufferAddress(env, {{ param.name }});
     uintptr_t _{{ param.name }}_len = (_{{ param.name }}_ptr && _{{ param.name }}_size > 0) ? (uintptr_t)_{{ param.name }}_size : 0;
+{%- endif %}
+{%- if param.is_composite() %}
+    jlong _{{ param.name }}_size = (*env)->GetDirectBufferCapacity(env, {{ param.name }});
+    uint8_t* _{{ param.name }}_ptr = (uint8_t*)(*env)->GetDirectBufferAddress(env, {{ param.name }});
+    {{ param.composite_c_type() }} _{{ param.name }}_val;
+    if (_{{ param.name }}_ptr && _{{ param.name }}_size >= (jlong)sizeof({{ param.composite_c_type() }})) {
+        memcpy(&_{{ param.name }}_val, _{{ param.name }}_ptr, sizeof({{ param.composite_c_type() }}));
+    } else {
+        memset(&_{{ param.name }}_val, 0, sizeof({{ param.composite_c_type() }}));
+        _boltffi_input_error = true;
+    }
 {%- endif %}
 {%- endfor %}
     RustFutureHandle _handle = 0;

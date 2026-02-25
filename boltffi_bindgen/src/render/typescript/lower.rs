@@ -570,14 +570,11 @@ impl<'a> TypeScriptLowerer<'a> {
                 let return_kind = match &abi_method.returns {
                     ReturnShape { transport: None, .. } => TsCallbackReturnKind::Void,
                     ReturnShape {
-                        transport: Some(Transport::Scalar(_)),
+                        transport: Some(Transport::Scalar(origin)),
                         decode_ops: None,
                         ..
                     } => {
-                        let ts_type = match &method_def.returns {
-                            ReturnDef::Value(ty) => emit::ts_type(ty),
-                            _ => "number".to_string(),
-                        };
+                        let ts_type = ts_abi_type(&AbiType::from(origin.primitive()));
                         TsCallbackReturnKind::Primitive { ts_type }
                     }
                     ReturnShape {
@@ -604,13 +601,10 @@ impl<'a> TypeScriptLowerer<'a> {
                         ts_type: "number".to_string(),
                     },
                     ReturnShape {
-                        transport: Some(Transport::Scalar(_)),
+                        transport: Some(Transport::Scalar(origin)),
                         ..
                     } => {
-                        let ts_type = match &method_def.returns {
-                            ReturnDef::Value(ty) => emit::ts_type(ty),
-                            _ => "number".to_string(),
-                        };
+                        let ts_type = ts_abi_type(&AbiType::from(origin.primitive()));
                         TsCallbackReturnKind::Primitive { ts_type }
                     }
                     _ => TsCallbackReturnKind::Void,
@@ -696,7 +690,7 @@ impl<'a> TypeScriptLowerer<'a> {
                 ) = match &abi_method.returns {
                     ReturnShape { transport: None, .. } => (None, None, None, None, None, None),
                     ReturnShape {
-                        transport: Some(Transport::Scalar(prim)),
+                        transport: Some(Transport::Scalar(origin)),
                         encode_ops: None,
                         ..
                     } => {
@@ -704,7 +698,7 @@ impl<'a> TypeScriptLowerer<'a> {
                             ReturnDef::Value(ty) => emit::ts_type(ty),
                             _ => "number".to_string(),
                         };
-                        let abi = AbiType::from(*prim);
+                        let abi = AbiType::from(origin.primitive());
                         let direct_write = direct_write_info(&abi);
                         (
                             Some(ts_type),
@@ -887,11 +881,11 @@ impl<'a> TypeScriptLowerer<'a> {
         let name = camel_case(abi_param.name.as_str());
         match &abi_param.role {
             ParamRole::Input {
-                transport: Transport::Scalar(_),
+                transport: Transport::Scalar(origin),
                 ..
             } => TsParam {
                 name: emit::escape_ts_keyword(&name),
-                ts_type: ts_abi_type(&abi_param.abi_type),
+                ts_type: ts_abi_type(&AbiType::from(origin.primitive())),
                 input_route: TsInputRoute::Direct,
             },
             ParamRole::Input {
@@ -903,10 +897,10 @@ impl<'a> TypeScriptLowerer<'a> {
                 input_route: TsInputRoute::String,
             },
             ParamRole::Input {
-                transport: Transport::Span(SpanContent::Scalar(prim)),
+                transport: Transport::Span(SpanContent::Scalar(origin)),
                 ..
             } => {
-                let element_abi = AbiType::from(*prim);
+                let element_abi = AbiType::from(origin.primitive());
                 let (ts_type, input_route) = match &element_abi {
                     AbiType::U8 => ("Uint8Array".to_string(), TsInputRoute::Bytes),
                     _ => (
@@ -1025,10 +1019,10 @@ impl<'a> TypeScriptLowerer<'a> {
         match returns {
             ReturnShape { transport: None, .. } => (None, TsOutputRoute::void()),
             ReturnShape {
-                transport: Some(Transport::Scalar(prim)),
+                transport: Some(Transport::Scalar(origin)),
                 decode_ops: None,
                 ..
-            } => self.scalar_output_route(AbiType::from(*prim), execution_model),
+            } => self.scalar_output_route(AbiType::from(origin.primitive()), execution_model),
             ReturnShape {
                 transport: Some(Transport::Handle { class_id, nullable }),
                 ..
@@ -1040,6 +1034,19 @@ impl<'a> TypeScriptLowerer<'a> {
                 TsExecutionModel::Sync => (Some("unknown".to_string()), TsOutputRoute::void()),
                 TsExecutionModel::Async => (None, TsOutputRoute::void()),
             },
+            ReturnShape {
+                transport: Some(Transport::Span(SpanContent::Scalar(origin))),
+                decode_ops: None,
+                ..
+            } => self.direct_vec_output_route(origin.primitive(), execution_model),
+            ReturnShape {
+                transport: Some(Transport::Span(SpanContent::Composite(layout))),
+                decode_ops: None,
+                ..
+            } => {
+                let ts_type = naming::to_upper_camel_case(layout.record_id.as_str());
+                (Some(format!("{}[]", ts_type)), TsOutputRoute::void())
+            }
             ReturnShape {
                 decode_ops: Some(decode_ops),
                 ..
@@ -1095,6 +1102,29 @@ impl<'a> TypeScriptLowerer<'a> {
                 Some(ts_type),
                 TsOutputRoute::packed("reader.readU32()".to_string()),
             ),
+        }
+    }
+
+    fn direct_vec_output_route(
+        &self,
+        primitive: PrimitiveType,
+        execution_model: TsExecutionModel,
+    ) -> (Option<String>, TsOutputRoute) {
+        let slot_decode = match primitive {
+            PrimitiveType::U8 => Some("_module.takeSlotU8Array()"),
+            PrimitiveType::I8 => Some("_module.takeSlotI8Array()"),
+            PrimitiveType::I32 => Some("_module.takeSlotI32Array()"),
+            PrimitiveType::U32 => Some("_module.takeSlotU32Array()"),
+            PrimitiveType::F32 => Some("_module.takeSlotF32Array()"),
+            PrimitiveType::F64 => Some("_module.takeSlotF64Array()"),
+            _ => None,
+        };
+        let ts_type = primitive_buffer_ts_type(&AbiType::from(primitive));
+        match (execution_model, slot_decode) {
+            (TsExecutionModel::Sync, Some(decode)) =>
+                (Some(ts_type), TsOutputRoute::void_slot(decode.to_string())),
+            _ =>
+                (Some(ts_type), TsOutputRoute::void()),
         }
     }
 
@@ -1181,8 +1211,8 @@ impl<'a> TypeScriptLowerer<'a> {
                 None
             } else if return_route.is_direct() {
                 match &call.returns.transport {
-                    Some(Transport::Scalar(prim)) if call.returns.decode_ops.is_none() => {
-                        Some(abi_type_to_wasm(&AbiType::from(*prim)))
+                    Some(Transport::Scalar(origin)) if call.returns.decode_ops.is_none() => {
+                        Some(abi_type_to_wasm(&AbiType::from(origin.primitive())))
                     }
                     Some(Transport::Handle { .. }) => Some("number".to_string()),
                     _ => None,
@@ -1225,7 +1255,7 @@ fn ts_abi_type(abi_type: &AbiType) -> String {
         AbiType::I64 | AbiType::U64 => "bigint".to_string(),
         AbiType::ISize | AbiType::USize => "number".to_string(),
         AbiType::F32 | AbiType::F64 => "number".to_string(),
-        AbiType::Pointer | AbiType::InlineCallbackFn(_) | AbiType::Handle(_) | AbiType::CallbackHandle | AbiType::Struct(_) => "number".to_string(),
+        AbiType::Pointer(_) | AbiType::InlineCallbackFn(_) | AbiType::Handle(_) | AbiType::CallbackHandle | AbiType::Struct(_) => "number".to_string(),
     }
 }
 
@@ -1250,7 +1280,7 @@ fn scalar_async_decode_expr(abi_type: &AbiType) -> String {
         AbiType::USize => "reader.readUSize()".to_string(),
         AbiType::F32 => "reader.readF32()".to_string(),
         AbiType::F64 => "reader.readF64()".to_string(),
-        AbiType::Void | AbiType::Pointer | AbiType::InlineCallbackFn(_) | AbiType::Handle(_) | AbiType::CallbackHandle | AbiType::Struct(_) => "reader.readI32()".to_string(),
+        AbiType::Void | AbiType::Pointer(_) | AbiType::InlineCallbackFn(_) | AbiType::Handle(_) | AbiType::CallbackHandle | AbiType::Struct(_) => "reader.readI32()".to_string(),
     }
 }
 
@@ -1263,7 +1293,7 @@ fn abi_type_to_wasm(abi_type: &AbiType) -> String {
         AbiType::I32 | AbiType::U32 | AbiType::ISize | AbiType::USize => "number".to_string(),
         AbiType::I64 | AbiType::U64 => "bigint".to_string(),
         AbiType::F32 | AbiType::F64 => "number".to_string(),
-        AbiType::Pointer | AbiType::InlineCallbackFn(_) | AbiType::Handle(_) | AbiType::CallbackHandle | AbiType::Struct(_) => "number".to_string(),
+        AbiType::Pointer(_) | AbiType::InlineCallbackFn(_) | AbiType::Handle(_) | AbiType::CallbackHandle | AbiType::Struct(_) => "number".to_string(),
     }
 }
 
@@ -1348,7 +1378,7 @@ fn direct_write_info(abi_type: &AbiType) -> DirectWriteInfo {
             method_name: "writeF64",
             byte_width: 8,
         },
-        AbiType::Pointer | AbiType::InlineCallbackFn(_) | AbiType::Handle(_) | AbiType::CallbackHandle | AbiType::Struct(_) => DirectWriteInfo {
+        AbiType::Pointer(_) | AbiType::InlineCallbackFn(_) | AbiType::Handle(_) | AbiType::CallbackHandle | AbiType::Struct(_) => DirectWriteInfo {
             method_name: "writeU32",
             byte_width: 4,
         },
@@ -1376,7 +1406,7 @@ fn primitive_buffer_ts_type(abi_type: &AbiType) -> String {
         | AbiType::USize
         | AbiType::F32
         | AbiType::F64 => "number[]".to_string(),
-        AbiType::Void | AbiType::Pointer | AbiType::InlineCallbackFn(_) | AbiType::Handle(_) | AbiType::CallbackHandle | AbiType::Struct(_) => "unknown[]".to_string(),
+        AbiType::Void | AbiType::Pointer(_) | AbiType::InlineCallbackFn(_) | AbiType::Handle(_) | AbiType::CallbackHandle | AbiType::Struct(_) => "unknown[]".to_string(),
     }
 }
 

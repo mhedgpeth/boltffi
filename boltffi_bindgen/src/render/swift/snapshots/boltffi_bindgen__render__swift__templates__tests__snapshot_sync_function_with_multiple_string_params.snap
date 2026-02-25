@@ -8,7 +8,7 @@ public func concat(a: String, b: String) -> String {
     return a.withUTF8 { aBuf in
         return b.withUTF8 { bBuf in
             let buf = boltffi_concat(aBuf.baseAddress!, UInt(aBuf.count), bBuf.baseAddress!, UInt(bBuf.count))
-            defer { boltffi_free_buf_u8(buf) }
+            defer { boltffi_free_buf(buf) }
             return boltffiDecodeOwnedBuf(buf.ptr, Int(buf.len)) { reader in reader.readString() }
         }
     }

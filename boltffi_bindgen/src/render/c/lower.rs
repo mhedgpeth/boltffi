@@ -7,7 +7,7 @@ use crate::ir::abi::{
 };
 use crate::ir::contract::FfiContract;
 use crate::ir::definitions::EnumRepr;
-use crate::ir::plan::Transport;
+use crate::ir::plan::{AbiType, Mutability, SpanContent, Transport};
 use crate::ir::types::{PrimitiveType, TypeExpr};
 
 use super::emit;
@@ -206,7 +206,10 @@ impl<'a> CHeaderLowerer<'a> {
     fn async_callback_return_params(&self, returns: &ReturnShape) -> String {
         let value_params = match &returns.transport {
             None => String::new(),
-            Some(Transport::Scalar(p)) => format!(", {}", emit::primitive_c_type(*p)),
+            Some(Transport::Scalar(origin)) => format!(", {}", emit::primitive_c_type(origin.primitive())),
+            Some(Transport::Span(SpanContent::Scalar(origin))) => {
+                format!(", const {}*, uintptr_t", emit::primitive_c_type(origin.primitive()))
+            }
             _ => ", const uint8_t*, uintptr_t".to_string(),
         };
         format!("{value_params}, FfiStatus")
@@ -340,7 +343,7 @@ impl<'a> CHeaderLowerer<'a> {
                     "void".to_string()
                 }
             }
-            Some(Transport::Scalar(p)) => emit::primitive_c_type(*p),
+            Some(Transport::Scalar(origin)) => emit::primitive_c_type(origin.primitive()),
             Some(Transport::Composite(layout)) => format!("___{}", layout.record_id.as_str()),
             Some(Transport::Span(_)) => "FfiBuf_u8".to_string(),
             Some(Transport::Handle { class_id, .. }) => {
@@ -353,7 +356,7 @@ impl<'a> CHeaderLowerer<'a> {
     fn async_complete_return_type(&self, result: &ReturnShape) -> String {
         match &result.transport {
             None => "void".to_string(),
-            Some(Transport::Scalar(p)) => emit::primitive_c_type(*p),
+            Some(Transport::Scalar(origin)) => emit::primitive_c_type(origin.primitive()),
             _ => "FfiBuf_u8".to_string(),
         }
     }
@@ -379,6 +382,16 @@ impl<'a> CHeaderLowerer<'a> {
         match &param.role {
             ParamRole::OutDirect | ParamRole::OutLen { .. } => format!("{c_type} *{name}"),
             ParamRole::CallbackContext { .. } => format!("void* {name}"),
+            ParamRole::Input {
+                mutability: Mutability::Mutable,
+                transport: Transport::Span(SpanContent::Scalar(_)),
+                ..
+            } if matches!(param.abi_type, AbiType::Pointer(_)) => {
+                format!("{c_type} {name}")
+            }
+            ParamRole::Input { .. } if matches!(param.abi_type, AbiType::Pointer(_)) => {
+                format!("const {c_type} {name}")
+            }
             _ if c_type.contains("(*)") => c_type.replace("(*)", &format!("(*{})", name)),
             _ => format!("{c_type} {name}"),
         }

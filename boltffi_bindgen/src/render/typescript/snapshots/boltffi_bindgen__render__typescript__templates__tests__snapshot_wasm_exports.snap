@@ -6,6 +6,6 @@ export interface WasmExports {
   boltffi_wasm_abi_version(): number;
   boltffi_wasm_alloc(size: number): number;
   boltffi_wasm_free(ptr: number, size: number): void;
-  boltffi_free_buf_u8(ptr: number): void;
+  boltffi_free_buf(ptr: number): void;
   boltffi_add(a: number, b: number): number;
 }

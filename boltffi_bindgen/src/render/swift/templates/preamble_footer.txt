@@ -379,7 +379,7 @@ func boltffiAsyncCall<T>(
                             continuation.resume(throwing: error)
                         }
                     case .finishWithoutContinuation:
-                        {{ prefix }}_free_buf_u8(buf)
+                        {{ prefix }}_free_buf(buf)
                     case .alreadyFinished:
                         break
                     }

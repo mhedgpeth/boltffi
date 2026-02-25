@@ -5,6 +5,6 @@ expression: "render_function(&func, \"boltffi\")"
 public func processPoint(point: Point) -> Point {
     let pointBytes = boltffiEncode { writer in point.encode(to: &writer) }
     let buf = boltffi_process_point(pointBytes, UInt(pointBytes.count))
-    defer { boltffi_free_buf_u8(buf) }
+    defer { boltffi_free_buf(buf) }
     return boltffiDecodeOwnedBuf(buf.ptr, Int(buf.len)) { reader in Point.decode(from: &reader) }
 }

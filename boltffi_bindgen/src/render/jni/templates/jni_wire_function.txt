@@ -15,10 +15,23 @@ JNIEXPORT {{ jni_return_type }} JNICALL {{ jni_name }}(JNIEnv *env, jclass cls{{
     uint8_t* _{{ param.name }}_ptr = (uint8_t*)(*env)->GetDirectBufferAddress(env, {{ param.name }});
     uintptr_t _{{ param.name }}_len = (_{{ param.name }}_ptr && _{{ param.name }}_size > 0) ? (uintptr_t)_{{ param.name }}_size : 0;
 {%- endif %}
+{%- if param.is_composite() %}
+    jlong _{{ param.name }}_size = (*env)->GetDirectBufferCapacity(env, {{ param.name }});
+    uint8_t* _{{ param.name }}_ptr = (uint8_t*)(*env)->GetDirectBufferAddress(env, {{ param.name }});
+    {{ param.composite_c_type() }} _{{ param.name }}_val;
+    if (_{{ param.name }}_ptr && _{{ param.name }}_size >= (jlong)sizeof({{ param.composite_c_type() }})) {
+        memcpy(&_{{ param.name }}_val, _{{ param.name }}_ptr, sizeof({{ param.composite_c_type() }}));
+    } else {
+        memset(&_{{ param.name }}_val, 0, sizeof({{ param.composite_c_type() }}));
+        _boltffi_input_error = true;
+    }
+{%- endif %}
 
 {%- endfor %}
 {%- if return_is_direct %}
     {{ jni_c_return_type }} _result = 0;
+{%- elif return_composite_c_type.is_some() %}
+    {{ return_composite_c_type.as_ref().unwrap() }} _composite_result = {0};
 {%- elif !return_is_unit %}
     FfiBuf_u8 _buf = {0};
 {%- endif %}
@@ -27,6 +40,8 @@ JNIEXPORT {{ jni_return_type }} JNICALL {{ jni_name }}(JNIEnv *env, jclass cls{{
     {{ ffi_name }}({% for param in params %}{{ param.ffi_arg() }}{% if !loop.last %}, {% endif %}{% endfor %});
 {%- elif return_is_direct %}
     _result = {{ ffi_name }}({% for param in params %}{{ param.ffi_arg() }}{% if !loop.last %}, {% endif %}{% endfor %});
+{%- elif return_composite_c_type.is_some() %}
+    _composite_result = {{ ffi_name }}({% for param in params %}{{ param.ffi_arg() }}{% if !loop.last %}, {% endif %}{% endfor %});
 {%- else %}
     _buf = {{ ffi_name }}({% for param in params %}{{ param.ffi_arg() }}{% if !loop.last %}, {% endif %}{% endfor %});
 {%- endif %}
@@ -49,6 +64,11 @@ boltffi_input_cleanup:
 {%- endif %}
 {%- if return_is_direct %}
     return {{ jni_result_cast }}_result;
+{%- elif return_composite_c_type.is_some() %}
+    jsize _comp_size = (jsize)sizeof(_composite_result);
+    jbyteArray _arr = (*env)->NewByteArray(env, _comp_size);
+    if (_arr != NULL) (*env)->SetByteArrayRegion(env, _arr, 0, _comp_size, (const jbyte*)&_composite_result);
+    return _arr;
 {%- elif !return_is_unit %}
     return boltffi_buf_to_jbytearray(env, _buf);
 {%- endif %}

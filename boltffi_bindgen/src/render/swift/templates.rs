@@ -1098,7 +1098,7 @@ mod tests {
                 wait: "boltffi_event_source_events_wait".to_string(),
                 unsubscribe: "boltffi_event_source_events_unsubscribe".to_string(),
                 free: "boltffi_event_source_events_free".to_string(),
-                free_buf: "boltffi_free_buf_u8".to_string(),
+                free_buf: "boltffi_free_buf".to_string(),
                 atomic_cas: "boltffi_atomic_u8_cas".to_string(),
             }],
             doc: None,

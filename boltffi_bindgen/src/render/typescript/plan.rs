@@ -482,7 +482,7 @@ fn primitive_buffer_alloc_method(abi_type: &AbiType) -> &'static str {
         AbiType::USize => "allocU64Array",
         AbiType::F32 => "allocF32Array",
         AbiType::F64 => "allocF64Array",
-        AbiType::Void | AbiType::Pointer | AbiType::InlineCallbackFn(_) | AbiType::Handle(_) | AbiType::CallbackHandle | AbiType::Struct(_) => {
+        AbiType::Void | AbiType::Pointer(_) | AbiType::InlineCallbackFn(_) | AbiType::Handle(_) | AbiType::CallbackHandle | AbiType::Struct(_) => {
             panic!("unsupported primitive buffer abi type: {abi_type:?}")
         }
     }

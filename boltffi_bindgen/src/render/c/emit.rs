@@ -35,10 +35,13 @@ pub fn abi_type_c(abi_type: &AbiType) -> String {
         AbiType::F64 => "double".to_string(),
         AbiType::ISize => "intptr_t".to_string(),
         AbiType::USize => "uintptr_t".to_string(),
-        AbiType::Pointer => "const uint8_t*".to_string(),
+        AbiType::Pointer(element) => format!("{}*", primitive_c_type(*element)),
         AbiType::InlineCallbackFn(params) => {
             let mut param_types = vec!["void*".to_string()];
-            param_types.extend(params.iter().map(abi_type_c));
+            param_types.extend(params.iter().map(|p| match p {
+                AbiType::Pointer(element) => format!("const {}*", primitive_c_type(*element)),
+                other => abi_type_c(other),
+            }));
             format!("void (*)({})", param_types.join(", "))
         }
         AbiType::Handle(class_id) => format!("const struct {} *", class_id.as_str()),

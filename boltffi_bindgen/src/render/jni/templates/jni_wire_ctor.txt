@@ -15,6 +15,17 @@ JNIEXPORT jlong JNICALL {{ jni_name }}(JNIEnv *env, jclass cls{{ jni_params }}) 
     uint8_t* _{{ param.name }}_ptr = (uint8_t*)(*env)->GetDirectBufferAddress(env, {{ param.name }});
     uintptr_t _{{ param.name }}_len = (_{{ param.name }}_ptr && _{{ param.name }}_size > 0) ? (uintptr_t)_{{ param.name }}_size : 0;
 {%- endif %}
+{%- if param.is_composite() %}
+    jlong _{{ param.name }}_size = (*env)->GetDirectBufferCapacity(env, {{ param.name }});
+    uint8_t* _{{ param.name }}_ptr = (uint8_t*)(*env)->GetDirectBufferAddress(env, {{ param.name }});
+    {{ param.composite_c_type() }} _{{ param.name }}_val;
+    if (_{{ param.name }}_ptr && _{{ param.name }}_size >= (jlong)sizeof({{ param.composite_c_type() }})) {
+        memcpy(&_{{ param.name }}_val, _{{ param.name }}_ptr, sizeof({{ param.composite_c_type() }}));
+    } else {
+        memset(&_{{ param.name }}_val, 0, sizeof({{ param.composite_c_type() }}));
+        _boltffi_input_error = true;
+    }
+{%- endif %}
 
 {%- endfor %}
     void* _handle = NULL;

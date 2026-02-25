@@ -3,7 +3,7 @@ use std::collections::{HashMap, HashSet};
 use boltffi_ffi_rules::naming;
 
 use crate::ir::abi::{
-    AbiCall, AbiCallbackInvocation, AbiContract, AbiParam, AbiStream, AsyncCall, CallMode,
+    AbiCall, AbiCallbackInvocation, AbiContract, AbiParam, AbiStream, AsyncCall, CallId, CallMode,
     ErrorTransport,
 };
 use crate::ir::contract::FfiContract;
@@ -13,7 +13,7 @@ use crate::ir::definitions::{
 };
 use crate::ir::ids::{CallbackId, EnumId, ParamName, RecordId};
 use crate::ir::ops::SizeExpr;
-use crate::ir::plan::AbiType;
+use crate::ir::plan::{AbiType, Mutability, SpanContent};
 use crate::ir::types::{PrimitiveType, TypeExpr};
 use crate::ir::{ParamRole, ReturnShape, Transport};
 use crate::render::kotlin::{NamingConvention, primitives};
@@ -240,15 +240,31 @@ impl<'a> JniLowerer<'a> {
     fn collect_used_from_error(&self, _error: &ErrorTransport, _used: &mut HashSet<CallbackId>) {}
 
     fn is_primitive_only(&self, func: &FunctionDef) -> bool {
-        let returns_ok = matches!(
-            &func.returns,
-            ReturnDef::Void | ReturnDef::Value(TypeExpr::Void | TypeExpr::Primitive(_))
-        );
+        if matches!(func.returns, ReturnDef::Result { .. }) {
+            return false;
+        }
 
-        let params_ok = func
-            .params
-            .iter()
-            .all(|param| matches!(param.type_expr, TypeExpr::Primitive(_)));
+        let abi_call = self.abi_call_for_function(func);
+
+        let returns_ok = match &abi_call.returns.transport {
+            None => true,
+            Some(Transport::Scalar(_)) => true,
+            _ => false,
+        };
+
+        let params_ok = abi_call.params.iter().all(|p| {
+            matches!(
+                p.role,
+                ParamRole::Input {
+                    transport: Transport::Scalar(_),
+                    ..
+                } | ParamRole::SyntheticLen { .. }
+                    | ParamRole::CallbackContext { .. }
+                    | ParamRole::OutLen { .. }
+                    | ParamRole::OutDirect
+                    | ParamRole::StatusOut
+            )
+        });
 
         returns_ok && params_ok
     }
@@ -307,10 +323,13 @@ impl<'a> JniLowerer<'a> {
         let ffi_name = format!("{}_{}", prefix, func.id.as_str());
         let jni_name = format!("Java_{}_Native_{}", jni_prefix, ffi_name.replace('_', "_1"));
 
+        let abi_call = self.abi_call_for_function(func);
+        let abi_inputs = self.input_abi_params(abi_call);
         let params: Vec<JniParam> = func
             .params
             .iter()
-            .map(|param| self.lower_param(param))
+            .zip(abi_inputs.iter())
+            .map(|(param, abi_param)| self.lower_param(param, abi_param))
             .collect();
 
         let return_kind = self.return_kind(&func.returns, func.id.as_str());
@@ -332,14 +351,22 @@ impl<'a> JniLowerer<'a> {
         let ffi_name = naming::function_ffi_name(func.id.as_str()).into_string();
         let jni_name = format!("Java_{}_Native_{}", jni_prefix, ffi_name.replace('_', "_1"));
 
+        let abi_call = self.abi_call_for_function(func);
+        let abi_inputs = self.input_abi_params(abi_call);
         let params: Vec<JniParam> = func
             .params
             .iter()
-            .map(|param| self.lower_param(param))
+            .zip(abi_inputs.iter())
+            .map(|(param, abi_param)| self.lower_param(param, abi_param))
             .collect();
 
         let jni_params = self.format_jni_params(&params);
         let return_meta = self.return_meta(&func.returns);
+        let return_composite_c_type = if matches!(func.returns, ReturnDef::Result { .. }) {
+            None
+        } else {
+            self.composite_return_c_type(&abi_call.returns)
+        };
 
         JniWireFunction {
             ffi_name,
@@ -348,6 +375,7 @@ impl<'a> JniLowerer<'a> {
             params,
             return_is_unit: return_meta.is_unit,
             return_is_direct: return_meta.is_direct,
+            return_composite_c_type,
             jni_return_type: return_meta.jni_return_type,
             jni_c_return_type: return_meta.jni_c_return_type,
             jni_result_cast: return_meta.jni_result_cast,
@@ -360,8 +388,9 @@ impl<'a> JniLowerer<'a> {
         let ctors = class
             .constructors
             .iter()
-            .filter(|ctor| self.constructor_supported(ctor))
-            .map(|ctor| self.lower_ctor(class, ctor, jni_prefix))
+            .enumerate()
+            .filter(|(_, ctor)| self.constructor_supported(ctor))
+            .map(|(idx, ctor)| self.lower_ctor(class, ctor, idx, jni_prefix))
             .collect();
 
         let wire_methods = class
@@ -533,14 +562,22 @@ impl<'a> JniLowerer<'a> {
         let ffi_name = naming::method_ffi_name(class.id.as_str(), method.id.as_str()).into_string();
         let jni_name = format!("Java_{}_Native_{}", jni_prefix, ffi_name.replace('_', "_1"));
 
+        let abi_call = self.abi_call_for_method(class, method);
+        let abi_inputs = self.non_receiver_input_params(abi_call);
         let params: Vec<JniParam> = method
             .params
             .iter()
-            .map(|param| self.lower_param(param))
+            .zip(abi_inputs.iter())
+            .map(|(param, abi_param)| self.lower_param(param, abi_param))
             .collect();
 
         let jni_params = self.format_jni_params(&params);
         let return_meta = self.return_meta(&method.returns);
+        let return_composite_c_type = if matches!(method.returns, ReturnDef::Result { .. }) {
+            None
+        } else {
+            self.composite_return_c_type(&abi_call.returns)
+        };
 
         JniWireMethod {
             ffi_name,
@@ -549,6 +586,7 @@ impl<'a> JniLowerer<'a> {
             params,
             return_is_unit: return_meta.is_unit,
             return_is_direct: return_meta.is_direct,
+            return_composite_c_type,
             jni_return_type: return_meta.jni_return_type,
             jni_c_return_type: return_meta.jni_c_return_type,
             jni_result_cast: return_meta.jni_result_cast,
@@ -556,7 +594,13 @@ impl<'a> JniLowerer<'a> {
         }
     }
 
-    fn lower_ctor(&self, class: &ClassDef, ctor: &ConstructorDef, jni_prefix: &str) -> JniWireCtor {
+    fn lower_ctor(
+        &self,
+        class: &ClassDef,
+        ctor: &ConstructorDef,
+        ctor_index: usize,
+        jni_prefix: &str,
+    ) -> JniWireCtor {
         let ffi_prefix = naming::class_ffi_prefix(class.id.as_str());
         let ffi_name = match ctor.name() {
             None => format!("{}_new", ffi_prefix),
@@ -565,10 +609,13 @@ impl<'a> JniLowerer<'a> {
 
         let jni_name = format!("Java_{}_Native_{}", jni_prefix, ffi_name.replace('_', "_1"));
 
+        let abi_call = self.abi_call_for_constructor(class, ctor_index);
+        let abi_inputs = self.input_abi_params(abi_call);
         let params: Vec<JniParam> = ctor
             .params()
             .into_iter()
-            .map(|param| self.lower_param(param))
+            .zip(abi_inputs.iter())
+            .map(|(param, abi_param)| self.lower_param(param, abi_param))
             .collect();
 
         let jni_params = self.format_jni_params(&params);
@@ -585,10 +632,13 @@ impl<'a> JniLowerer<'a> {
         let ffi_name = naming::function_ffi_name(func.id.as_str()).into_string();
         let jni_func_name = ffi_name.replace('_', "_1");
 
+        let abi_call = self.abi_call_for_function(func);
+        let abi_inputs = self.input_abi_params(abi_call);
         let params: Vec<JniParam> = func
             .params
             .iter()
-            .map(|param| self.lower_param(param))
+            .zip(abi_inputs.iter())
+            .map(|(param, abi_param)| self.lower_param(param, abi_param))
             .collect();
 
         let jni_params = self.format_jni_params(&params);
@@ -622,10 +672,13 @@ impl<'a> JniLowerer<'a> {
         let ffi_name = naming::method_ffi_name(class.id.as_str(), method.id.as_str()).into_string();
         let jni_func_name = ffi_name.replace('_', "_1");
 
+        let abi_call = self.abi_call_for_method(class, method);
+        let abi_inputs = self.non_receiver_input_params(abi_call);
         let params: Vec<JniParam> = method
             .params
             .iter()
-            .map(|param| self.lower_param(param))
+            .zip(abi_inputs.iter())
+            .map(|(param, abi_param)| self.lower_param(param, abi_param))
             .collect();
 
         let jni_params = self.format_jni_params(&params);
@@ -652,77 +705,110 @@ impl<'a> JniLowerer<'a> {
         }
     }
 
-    fn lower_param(&self, param: &ParamDef) -> JniParam {
+    fn lower_param(&self, param: &ParamDef, abi_param: &AbiParam) -> JniParam {
         let name = naming::escape_c_keyword(param.name.as_str());
-        let is_string = matches!(param.type_expr, TypeExpr::String);
-        let string_as_byte_array =
-            is_string && self.string_encoding == JniStringEncoding::ByteArray;
-        let (array_primitive, array_is_mutable) = match &param.type_expr {
-            TypeExpr::Vec(inner) => match inner.as_ref() {
-                TypeExpr::Primitive(p) => (Some(*p), matches!(param.passing, ParamPassing::RefMut)),
-                _ => (None, false),
-            },
-            _ => (None, false),
+
+        let transport = match &abi_param.role {
+            ParamRole::Input { transport, .. } => transport,
+            _ => unreachable!("lower_param called with non-input AbiParam"),
         };
 
-        let record_info = self.record_param_info(&param.type_expr);
-        let data_enum_info = self.data_enum_param_info(&param.type_expr);
+        let mutability = match &abi_param.role {
+            ParamRole::Input { mutability, .. } => *mutability,
+            _ => Mutability::Shared,
+        };
 
-        let is_wire_param = self.needs_wire_encoding(&param.type_expr);
-        let is_closure = matches!(
-            param.type_expr,
-            TypeExpr::Callback(ref callback_id) if self.is_closure_callback(callback_id)
-        );
-
-        let (jni_type, ffi_arg, kind) = if string_as_byte_array {
-            let jni_type = "jbyteArray".to_string();
-            let ffi_arg = format!("(const uint8_t*)_{}_ptr, (uintptr_t)_{}_len", name, name);
-            let kind = JniParamKind::PrimitiveArray {
-                c_type: "uint8_t".to_string(),
-                elements_kind: JniPrimitiveArrayElementsKind::Byte,
-                release_mode: JniArrayReleaseMode::Abort,
-            };
-            (jni_type, ffi_arg, kind)
-        } else {
-            let jni_type = self.param_jni_type(
-                &param.type_expr,
-                is_wire_param,
-                data_enum_info.is_some(),
-                array_primitive.is_some(),
-                is_closure,
-            );
-            let ffi_arg = self.param_ffi_arg(
-                &name,
-                &param.type_expr,
-                array_primitive,
-                array_is_mutable,
-                is_wire_param,
-                record_info.clone(),
-                data_enum_info.clone(),
-            );
-            let kind = if is_closure {
-                JniParamKind::Closure
-            } else if is_string {
-                JniParamKind::String
-            } else if let Some(primitive) = array_primitive {
+        let (jni_type, ffi_arg, kind) = match transport {
+            Transport::Scalar(_) => {
+                let jni_type = self.scalar_jni_type(&param.type_expr);
+                let ffi_arg = name.clone();
+                (jni_type, ffi_arg, JniParamKind::Primitive)
+            }
+            Transport::Span(SpanContent::Utf8) => {
+                if self.string_encoding == JniStringEncoding::ByteArray {
+                    let jni_type = "jbyteArray".to_string();
+                    let ffi_arg =
+                        format!("(const uint8_t*)_{}_ptr, (uintptr_t)_{}_len", name, name);
+                    let kind = JniParamKind::PrimitiveArray {
+                        c_type: "uint8_t".to_string(),
+                        elements_kind: JniPrimitiveArrayElementsKind::Byte,
+                        release_mode: JniArrayReleaseMode::Abort,
+                    };
+                    (jni_type, ffi_arg, kind)
+                } else {
+                    let jni_type = "jstring".to_string();
+                    let ffi_arg = format!(
+                        "(const uint8_t*)_{}_c, (_{}_c != NULL) ? strlen(_{}_c) : 0",
+                        name, name, name
+                    );
+                    (jni_type, ffi_arg, JniParamKind::String)
+                }
+            }
+            Transport::Span(SpanContent::Scalar(origin)) => {
+                let primitive = origin.primitive();
                 let c_type = self.primitive_c_type(primitive);
-                let release_mode = if array_is_mutable {
+                let is_mutable = matches!(mutability, Mutability::Mutable);
+                let ptr_type = if is_mutable {
+                    format!("{}*", c_type)
+                } else {
+                    format!("const {}*", c_type)
+                };
+                let ffi_arg = format!("({})_{}_ptr, (uintptr_t)_{}_len", ptr_type, name, name);
+                let jni_type = self.primitive_array_jni_type(primitive);
+                let release_mode = if is_mutable {
                     JniArrayReleaseMode::Commit
                 } else {
                     JniArrayReleaseMode::Abort
                 };
                 let elements_kind = self.primitive_array_elements_kind(primitive);
-                JniParamKind::PrimitiveArray {
+                let kind = JniParamKind::PrimitiveArray {
                     c_type,
                     elements_kind,
                     release_mode,
-                }
-            } else if is_wire_param || data_enum_info.is_some() {
-                JniParamKind::Buffer
-            } else {
-                JniParamKind::Primitive
-            };
-            (jni_type, ffi_arg, kind)
+                };
+                (jni_type, ffi_arg, kind)
+            }
+            Transport::Composite(layout) => {
+                let c_type = format!("___{}", layout.record_id.as_str());
+                let jni_type = "jobject".to_string();
+                let ffi_arg = format!("_{}_val", name);
+                let kind = JniParamKind::Composite { c_type };
+                (jni_type, ffi_arg, kind)
+            }
+            Transport::Span(SpanContent::Encoded(_))
+            | Transport::Span(SpanContent::Composite(_)) => {
+                let jni_type = "jobject".to_string();
+                let ffi_arg =
+                    format!("(const uint8_t*)_{}_ptr, (uintptr_t)_{}_len", name, name);
+                (jni_type, ffi_arg, JniParamKind::Buffer)
+            }
+            Transport::Handle { .. } => {
+                let jni_type = "jlong".to_string();
+                let ffi_arg = format!("(void*){}", name);
+                (jni_type, ffi_arg, JniParamKind::Primitive)
+            }
+            Transport::Callback {
+                callback_id,
+                nullable: _,
+                style: _,
+            } => {
+                let is_closure = self.is_closure_callback(callback_id);
+                let jni_type = "jlong".to_string();
+                let ffi_arg = if is_closure {
+                    let trampoline = self.closure_trampoline_name(callback_id);
+                    format!("{}, (void*){}", trampoline, name)
+                } else {
+                    let create_fn =
+                        naming::callback_create_fn(callback_id.as_str()).into_string();
+                    format!("{}((uint64_t){})", create_fn, name)
+                };
+                let kind = if is_closure {
+                    JniParamKind::Closure
+                } else {
+                    JniParamKind::Primitive
+                };
+                (jni_type, ffi_arg, kind)
+            }
         };
 
         let jni_decl = format!("{} {}", jni_type, name);
@@ -733,6 +819,31 @@ impl<'a> JniLowerer<'a> {
             jni_decl,
             kind,
         }
+    }
+
+    fn scalar_jni_type(&self, ty: &TypeExpr) -> String {
+        match ty {
+            TypeExpr::Primitive(p) => self.primitive_jni_type(*p).to_string(),
+            TypeExpr::Enum(_) => "jint".to_string(),
+            TypeExpr::Handle(_) | TypeExpr::Callback(_) => "jlong".to_string(),
+            _ => "jint".to_string(),
+        }
+    }
+
+    fn primitive_array_jni_type(&self, primitive: PrimitiveType) -> String {
+        match primitive {
+            PrimitiveType::I8 | PrimitiveType::U8 => "jbyteArray",
+            PrimitiveType::I16 | PrimitiveType::U16 => "jshortArray",
+            PrimitiveType::I32 | PrimitiveType::U32 => "jintArray",
+            PrimitiveType::I64
+            | PrimitiveType::U64
+            | PrimitiveType::ISize
+            | PrimitiveType::USize => "jlongArray",
+            PrimitiveType::F32 => "jfloatArray",
+            PrimitiveType::F64 => "jdoubleArray",
+            PrimitiveType::Bool => "jbooleanArray",
+        }
+        .to_string()
     }
 
     fn param_jni_type(
@@ -849,6 +960,75 @@ impl<'a> JniLowerer<'a> {
             PrimitiveType::F32 => ModelPrimitive::F32,
             PrimitiveType::F64 => ModelPrimitive::F64,
         }
+    }
+
+    fn composite_return_c_type(&self, returns: &ReturnShape) -> Option<String> {
+        match &returns.transport {
+            Some(Transport::Composite(layout)) => {
+                Some(format!("___{}", layout.record_id.as_str()))
+            }
+            _ => None,
+        }
+    }
+
+    fn abi_call_for_function(&self, func: &FunctionDef) -> &AbiCall {
+        self.abi
+            .calls
+            .iter()
+            .find(|call| call.id == CallId::Function(func.id.clone()))
+            .expect("abi call missing for function")
+    }
+
+    fn abi_call_for_method(&self, class: &ClassDef, method: &MethodDef) -> &AbiCall {
+        self.abi
+            .calls
+            .iter()
+            .find(|call| {
+                call.id
+                    == CallId::Method {
+                        class_id: class.id.clone(),
+                        method_id: method.id.clone(),
+                    }
+            })
+            .expect("abi call missing for method")
+    }
+
+    fn abi_call_for_constructor(&self, class: &ClassDef, index: usize) -> &AbiCall {
+        self.abi
+            .calls
+            .iter()
+            .find(|call| {
+                call.id
+                    == CallId::Constructor {
+                        class_id: class.id.clone(),
+                        index,
+                    }
+            })
+            .expect("abi call missing for constructor")
+    }
+
+    fn input_abi_params<'b>(&self, call: &'b AbiCall) -> Vec<&'b AbiParam> {
+        call.params
+            .iter()
+            .filter(|p| matches!(p.role, ParamRole::Input { .. }))
+            .collect()
+    }
+
+    fn non_receiver_input_params<'b>(&self, call: &'b AbiCall) -> Vec<&'b AbiParam> {
+        call.params
+            .iter()
+            .filter(|p| {
+                matches!(p.role, ParamRole::Input { .. })
+                    && !(p.name.as_str() == "self"
+                        && matches!(
+                            p.role,
+                            ParamRole::Input {
+                                transport: Transport::Handle { .. },
+                                ..
+                            }
+                        ))
+            })
+            .collect()
     }
 
     fn needs_wire_encoding(&self, ty: &TypeExpr) -> bool {
@@ -1833,7 +2013,7 @@ impl<'a> JniLowerer<'a> {
             AbiType::U64 | AbiType::USize => "uint64_t".to_string(),
             AbiType::F32 => "float".to_string(),
             AbiType::F64 => "double".to_string(),
-            AbiType::Void | AbiType::Pointer | AbiType::InlineCallbackFn(_) | AbiType::Handle(_) | AbiType::CallbackHandle => "void".to_string(),
+            AbiType::Void | AbiType::Pointer(_) | AbiType::InlineCallbackFn(_) | AbiType::Handle(_) | AbiType::CallbackHandle => "void".to_string(),
             AbiType::Struct(_) => "jlong".to_string(),
         }
     }

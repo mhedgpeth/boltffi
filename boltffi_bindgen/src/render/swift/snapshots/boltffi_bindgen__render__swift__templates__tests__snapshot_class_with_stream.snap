@@ -25,7 +25,7 @@ public final class EventSource {
                 poll: boltffi_event_source_events_poll,
                 unsubscribe: boltffi_event_source_events_unsubscribe,
                 freeFn: boltffi_event_source_events_free,
-                freeBuf: boltffi_free_buf_u8,
+                freeBuf: boltffi_free_buf,
                 atomicCas: boltffi_atomic_u8_cas,
                 processItems: { reader in
                     let count = Int(reader.readU32())

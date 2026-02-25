@@ -7,21 +7,22 @@ use std::collections::HashMap;
 
 use super::emit;
 use super::plan::{
-    CompositeFieldMapping, SwiftAsyncConversion, SwiftAsyncResult, SwiftCallMode, SwiftCallback,
+    CompositeFieldMapping, DirectBufferCompositeMapping, SwiftAsyncConversion, SwiftAsyncResult, SwiftCallMode, SwiftCallback,
     SwiftCallbackMethod, SwiftCallbackParam, SwiftClass, SwiftClosureTrampoline,
     SwiftClosureTrampolineParam, SwiftConstructor, SwiftConversion, SwiftCustomType, SwiftEnum,
     SwiftEnumStyle, SwiftField, SwiftFunction, SwiftMethod, SwiftModule, SwiftNativeConversion,
     SwiftNativeMapping, SwiftParam, SwiftRecord, SwiftReturn, SwiftStream, SwiftStreamMode,
     SwiftVariant, SwiftVariantPayload,
 };
+use crate::ir::codec::CodecPlan;
 use crate::ir::abi::{
     AbiCall, AbiCallbackInvocation, AbiContract, AbiEnum, AbiEnumField, AbiEnumPayload,
-    AbiEnumVariant, AbiParam, AbiRecord, AbiStream, CallId, CallMode, ErrorTransport, ParamRole,
-    ReturnShape, StreamItemTransport,
+    AbiEnumVariant, AbiParam, AbiRecord, AbiStream, CallId, CallMode, ErrorTransport,
+    ParamRole, ReturnShape, StreamItemTransport,
 };
 use crate::ir::contract::FfiContract;
 use crate::ir::definitions::{
-    CallbackKind, ConstructorDef, DefaultValue, ParamDef, Receiver, ReturnDef, StreamDef,
+    CallbackKind, ConstructorDef, DefaultValue, EnumRepr, ParamDef, Receiver, ReturnDef, StreamDef,
     StreamMode,
 };
 use crate::ir::ids::{CallbackId, ClassId, EnumId, FieldName, ParamName, RecordId};
@@ -29,7 +30,7 @@ use crate::ir::ops::{
     FieldReadOp, OffsetExpr, ReadOp, ReadSeq, SizeExpr, ValueExpr, WireShape, WriteOp, WriteSeq,
     remap_root_in_seq,
 };
-use crate::ir::plan::{AbiType, CallbackStyle, CompositeLayout, Mutability, SpanContent, Transport};
+use crate::ir::plan::{AbiType, CallbackStyle, CompositeLayout, Mutability, ScalarOrigin, SpanContent, Transport};
 use crate::ir::types::{PrimitiveType, TypeExpr};
 use crate::render::{TypeConversion, TypeMappings};
 
@@ -751,19 +752,32 @@ impl<'a> SwiftLowerer<'a> {
         let swift_name = camel_case(param.name.as_str());
 
         let (swift_type, conversion) = match &abi_param.role {
-            ParamRole::Input { transport: Transport::Scalar(_), .. } => {
-                let conversion = if matches!(param.type_expr, TypeExpr::Enum(_)) {
-                    SwiftConversion::CStyleEnumRawValue
-                } else {
-                    SwiftConversion::Direct
-                };
-                (self.swift_type(&param.type_expr), conversion)
+            ParamRole::Input { transport: Transport::Scalar(origin), .. } => {
+                match origin {
+                    ScalarOrigin::CStyleEnum { enum_id, .. } => {
+                        let swift_enum = self.swift_name_for_enum(enum_id);
+                        (swift_enum, SwiftConversion::CStyleEnumRawValue)
+                    }
+                    ScalarOrigin::Primitive(p) => {
+                        (self.abi_to_swift(&AbiType::from(*p)), SwiftConversion::Direct)
+                    }
+                }
             }
-            ParamRole::Input { transport: Transport::Span(SpanContent::Scalar(primitive)), mutability, .. } => {
-                let element_abi = AbiType::from(*primitive);
+            ParamRole::Input { transport: Transport::Span(SpanContent::Scalar(origin)), mutability, .. } => {
+                let primitive = origin.primitive();
+                let element_abi = AbiType::from(primitive);
                 let element_type = self.abi_to_swift(&element_abi);
                 if element_abi == AbiType::U8 && *mutability == Mutability::Shared {
                     ("Data".to_string(), SwiftConversion::ToData)
+                } else if let ScalarOrigin::CStyleEnum { enum_id, .. } = origin {
+                    let swift_enum = self.swift_name_for_enum(enum_id);
+                    (
+                        format!("[{}]", swift_enum),
+                        SwiftConversion::EnumBufferInput {
+                            swift_enum: swift_enum.clone(),
+                            element_type: element_type.clone(),
+                        },
+                    )
                 } else {
                     let conversion = match mutability {
                         Mutability::Mutable => SwiftConversion::MutableBuffer {
@@ -779,9 +793,9 @@ impl<'a> SwiftLowerer<'a> {
             ParamRole::Input { transport: Transport::Span(SpanContent::Utf8), .. } => {
                 ("String".to_string(), SwiftConversion::ToString)
             }
-            ParamRole::Input { transport: Transport::Span(SpanContent::Encoded(_)), encode_ops: Some(encode_ops), .. } => {
+            ParamRole::Input { transport: Transport::Span(SpanContent::Encoded(codec)), encode_ops: Some(encode_ops), .. } => {
                 (
-                    self.swift_type(&param.type_expr),
+                    self.swift_type_from_codec(codec),
                     SwiftConversion::ToWireBuffer {
                         encode: encode_ops.clone(),
                     },
@@ -841,7 +855,7 @@ impl<'a> SwiftLowerer<'a> {
                 let c_type = format!("___{}", layout.record_id.as_str());
                 let fields = self.composite_field_mappings(layout);
                 (
-                    self.swift_type(&param.type_expr),
+                    self.swift_name_for_record(&layout.record_id),
                     SwiftConversion::ToComposite { c_type, fields },
                 )
             }
@@ -853,6 +867,27 @@ impl<'a> SwiftLowerer<'a> {
             name: swift_name,
             swift_type,
             conversion,
+        }
+    }
+
+    fn swift_type_from_codec(&self, codec: &CodecPlan) -> String {
+        match codec {
+            CodecPlan::Record { id, .. } => self.swift_name_for_record(id),
+            CodecPlan::Enum { id, .. } => self.swift_name_for_enum(id),
+            CodecPlan::Vec { element, .. } => format!("[{}]", self.swift_type_from_codec(element)),
+            CodecPlan::Option(inner) => format!("{}?", self.swift_type_from_codec(inner)),
+            CodecPlan::Result { ok, err } => format!("Result<{}, {}>", self.swift_type_from_codec(ok), self.swift_type_from_codec(err)),
+            CodecPlan::String => "String".to_string(),
+            CodecPlan::Bytes => "Data".to_string(),
+            CodecPlan::Primitive(p) => self.abi_to_swift(&AbiType::from(*p)),
+            CodecPlan::Void => "Void".to_string(),
+            CodecPlan::Builtin(id) => pascal_case(id.as_str()),
+            CodecPlan::Custom { id, .. } => {
+                self.type_mappings
+                    .get(id.as_str())
+                    .map(|m| m.native_type.clone())
+                    .unwrap_or_else(|| pascal_case(id.as_str()))
+            }
         }
     }
 
@@ -888,12 +923,14 @@ impl<'a> SwiftLowerer<'a> {
     ) -> SwiftReturn {
         let base = match &return_shape.transport {
             None => SwiftReturn::Void,
-            Some(Transport::Scalar(_)) => {
-                let swift_type = self.swift_return_value_type(returns);
-                if self.is_c_style_enum_return(returns) {
-                    SwiftReturn::CStyleEnumFromRawValue { swift_type }
-                } else {
-                    SwiftReturn::Direct { swift_type }
+            Some(Transport::Scalar(origin)) => {
+                match origin {
+                    ScalarOrigin::CStyleEnum { enum_id, .. } => SwiftReturn::CStyleEnumFromRawValue {
+                        swift_type: self.swift_name_for_enum(enum_id),
+                    },
+                    ScalarOrigin::Primitive(_) => SwiftReturn::Direct {
+                        swift_type: self.swift_return_value_type(returns),
+                    },
                 }
             }
             Some(Transport::Composite(layout)) => {
@@ -903,6 +940,38 @@ impl<'a> SwiftLowerer<'a> {
                     swift_type: self.swift_return_value_type(returns),
                     c_type,
                     fields,
+                }
+            }
+            Some(Transport::Span(SpanContent::Scalar(origin)))
+                if !matches!(origin.primitive(), PrimitiveType::U8) =>
+            {
+                let primitive = origin.primitive();
+                let element_swift_type = self.abi_to_swift(&AbiType::from(primitive));
+                let enum_mapping = match origin {
+                    ScalarOrigin::CStyleEnum { enum_id, .. } => {
+                        Some(self.swift_name_for_enum(enum_id))
+                    }
+                    ScalarOrigin::Primitive(_) => None,
+                };
+                SwiftReturn::FromDirectBuffer {
+                    swift_type: self.swift_return_value_type(returns),
+                    element_swift_type,
+                    composite_mapping: None,
+                    enum_mapping,
+                }
+            }
+            Some(Transport::Span(SpanContent::Composite(layout))) => {
+                let c_struct = format!("___{}", layout.record_id.as_str());
+                let swift_record = self.swift_name_for_record(&layout.record_id);
+                let fields = self.composite_field_mappings(layout);
+                SwiftReturn::FromDirectBuffer {
+                    swift_type: self.swift_return_value_type(returns),
+                    element_swift_type: c_struct,
+                    composite_mapping: Some(DirectBufferCompositeMapping {
+                        swift_record_type: swift_record,
+                        fields,
+                    }),
+                    enum_mapping: None,
                 }
             }
             Some(Transport::Span(_)) => SwiftReturn::FromWireBuffer {
@@ -941,16 +1010,36 @@ impl<'a> SwiftLowerer<'a> {
             ErrorTransport::Encoded {
                 decode_ops,
                 encode_ops,
-            } => SwiftReturn::Throws {
-                ok: Box::new(base),
-                err_type: self.swift_error_type(returns),
-                err_decode: decode_ops.clone(),
-                err_is_string: self.error_is_string(returns),
-                err_encode: encode_ops.clone(),
-            },
+            } => {
+                let result_decode = return_shape.decode_ops.clone().unwrap_or_else(|| ReadSeq {
+                    size: SizeExpr::Fixed(0),
+                    ops: vec![],
+                    shape: WireShape::Value,
+                });
+                let ok_variant = if self.is_c_style_enum_return(returns) {
+                    SwiftReturn::CStyleEnumFromRawValue {
+                        swift_type: self.swift_return_value_type(returns),
+                    }
+                } else {
+                    base
+                };
+                SwiftReturn::Throws {
+                    ok: Box::new(ok_variant),
+                    err_type: self.swift_error_type(returns),
+                    result_decode,
+                    err_decode: decode_ops.clone(),
+                    err_is_string: self.error_is_string(returns),
+                    err_encode: encode_ops.clone(),
+                }
+            }
             ErrorTransport::StatusCode => SwiftReturn::Throws {
                 ok: Box::new(base),
                 err_type: "FfiError".to_string(),
+                result_decode: ReadSeq {
+                    size: SizeExpr::Fixed(0),
+                    ops: vec![],
+                    shape: WireShape::Value,
+                },
                 err_decode: ReadSeq {
                     size: SizeExpr::Fixed(0),
                     ops: vec![],
@@ -1009,16 +1098,24 @@ impl<'a> SwiftLowerer<'a> {
         }
     }
 
-    fn is_c_style_enum_return(&self, returns: &ReturnDef) -> bool {
-        matches!(returns, ReturnDef::Value(TypeExpr::Enum(_)))
-    }
-
     fn swift_return_value_type(&self, returns: &ReturnDef) -> String {
         match returns {
             ReturnDef::Void => "Void".to_string(),
             ReturnDef::Value(ty) => self.swift_type(ty),
             ReturnDef::Result { ok, .. } => self.swift_type(ok),
         }
+    }
+
+    fn is_c_style_enum_return(&self, returns: &ReturnDef) -> bool {
+        let enum_id = match returns {
+            ReturnDef::Value(TypeExpr::Enum(id)) | ReturnDef::Result { ok: TypeExpr::Enum(id), .. } => id,
+            _ => return false,
+        };
+        self.contract
+            .catalog
+            .resolve_enum(enum_id)
+            .map(|e| matches!(e.repr, EnumRepr::CStyle { .. }))
+            .unwrap_or(false)
     }
 
     fn swift_error_type(&self, returns: &ReturnDef) -> String {
@@ -1199,12 +1296,14 @@ impl<'a> SwiftLowerer<'a> {
             SwiftReturn::Throws {
                 ok,
                 err_type,
+                result_decode,
                 err_decode,
                 err_is_string,
                 err_encode,
             } => SwiftReturn::Throws {
                 ok: Box::new(self.rebase_return_encode(*ok, new_base)),
                 err_type,
+                result_decode,
                 err_decode,
                 err_is_string,
                 err_encode: err_encode
@@ -1346,7 +1445,7 @@ impl<'a> SwiftLowerer<'a> {
             AbiType::USize => "UInt".to_string(),
             AbiType::F32 => "Float".to_string(),
             AbiType::F64 => "Double".to_string(),
-            AbiType::Pointer | AbiType::InlineCallbackFn(_) | AbiType::Handle(_) => "OpaquePointer".to_string(),
+            AbiType::Pointer(_) | AbiType::InlineCallbackFn(_) | AbiType::Handle(_) => "OpaquePointer".to_string(),
             AbiType::CallbackHandle => "BoltFFICallbackHandle".to_string(),
             AbiType::Struct(id) => format!("___{}", id.as_str()),
         }
@@ -1395,10 +1494,42 @@ impl<'a> SwiftLowerer<'a> {
 
         match &result_shape.transport {
             None => SwiftAsyncResult::Void,
-            Some(Transport::Scalar(primitive)) => SwiftAsyncResult::Direct {
-                swift_type: self.abi_to_swift(&AbiType::from(*primitive)),
+            Some(Transport::Scalar(origin)) => SwiftAsyncResult::Direct {
+                swift_type: self.abi_to_swift(&AbiType::from(origin.primitive())),
                 conversion: SwiftAsyncConversion::None,
             },
+            Some(Transport::Span(SpanContent::Scalar(origin)))
+                if !matches!(origin.primitive(), PrimitiveType::U8) =>
+            {
+                let primitive = origin.primitive();
+                let element_swift_type = self.abi_to_swift(&AbiType::from(primitive));
+                let enum_mapping = match origin {
+                    ScalarOrigin::CStyleEnum { enum_id, .. } => {
+                        Some(self.swift_name_for_enum(enum_id))
+                    }
+                    ScalarOrigin::Primitive(_) => None,
+                };
+                SwiftAsyncResult::DirectBuffer {
+                    swift_type: self.swift_return_value_type(returns),
+                    element_swift_type,
+                    composite_mapping: None,
+                    enum_mapping,
+                }
+            }
+            Some(Transport::Span(SpanContent::Composite(layout))) => {
+                let c_struct = format!("___{}", layout.record_id.as_str());
+                let swift_record = self.swift_name_for_record(&layout.record_id);
+                let fields = self.composite_field_mappings(layout);
+                SwiftAsyncResult::DirectBuffer {
+                    swift_type: self.swift_return_value_type(returns),
+                    element_swift_type: c_struct,
+                    composite_mapping: Some(DirectBufferCompositeMapping {
+                        swift_record_type: swift_record,
+                        fields,
+                    }),
+                    enum_mapping: None,
+                }
+            }
             Some(Transport::Span(_)) => {
                 let decode_ops = result_shape.decode_ops.clone().unwrap_or_else(|| ReadSeq {
                     size: SizeExpr::Fixed(0),
@@ -1497,6 +1628,11 @@ impl<'a> SwiftLowerer<'a> {
             ErrorTransport::StatusCode => SwiftReturn::Throws {
                 ok: Box::new(SwiftReturn::Void),
                 err_type: "FfiError".to_string(),
+                result_decode: ReadSeq {
+                    size: SizeExpr::Fixed(0),
+                    ops: vec![],
+                    shape: WireShape::Value,
+                },
                 err_decode: ReadSeq {
                     size: SizeExpr::Fixed(0),
                     ops: vec![],
@@ -1511,6 +1647,7 @@ impl<'a> SwiftLowerer<'a> {
             } => SwiftReturn::Throws {
                 ok: Box::new(SwiftReturn::Void),
                 err_type: self.swift_error_type(returns),
+                result_decode: decode_ops.clone(),
                 err_decode: decode_ops.clone(),
                 err_is_string: self.error_is_string(returns),
                 err_encode: encode_ops.clone(),

@@ -29,7 +29,7 @@ public final class DataStore {
     /// Inserts a value into the store by key.
     public func insert(key: String) {
         var key = key
-        _ = key.withUTF8 { keyBuf in
+        key.withUTF8 { keyBuf in
             boltffi_data_store_insert(handle, keyBuf.baseAddress!, UInt(keyBuf.count))
         }
     }
