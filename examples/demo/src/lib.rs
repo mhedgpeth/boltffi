@@ -1,19 +1,21 @@
-pub mod async_funcs;
+pub mod async_fns;
 pub mod builtins;
 pub mod bytes;
 pub mod callbacks;
 pub mod classes;
+pub mod custom_types;
 pub mod enums;
 pub mod options;
 pub mod primitives;
 pub mod records;
 pub mod results;
 
-pub use async_funcs::*;
+pub use async_fns::*;
 pub use builtins::*;
 pub use bytes::*;
 pub use callbacks::*;
 pub use classes::*;
+pub use custom_types::*;
 pub use enums::*;
 pub use options::*;
 pub use primitives::*;

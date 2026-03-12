@@ -35,6 +35,7 @@ pub fn echo_i32(v: i32) -> i32 {
     v
 }
 
+/// Adds two 32-bit signed integers and returns the result.
 #[export]
 pub fn add_i32(a: i32, b: i32) -> i32 {
     a + b
@@ -76,16 +77,11 @@ pub fn add_f64(a: f64, b: f64) -> f64 {
 }
 
 #[export]
-pub fn echo_string(v: String) -> String {
+pub fn echo_usize(v: usize) -> usize {
     v
 }
 
 #[export]
-pub fn concat_strings(a: String, b: String) -> String {
-    format!("{}{}", a, b)
-}
-
-#[export]
-pub fn string_length(v: String) -> u32 {
-    v.len() as u32
+pub fn echo_isize(v: isize) -> isize {
+    v
 }

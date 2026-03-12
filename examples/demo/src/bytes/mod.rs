@@ -1,5 +1,6 @@
 use boltffi::*;
 
+/// Returns the byte buffer unchanged.
 #[export]
 pub fn echo_bytes(data: Vec<u8>) -> Vec<u8> {
     data

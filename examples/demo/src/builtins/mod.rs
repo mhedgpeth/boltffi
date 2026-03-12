@@ -4,6 +4,7 @@ use boltffi::*;
 use url::Url;
 use uuid::Uuid;
 
+/// Returns the duration unchanged.
 #[export]
 pub fn echo_duration(d: Duration) -> Duration {
     d
@@ -34,6 +35,7 @@ pub fn millis_to_system_time(millis: u64) -> SystemTime {
     UNIX_EPOCH + Duration::from_millis(millis)
 }
 
+/// Returns the UUID unchanged.
 #[export]
 pub fn echo_uuid(id: Uuid) -> Uuid {
     id
