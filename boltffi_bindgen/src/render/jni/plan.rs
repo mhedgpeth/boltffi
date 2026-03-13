@@ -159,6 +159,9 @@ pub struct JniCallbackReturn {
     pub jni_type: String,
     pub jni_call_type: String,
     pub c_type: String,
+    pub is_wire_encoded: bool,
+    pub out_ptr_name: Option<String>,
+    pub out_len_name: Option<String>,
 }
 
 impl JniCallbackMethod {
@@ -184,6 +187,27 @@ impl JniCallbackMethod {
         self.return_info
             .as_ref()
             .map(|r| r.c_type.as_str())
+            .unwrap_or("")
+    }
+
+    pub fn is_wire_encoded_return(&self) -> bool {
+        self.return_info
+            .as_ref()
+            .map(|r| r.is_wire_encoded)
+            .unwrap_or(false)
+    }
+
+    pub fn out_ptr_name(&self) -> &str {
+        self.return_info
+            .as_ref()
+            .and_then(|r| r.out_ptr_name.as_deref())
+            .unwrap_or("")
+    }
+
+    pub fn out_len_name(&self) -> &str {
+        self.return_info
+            .as_ref()
+            .and_then(|r| r.out_len_name.as_deref())
             .unwrap_or("")
     }
 }

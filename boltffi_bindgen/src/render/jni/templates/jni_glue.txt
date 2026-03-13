@@ -687,7 +687,7 @@ static uint64_t {{ cb.trait_name }}_vtable_clone(uint64_t handle) {
 
 {%- for method in cb.sync_methods %}
 
-static void {{ cb.trait_name }}_vtable_{{ method.ffi_name }}(uint64_t handle{% for param in method.c_params %}, {{ param.c_type }} {{ param.name }}{% endfor %}{% if method.has_return() %}, {{ method.c_return_type() }}* out{% endif %}, FfiStatus* status) {
+static void {{ cb.trait_name }}_vtable_{{ method.ffi_name }}(uint64_t handle{% for param in method.c_params %}, {{ param.c_type }} {{ param.name }}{% endfor %}, FfiStatus* status) {
     JNIEnv* env;
     int attached = 0;
     jint get_env_result = (*g_jvm)->GetEnv(g_jvm, (void**)&env, JNI_VERSION_1_6);
@@ -704,13 +704,37 @@ static void {{ cb.trait_name }}_vtable_{{ method.ffi_name }}(uint64_t handle{% f
 {%- for line in method.setup_lines %}
     {{ line }}
 {%- endfor %}
-{%- if method.has_return() %}
+{%- if method.is_wire_encoded_return() %}
+    *{{ method.out_ptr_name() }} = NULL;
+    *{{ method.out_len_name() }} = 0;
+    jbyteArray _jarr = (jbyteArray)(*env)->CallStaticObjectMethod(env, g_{{ cb.trait_name }}_callbacks_class, g_{{ cb.trait_name }}_{{ method.ffi_name }}_method, (jlong)handle{% for arg in method.jni_args %}, {{ arg }}{% endfor %});
+    if (boltffi_consume_pending_exception(env)) {
+        status->code = 1;
+        goto cleanup;
+    }
+    if (_jarr != NULL) {
+        jsize _len = (*env)->GetArrayLength(env, _jarr);
+        if (_len > 0) {
+            uint8_t* _ptr = (uint8_t*)malloc((size_t)_len);
+            (*env)->GetByteArrayRegion(env, _jarr, 0, _len, (jbyte*)_ptr);
+            if (_ptr == NULL) {
+                boltffi_throw_out_of_memory(env, "Failed to allocate callback return buffer");
+                status->code = 1;
+                (*env)->DeleteLocalRef(env, _jarr);
+                goto cleanup;
+            }
+            *{{ method.out_ptr_name() }} = _ptr;
+            *{{ method.out_len_name() }} = (uintptr_t)_len;
+        }
+        (*env)->DeleteLocalRef(env, _jarr);
+    }
+{%- elif method.has_return() %}
     {{ method.jni_return_type() }} _result = (*env)->CallStatic{{ method.jni_call_type() }}Method(env, g_{{ cb.trait_name }}_callbacks_class, g_{{ cb.trait_name }}_{{ method.ffi_name }}_method, (jlong)handle{% for arg in method.jni_args %}, {{ arg }}{% endfor %});
     if (boltffi_consume_pending_exception(env)) {
         status->code = 1;
         goto cleanup;
     }
-    *out = ({{ method.c_return_type() }})_result;
+    *{{ method.out_ptr_name() }} = ({{ method.c_return_type() }})_result;
 {%- else %}
     (*env)->CallStaticVoidMethod(env, g_{{ cb.trait_name }}_callbacks_class, g_{{ cb.trait_name }}_{{ method.ffi_name }}_method, (jlong)handle{% for arg in method.jni_args %}, {{ arg }}{% endfor %});
     if (boltffi_consume_pending_exception(env)) {
