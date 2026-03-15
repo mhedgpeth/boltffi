@@ -5,6 +5,56 @@ pub fn echo_vec_i32(v: Vec<i32>) -> Vec<i32> {
     v
 }
 
+#[export]
+pub fn echo_vec_i8(v: Vec<i8>) -> Vec<i8> {
+    v
+}
+
+#[export]
+pub fn echo_vec_u8(v: Vec<u8>) -> Vec<u8> {
+    v
+}
+
+#[export]
+pub fn echo_vec_i16(v: Vec<i16>) -> Vec<i16> {
+    v
+}
+
+#[export]
+pub fn echo_vec_u16(v: Vec<u16>) -> Vec<u16> {
+    v
+}
+
+#[export]
+pub fn echo_vec_u32(v: Vec<u32>) -> Vec<u32> {
+    v
+}
+
+#[export]
+pub fn echo_vec_i64(v: Vec<i64>) -> Vec<i64> {
+    v
+}
+
+#[export]
+pub fn echo_vec_u64(v: Vec<u64>) -> Vec<u64> {
+    v
+}
+
+#[export]
+pub fn echo_vec_isize(v: Vec<isize>) -> Vec<isize> {
+    v
+}
+
+#[export]
+pub fn echo_vec_usize(v: Vec<usize>) -> Vec<usize> {
+    v
+}
+
+#[export]
+pub fn echo_vec_f32(v: Vec<f32>) -> Vec<f32> {
+    v
+}
+
 /// Sums all elements in the vector. Uses i64 to avoid overflow
 /// on large inputs.
 #[export]

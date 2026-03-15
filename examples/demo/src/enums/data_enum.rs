@@ -41,6 +41,11 @@ pub fn make_rectangle(width: f64, height: f64) -> Shape {
     Shape::Rectangle { width, height }
 }
 
+#[export]
+pub fn echo_vec_shape(values: Vec<Shape>) -> Vec<Shape> {
+    values
+}
+
 #[data]
 #[derive(Clone, Debug, PartialEq)]
 pub enum Message {

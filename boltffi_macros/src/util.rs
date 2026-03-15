@@ -9,6 +9,7 @@ use std::path::{Path as FsPath, PathBuf};
 use syn::punctuated::Punctuated;
 use syn::{Item, Path, PathArguments, PathSegment, Type, UseTree};
 
+use crate::data_types::{self, DataTypeCategory};
 use crate::type_classification::NamedTypeTransport;
 
 pub fn ptr_ident(base: &syn::Ident) -> syn::Ident {
@@ -40,6 +41,7 @@ pub enum ParamTransform {
     OptionArcDynTrait(syn::Path),
     ImplTrait(syn::Path),
     VecPrimitive(syn::Type),
+    VecPassable(syn::Type),
     WireEncoded(WireEncodedParam),
     Passable(syn::Type),
 }
@@ -421,6 +423,8 @@ pub fn classify_param_transform(ty: &Type) -> ParamTransform {
         let inner_str = quote!(#inner_ty).to_string().replace(' ', "");
         if is_primitive_vec_inner(&inner_str) {
             return ParamTransform::VecPrimitive(inner_ty);
+        } else if is_scalar_data_type_for_call_site(&inner_ty) {
+            return ParamTransform::VecPassable(inner_ty);
         } else {
             return ParamTransform::WireEncoded(WireEncodedParam {
                 kind: WireEncodedParamKind::Vec,
@@ -454,6 +458,15 @@ pub fn classify_param_transform(ty: &Type) -> ParamTransform {
     } else {
         ParamTransform::PassThrough
     }
+}
+
+fn is_scalar_data_type_for_call_site(ty: &Type) -> bool {
+    let Ok(registry) = data_types::registry_for_current_crate() else {
+        return false;
+    };
+    registry
+        .category_for(ty)
+        .is_some_and(|category| matches!(category, DataTypeCategory::Scalar))
 }
 
 fn is_named_nominal_type(ty: &Type) -> bool {

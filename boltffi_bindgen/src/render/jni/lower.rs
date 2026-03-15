@@ -15,7 +15,7 @@ use crate::ir::ids::{CallbackId, EnumId, ParamName, RecordId};
 use crate::ir::ops::SizeExpr;
 use crate::ir::plan::{AbiType, Mutability, SpanContent};
 use crate::ir::types::{PrimitiveType, TypeExpr};
-use crate::ir::{ParamRole, ReturnShape, Transport};
+use crate::ir::{ParamRole, ReturnShape, ScalarOrigin, Transport};
 use crate::render::kotlin::{NamingConvention, primitives};
 
 use super::plan::{
@@ -618,6 +618,27 @@ impl<'a> JniLowerer<'a> {
                 }
             }
             Transport::Span(SpanContent::Scalar(origin)) => {
+                if self.use_buffer_for_span_scalar_param(param, origin) {
+                    let jni_type = "jobject".to_string();
+                    let ptr_type = match origin {
+                        ScalarOrigin::Primitive(PrimitiveType::ISize) => "const intptr_t*",
+                        ScalarOrigin::Primitive(PrimitiveType::USize) => "const uintptr_t*",
+                        _ => {
+                            unreachable!("buffer span scalar override only applies to isize/usize")
+                        }
+                    };
+                    let ffi_arg = format!("({})_{}_ptr, (uintptr_t)_{}_len", ptr_type, name, name);
+                    return JniParam {
+                        name,
+                        ffi_arg,
+                        jni_decl: format!(
+                            "{} {}",
+                            jni_type,
+                            naming::escape_c_keyword(param.name.as_str())
+                        ),
+                        kind: JniParamKind::Buffer,
+                    };
+                }
                 let primitive = origin.primitive();
                 let c_type = self.primitive_c_type(primitive);
                 let is_mutable = matches!(mutability, Mutability::Mutable);
@@ -690,6 +711,16 @@ impl<'a> JniLowerer<'a> {
             jni_decl,
             kind,
         }
+    }
+
+    fn use_buffer_for_span_scalar_param(&self, param: &ParamDef, origin: &ScalarOrigin) -> bool {
+        matches!(
+            (&param.type_expr, origin),
+            (
+                TypeExpr::Vec(inner),
+                ScalarOrigin::Primitive(PrimitiveType::ISize | PrimitiveType::USize)
+            ) if matches!(inner.as_ref(), TypeExpr::Primitive(PrimitiveType::ISize | PrimitiveType::USize))
+        )
     }
 
     fn scalar_jni_type(&self, abi_type: &AbiType) -> String {

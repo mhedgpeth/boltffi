@@ -513,6 +513,7 @@ fn unsupported_async_param(transform: &ParamTransform) -> Option<UnsupportedAsyn
         | ParamTransform::OwnedString
         | ParamTransform::SliceRef(_)
         | ParamTransform::VecPrimitive(_)
+        | ParamTransform::VecPassable(_)
         | ParamTransform::WireEncoded(_)
         | ParamTransform::Passable(_)
         | ParamTransform::ImplTrait(_)
@@ -915,6 +916,49 @@ fn lower_vec_primitive_param_transform(
     acc.call_args.push(quote! { #name });
 }
 
+fn lower_vec_passable_param_transform(
+    acc: &mut ParamLoweringState,
+    name: &syn::Ident,
+    inner_ty: &syn::Type,
+    mode: ParamExecutionMode,
+) {
+    let ptr_name = ptr_ident(name);
+    let len_name = len_ident(name);
+    let repr_ty = quote! { <#inner_ty as ::boltffi::__private::Passable>::In };
+    acc.ffi_params.push(quote! { #ptr_name: *const #repr_ty });
+    acc.ffi_params.push(quote! { #len_name: usize });
+
+    match mode {
+        ParamExecutionMode::Sync => {
+            acc.setup.push(quote! {
+                let #name: Vec<#inner_ty> = if #ptr_name.is_null() {
+                    Vec::new()
+                } else {
+                    ::core::slice::from_raw_parts(#ptr_name, #len_name)
+                        .iter()
+                        .map(|raw| unsafe { <#inner_ty as ::boltffi::__private::Passable>::unpack(*raw) })
+                        .collect()
+                };
+            });
+        }
+        ParamExecutionMode::Async => {
+            acc.setup.push(quote! {
+                let #name: Vec<#inner_ty> = if #ptr_name.is_null() {
+                    Vec::new()
+                } else {
+                    unsafe { ::core::slice::from_raw_parts(#ptr_name, #len_name) }
+                        .iter()
+                        .map(|raw| unsafe { <#inner_ty as ::boltffi::__private::Passable>::unpack(*raw) })
+                        .collect()
+                };
+            });
+            acc.move_vars.push(name.clone());
+        }
+    }
+
+    acc.call_args.push(quote! { #name });
+}
+
 fn lower_wire_encoded_param_transform(
     acc: &mut ParamLoweringState,
     name: &syn::Ident,
@@ -1091,6 +1135,9 @@ fn transform_params_with_mode(
                     }
                     ParamTransform::VecPrimitive(inner_ty) => {
                         lower_vec_primitive_param_transform(&mut acc, &name, &inner_ty, mode)
+                    }
+                    ParamTransform::VecPassable(inner_ty) => {
+                        lower_vec_passable_param_transform(&mut acc, &name, &inner_ty, mode)
                     }
                     ParamTransform::WireEncoded(wire_param) => lower_wire_encoded_param_transform(
                         &mut acc,

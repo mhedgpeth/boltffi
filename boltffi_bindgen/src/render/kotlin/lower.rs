@@ -3530,12 +3530,70 @@ impl<'a> KotlinLowerer<'a> {
 
     fn read_seq_from_repr(&self, repr: &TypeExpr) -> ReadSeq {
         self.find_read_seq_for_type(repr)
+            .or_else(|| self.synthesized_read_seq_for_repr(repr))
             .unwrap_or_else(|| panic!("missing read ops for custom repr: {:?}", repr))
     }
 
     fn write_seq_from_repr(&self, repr: &TypeExpr) -> WriteSeq {
         self.find_write_seq_for_type(repr)
+            .or_else(|| self.synthesized_write_seq_for_repr(repr))
             .unwrap_or_else(|| panic!("missing write ops for custom repr: {:?}", repr))
+    }
+
+    fn synthesized_read_seq_for_repr(&self, repr: &TypeExpr) -> Option<ReadSeq> {
+        match repr {
+            TypeExpr::Primitive(primitive) => Some(ReadSeq {
+                size: SizeExpr::Fixed(primitive.wire_size_bytes()),
+                ops: vec![ReadOp::Primitive {
+                    primitive: *primitive,
+                    offset: OffsetExpr::Base,
+                }],
+                shape: WireShape::Value,
+            }),
+            TypeExpr::String => Some(ReadSeq {
+                size: SizeExpr::Runtime,
+                ops: vec![ReadOp::String {
+                    offset: OffsetExpr::Base,
+                }],
+                shape: WireShape::Value,
+            }),
+            TypeExpr::Bytes => Some(ReadSeq {
+                size: SizeExpr::Runtime,
+                ops: vec![ReadOp::Bytes {
+                    offset: OffsetExpr::Base,
+                }],
+                shape: WireShape::Value,
+            }),
+            _ => None,
+        }
+    }
+
+    fn synthesized_write_seq_for_repr(&self, repr: &TypeExpr) -> Option<WriteSeq> {
+        match repr {
+            TypeExpr::Primitive(primitive) => Some(WriteSeq {
+                size: SizeExpr::Fixed(primitive.wire_size_bytes()),
+                ops: vec![WriteOp::Primitive {
+                    primitive: *primitive,
+                    value: ValueExpr::Var("repr".to_string()),
+                }],
+                shape: WireShape::Value,
+            }),
+            TypeExpr::String => Some(WriteSeq {
+                size: SizeExpr::StringLen(ValueExpr::Var("repr".to_string())),
+                ops: vec![WriteOp::String {
+                    value: ValueExpr::Var("repr".to_string()),
+                }],
+                shape: WireShape::Value,
+            }),
+            TypeExpr::Bytes => Some(WriteSeq {
+                size: SizeExpr::BytesLen(ValueExpr::Var("repr".to_string())),
+                ops: vec![WriteOp::Bytes {
+                    value: ValueExpr::Var("repr".to_string()),
+                }],
+                shape: WireShape::Value,
+            }),
+            _ => None,
+        }
     }
 
     fn find_read_seq_for_type(&self, ty: &TypeExpr) -> Option<ReadSeq> {

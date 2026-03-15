@@ -5,10 +5,17 @@ import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayDeque;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
+import java.util.function.IntFunction;
 
 final class WireReader {
     private final byte[] data;
     private int pos;
+    private static final int MIN_LONG_VEC_INPUT_CAPACITY = 16;
+    private static final ThreadLocal<ArrayList<ByteBuffer>> LONG_VEC_INPUT_SLOTS =
+            ThreadLocal.withInitial(ArrayList::new);
 
     WireReader(byte[] data) {
         this.data = data;
@@ -65,6 +72,17 @@ final class WireReader {
         }
     }
 
+    private int checkedByteCount(int count, int elementSize, String kind) {
+        if (count < 0) throw new RuntimeException("corrupt wire: negative " + kind + " length");
+        long byteCountLong = (long) count * (long) elementSize;
+        if (byteCountLong > Integer.MAX_VALUE) {
+            throw new RuntimeException("corrupt wire: " + kind + " payload too large");
+        }
+        int byteCount = (int) byteCountLong;
+        requireAvailable(byteCount, kind + " payload");
+        return byteCount;
+    }
+
     String readString() {
         int len = readI32();
         if (len == 0) return "";
@@ -84,6 +102,318 @@ final class WireReader {
         System.arraycopy(data, pos, v, 0, len);
         pos += len;
         return v;
+    }
+
+    boolean[] readBooleanArray() {
+        int count = readI32();
+        if (count == 0) return new boolean[0];
+        int byteCount = checkedByteCount(count, 1, "boolean vec");
+        boolean[] result = new boolean[count];
+        int end = pos + byteCount;
+        for (int index = 0, dataIndex = pos; dataIndex < end; index++, dataIndex++) {
+            result[index] = data[dataIndex] != 0;
+        }
+        pos = end;
+        return result;
+    }
+
+    byte[] readByteArray() {
+        int count = readI32();
+        if (count == 0) return new byte[0];
+        int byteCount = checkedByteCount(count, 1, "byte vec");
+        byte[] result = new byte[count];
+        System.arraycopy(data, pos, result, 0, byteCount);
+        pos += byteCount;
+        return result;
+    }
+
+    short[] readShortArray() {
+        int count = readI32();
+        if (count == 0) return new short[0];
+        int byteCount = checkedByteCount(count, 2, "short vec");
+        short[] result = new short[count];
+        ByteBuffer.wrap(data, pos, byteCount).order(ByteOrder.LITTLE_ENDIAN).asShortBuffer().get(result);
+        pos += byteCount;
+        return result;
+    }
+
+    int[] readIntArray() {
+        int count = readI32();
+        if (count == 0) return new int[0];
+        int byteCount = checkedByteCount(count, 4, "int vec");
+        int[] result = new int[count];
+        ByteBuffer.wrap(data, pos, byteCount).order(ByteOrder.LITTLE_ENDIAN).asIntBuffer().get(result);
+        pos += byteCount;
+        return result;
+    }
+
+    long[] readLongArray() {
+        int count = readI32();
+        if (count == 0) return new long[0];
+        int byteCount = checkedByteCount(count, 8, "long vec");
+        long[] result = new long[count];
+        ByteBuffer.wrap(data, pos, byteCount).order(ByteOrder.LITTLE_ENDIAN).asLongBuffer().get(result);
+        pos += byteCount;
+        return result;
+    }
+
+    float[] readFloatArray() {
+        int count = readI32();
+        if (count == 0) return new float[0];
+        int byteCount = checkedByteCount(count, 4, "float vec");
+        float[] result = new float[count];
+        ByteBuffer.wrap(data, pos, byteCount).order(ByteOrder.LITTLE_ENDIAN).asFloatBuffer().get(result);
+        pos += byteCount;
+        return result;
+    }
+
+    double[] readDoubleArray() {
+        int count = readI32();
+        if (count == 0) return new double[0];
+        int byteCount = checkedByteCount(count, 8, "double vec");
+        double[] result = new double[count];
+        ByteBuffer.wrap(data, pos, byteCount).order(ByteOrder.LITTLE_ENDIAN).asDoubleBuffer().get(result);
+        pos += byteCount;
+        return result;
+    }
+
+    ByteBuffer readBlittableBuffer(int count, int elementSize) {
+        if (count < 0) throw new RuntimeException("corrupt wire: negative vec length");
+        long byteCountLong = (long) count * (long) elementSize;
+        if (byteCountLong > Integer.MAX_VALUE) {
+            throw new RuntimeException("corrupt wire: vec payload too large");
+        }
+        int byteCount = (int) byteCountLong;
+        requireAvailable(byteCount, "blittable vec payload");
+        ByteBuffer view = ByteBuffer
+                .wrap(data, pos, byteCount)
+                .slice()
+                .order(ByteOrder.LITTLE_ENDIAN);
+        pos += byteCount;
+        return view;
+    }
+
+    static boolean[] booleanArrayFromRawBuffer(byte[] buf) {
+        if (buf == null || buf.length == 0) return new boolean[0];
+        boolean[] result = new boolean[buf.length];
+        for (int i = 0; i < buf.length; i++) result[i] = buf[i] != 0;
+        return result;
+    }
+
+    static short[] shortArrayFromRawBuffer(byte[] buf) {
+        if (buf == null || buf.length == 0) return new short[0];
+        ByteBuffer bb = ByteBuffer.wrap(buf).order(ByteOrder.LITTLE_ENDIAN);
+        short[] result = new short[buf.length / 2];
+        bb.asShortBuffer().get(result);
+        return result;
+    }
+
+    static int[] intArrayFromRawBuffer(byte[] buf) {
+        if (buf == null || buf.length == 0) return new int[0];
+        ByteBuffer bb = ByteBuffer.wrap(buf).order(ByteOrder.LITTLE_ENDIAN);
+        int[] result = new int[buf.length / 4];
+        bb.asIntBuffer().get(result);
+        return result;
+    }
+
+    static long[] longArrayFromRawBuffer(byte[] buf) {
+        if (buf == null || buf.length == 0) return new long[0];
+        ByteBuffer bb = ByteBuffer.wrap(buf).order(ByteOrder.LITTLE_ENDIAN);
+        long[] result = new long[buf.length / 8];
+        bb.asLongBuffer().get(result);
+        return result;
+    }
+
+    static float[] floatArrayFromRawBuffer(byte[] buf) {
+        if (buf == null || buf.length == 0) return new float[0];
+        ByteBuffer bb = ByteBuffer.wrap(buf).order(ByteOrder.LITTLE_ENDIAN);
+        float[] result = new float[buf.length / 4];
+        bb.asFloatBuffer().get(result);
+        return result;
+    }
+
+    static double[] doubleArrayFromRawBuffer(byte[] buf) {
+        if (buf == null || buf.length == 0) return new double[0];
+        ByteBuffer bb = ByteBuffer.wrap(buf).order(ByteOrder.LITTLE_ENDIAN);
+        double[] result = new double[buf.length / 8];
+        bb.asDoubleBuffer().get(result);
+        return result;
+    }
+
+    @FunctionalInterface
+    interface ByteMapper<T> {
+        T apply(byte value);
+    }
+
+    @FunctionalInterface
+    interface ShortMapper<T> {
+        T apply(short value);
+    }
+
+    @FunctionalInterface
+    interface IntMapper<T> {
+        T apply(int value);
+    }
+
+    @FunctionalInterface
+    interface LongMapper<T> {
+        T apply(long value);
+    }
+
+    @FunctionalInterface
+    interface ByteExtractor<T> {
+        byte apply(T value);
+    }
+
+    @FunctionalInterface
+    interface ShortExtractor<T> {
+        short apply(T value);
+    }
+
+    @FunctionalInterface
+    interface IntExtractor<T> {
+        int apply(T value);
+    }
+
+    @FunctionalInterface
+    interface LongExtractor<T> {
+        long apply(T value);
+    }
+
+    static <T> byte[] toByteArray(List<T> values, ByteExtractor<T> extractor) {
+        if (values.isEmpty()) return new byte[0];
+        byte[] result = new byte[values.size()];
+        int index = 0;
+        for (T value : values) result[index++] = extractor.apply(value);
+        return result;
+    }
+
+    static <T> short[] toShortArray(List<T> values, ShortExtractor<T> extractor) {
+        if (values.isEmpty()) return new short[0];
+        short[] result = new short[values.size()];
+        int index = 0;
+        for (T value : values) result[index++] = extractor.apply(value);
+        return result;
+    }
+
+    static <T> int[] toIntArray(List<T> values, IntExtractor<T> extractor) {
+        if (values.isEmpty()) return new int[0];
+        int[] result = new int[values.size()];
+        int index = 0;
+        for (T value : values) result[index++] = extractor.apply(value);
+        return result;
+    }
+
+    static <T> long[] toLongArray(List<T> values, LongExtractor<T> extractor) {
+        if (values.isEmpty()) return new long[0];
+        long[] result = new long[values.size()];
+        int index = 0;
+        for (T value : values) result[index++] = extractor.apply(value);
+        return result;
+    }
+
+    static ByteBuffer encodeLongVecInput(long[] values, int slot) {
+        if (slot < 0) {
+            throw new RuntimeException("invalid long vec slot index");
+        }
+        int count = values == null ? 0 : values.length;
+        long requiredCapacityLong = 4L + ((long) count * 8L);
+        if (requiredCapacityLong > Integer.MAX_VALUE) {
+            throw new RuntimeException("input too large: long vec payload exceeds JVM buffer limits");
+        }
+        int requiredCapacity = (int) requiredCapacityLong;
+        ArrayList<ByteBuffer> buffers = LONG_VEC_INPUT_SLOTS.get();
+        while (buffers.size() <= slot) {
+            buffers.add(ByteBuffer.allocateDirect(MIN_LONG_VEC_INPUT_CAPACITY).order(ByteOrder.LITTLE_ENDIAN));
+        }
+        ByteBuffer buffer = buffers.get(slot);
+        if (buffer.capacity() < requiredCapacity) {
+            int grownCapacity = Math.max(buffer.capacity() * 2, requiredCapacity);
+            buffer = ByteBuffer.allocateDirect(grownCapacity).order(ByteOrder.LITTLE_ENDIAN);
+            buffers.set(slot, buffer);
+        } else {
+            buffer.clear();
+            buffer.order(ByteOrder.LITTLE_ENDIAN);
+        }
+        buffer.putInt(count);
+        if (values != null) {
+            for (long value : values) {
+                buffer.putLong(value);
+            }
+        }
+        buffer.flip();
+        return buffer;
+    }
+
+    static <T> List<T> mapByteArray(byte[] values, ByteMapper<T> mapper) {
+        if (values == null || values.length == 0) return Collections.emptyList();
+        List<T> result = new ArrayList<>(values.length);
+        for (byte value : values) result.add(mapper.apply(value));
+        return result;
+    }
+
+    static <T> List<T> mapShortArray(short[] values, ShortMapper<T> mapper) {
+        if (values.length == 0) return Collections.emptyList();
+        List<T> result = new ArrayList<>(values.length);
+        for (short value : values) result.add(mapper.apply(value));
+        return result;
+    }
+
+    static <T> List<T> mapShortRawBuffer(byte[] values, ShortMapper<T> mapper) {
+        if (values == null || values.length == 0) return Collections.emptyList();
+        if ((values.length & 1) != 0) {
+            throw new RuntimeException("corrupt buffer: expected short-aligned enum vec payload");
+        }
+        ByteBuffer buffer = ByteBuffer.wrap(values).order(ByteOrder.LITTLE_ENDIAN);
+        int count = values.length / 2;
+        List<T> result = new ArrayList<>(count);
+        for (int index = 0; index < count; index++) result.add(mapper.apply(buffer.getShort()));
+        return result;
+    }
+
+    static <T> List<T> mapIntArray(int[] values, IntMapper<T> mapper) {
+        if (values.length == 0) return Collections.emptyList();
+        List<T> result = new ArrayList<>(values.length);
+        for (int value : values) result.add(mapper.apply(value));
+        return result;
+    }
+
+    static <T> List<T> mapIntRawBuffer(byte[] values, IntMapper<T> mapper) {
+        if (values == null || values.length == 0) return Collections.emptyList();
+        if ((values.length & 3) != 0) {
+            throw new RuntimeException("corrupt buffer: expected int-aligned enum vec payload");
+        }
+        ByteBuffer buffer = ByteBuffer.wrap(values).order(ByteOrder.LITTLE_ENDIAN);
+        int count = values.length / 4;
+        List<T> result = new ArrayList<>(count);
+        for (int index = 0; index < count; index++) result.add(mapper.apply(buffer.getInt()));
+        return result;
+    }
+
+    static <T> List<T> mapLongArray(long[] values, LongMapper<T> mapper) {
+        if (values.length == 0) return Collections.emptyList();
+        List<T> result = new ArrayList<>(values.length);
+        for (long value : values) result.add(mapper.apply(value));
+        return result;
+    }
+
+    static <T> List<T> mapLongRawBuffer(byte[] values, LongMapper<T> mapper) {
+        if (values == null || values.length == 0) return Collections.emptyList();
+        if ((values.length & 7) != 0) {
+            throw new RuntimeException("corrupt buffer: expected long-aligned enum vec payload");
+        }
+        ByteBuffer buffer = ByteBuffer.wrap(values).order(ByteOrder.LITTLE_ENDIAN);
+        int count = values.length / 8;
+        List<T> result = new ArrayList<>(count);
+        for (int index = 0; index < count; index++) result.add(mapper.apply(buffer.getLong()));
+        return result;
+    }
+
+    <T> List<T> readList(IntFunction<T> decoder) {
+        int count = readI32();
+        List<T> result = new ArrayList<>(count);
+        for (int i = 0; i < count; i++) result.add(decoder.apply(i));
+        return result;
     }
 }
 {% if module.needs_wire_writer() %}
@@ -126,6 +456,19 @@ final class WireWriter implements AutoCloseable {
     void writeF32(float v) { ensureCapacity(4); buf.putFloat(v); }
     void writeF64(double v) { ensureCapacity(8); buf.putDouble(v); }
 
+    @FunctionalInterface
+    interface RawBytesWriter {
+        void write(ByteBuffer buffer, int baseOffset);
+    }
+
+    void writeRawBytes(int byteCount, RawBytesWriter writer) {
+        if (byteCount <= 0) return;
+        ensureCapacity(byteCount);
+        int baseOffset = buf.position();
+        writer.write(buf, baseOffset);
+        buf.position(baseOffset + byteCount);
+    }
+
     void writeString(String v) {
         byte[] utf8 = v.getBytes(StandardCharsets.UTF_8);
         writeI32(utf8.length);
@@ -139,8 +482,66 @@ final class WireWriter implements AutoCloseable {
         buf.put(v);
     }
 
+    void writeBooleanArray(boolean[] v) {
+        writeI32(v.length);
+        ensureCapacity(v.length);
+        for (boolean b : v) buf.put((byte) (b ? 1 : 0));
+    }
+
+    void writeByteArray(byte[] v) {
+        writeI32(v.length);
+        ensureCapacity(v.length);
+        buf.put(v);
+    }
+
+    void writeShortArray(short[] v) {
+        writeI32(v.length);
+        int byteCount = v.length * 2;
+        ensureCapacity(byteCount);
+        buf.asShortBuffer().put(v);
+        buf.position(buf.position() + byteCount);
+    }
+
+    void writeIntArray(int[] v) {
+        writeI32(v.length);
+        int byteCount = v.length * 4;
+        ensureCapacity(byteCount);
+        buf.asIntBuffer().put(v);
+        buf.position(buf.position() + byteCount);
+    }
+
+    void writeLongArray(long[] v) {
+        writeI32(v.length);
+        int byteCount = v.length * 8;
+        ensureCapacity(byteCount);
+        buf.asLongBuffer().put(v);
+        buf.position(buf.position() + byteCount);
+    }
+
+    void writeFloatArray(float[] v) {
+        writeI32(v.length);
+        int byteCount = v.length * 4;
+        ensureCapacity(byteCount);
+        buf.asFloatBuffer().put(v);
+        buf.position(buf.position() + byteCount);
+    }
+
+    void writeDoubleArray(double[] v) {
+        writeI32(v.length);
+        int byteCount = v.length * 8;
+        ensureCapacity(byteCount);
+        buf.asDoubleBuffer().put(v);
+        buf.position(buf.position() + byteCount);
+    }
+
     static int stringWireSize(String v) {
-        return 4 + v.getBytes(StandardCharsets.UTF_8).length;
+        return 4 + (v.length() * 3);
+    }
+
+    static <T> int listWireSize(List<T> list, java.util.function.ToIntFunction<T> sizer) {
+        int total = 4;
+        for (T item : list) total += sizer.applyAsInt(item);
+        return total;
     }
 
     @Override

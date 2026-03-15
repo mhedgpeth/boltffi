@@ -3,6 +3,13 @@ package {{ package_name }};
 {% if !record.uses_native_record_syntax() %}
 import java.util.Objects;
 {% endif %}
+{% if record.is_blittable() %}
+import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
+{% endif %}
 {% if record.uses_native_record_syntax() %}
 public record {{ record.class_name }}({% for field in record.fields %}{{ field.java_type }} {{ field.name }}{% if !loop.last %}, {% endif %}{% endfor %}) {
 {% else %}
@@ -46,6 +53,63 @@ public final class {{ record.class_name }} {
         {{ field.wire_encode_expr }};
 {%- endfor %}
     }
+
+{% if let Some(layout) = record.blittable_layout %}
+    static final int STRUCT_SIZE = {{ layout.struct_size }};
+{%- for field in layout.fields %}
+    private static final int OFFSET_{{ field.const_name }} = {{ field.offset }};
+{%- endfor %}
+
+    private static {{ record.class_name }} decodeBlittableFromBuffer(ByteBuffer buf, int base) {
+        return new {{ record.class_name }}(
+{%- for field in layout.fields %}
+            {{ field.decode_expr }}{% if !loop.last %},{% endif %}
+{%- endfor %}
+        );
+    }
+
+    private static void writeBlittableToBuffer(ByteBuffer buf, int base, {{ record.class_name }} item) {
+{%- for field in layout.fields %}
+        {{ field.encode_expr }};
+{%- endfor %}
+    }
+
+    static List<{{ record.class_name }}> decodeBlittableVec(WireReader reader) {
+        int count = reader.readI32();
+        if (count == 0) return Collections.emptyList();
+        ByteBuffer buf = reader.readBlittableBuffer(count, STRUCT_SIZE);
+        List<{{ record.class_name }}> result = new ArrayList<>(count);
+        for (int index = 0; index < count; index++) {
+            result.add(decodeBlittableFromBuffer(buf, index * STRUCT_SIZE));
+        }
+        return result;
+    }
+
+    static List<{{ record.class_name }}> decodeBlittableVecFromRawBuffer(byte[] raw) {
+        if (raw == null || raw.length == 0) return Collections.emptyList();
+        if (raw.length % STRUCT_SIZE != 0) {
+            throw new RuntimeException("corrupt buffer: invalid blittable vec length for {{ record.class_name }}");
+        }
+        ByteBuffer buf = ByteBuffer.wrap(raw).order(ByteOrder.LITTLE_ENDIAN);
+        int count = raw.length / STRUCT_SIZE;
+        List<{{ record.class_name }}> result = new ArrayList<>(count);
+        for (int index = 0; index < count; index++) {
+            result.add(decodeBlittableFromBuffer(buf, index * STRUCT_SIZE));
+        }
+        return result;
+    }
+
+    static void encodeBlittableVec(WireWriter wire, List<{{ record.class_name }}> items) {
+        wire.writeI32(items.size());
+        int byteCount = items.size() * STRUCT_SIZE;
+        wire.writeRawBytes(byteCount, (buf, baseOffset) -> {
+            for (int index = 0; index < items.size(); index++) {
+                int base = baseOffset + index * STRUCT_SIZE;
+                writeBlittableToBuffer(buf, base, items.get(index));
+            }
+        });
+    }
+{% endif %}
 
 {% if !record.uses_native_record_syntax() %}
     @Override

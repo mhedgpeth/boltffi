@@ -784,9 +784,7 @@ impl<'a> SwiftLowerer<'a> {
                 let primitive = origin.primitive();
                 let element_abi = AbiType::from(primitive);
                 let element_type = self.abi_to_swift(&element_abi);
-                if element_abi == AbiType::U8 && *mutability == Mutability::Shared {
-                    ("Data".to_string(), SwiftConversion::ToData)
-                } else if let ScalarOrigin::CStyleEnum { enum_id, .. } = origin {
+                if let ScalarOrigin::CStyleEnum { enum_id, .. } = origin {
                     let swift_enum = self.swift_name_for_enum(enum_id);
                     (
                         format!("[{}]", swift_enum),
@@ -795,6 +793,8 @@ impl<'a> SwiftLowerer<'a> {
                             element_type: element_type.clone(),
                         },
                     )
+                } else if element_abi == AbiType::U8 && *mutability == Mutability::Shared {
+                    ("Data".to_string(), SwiftConversion::ToData)
                 } else {
                     let conversion = match mutability {
                         Mutability::Mutable => SwiftConversion::MutableBuffer {

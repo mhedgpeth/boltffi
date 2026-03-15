@@ -54,3 +54,8 @@ pub fn echo_log_level(level: LogLevel) -> LogLevel {
 pub fn should_log(level: LogLevel, min_level: LogLevel) -> bool {
     (level as u8) >= (min_level as u8)
 }
+
+#[export]
+pub fn echo_vec_log_level(levels: Vec<LogLevel>) -> Vec<LogLevel> {
+    levels
+}

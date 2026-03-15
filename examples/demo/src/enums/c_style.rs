@@ -29,6 +29,11 @@ pub fn is_active(s: Status) -> bool {
     matches!(s, Status::Active)
 }
 
+#[export]
+pub fn echo_vec_status(values: Vec<Status>) -> Vec<Status> {
+    values
+}
+
 #[data]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum Direction {

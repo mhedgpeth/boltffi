@@ -4,8 +4,9 @@ use super::JavaOptions;
 use super::mappings;
 use super::names::NamingConvention;
 use super::plan::{
-    JavaEnum, JavaEnumField, JavaEnumKind, JavaEnumVariant, JavaFunction, JavaModule, JavaParam,
-    JavaRecord, JavaRecordField, JavaRecordShape, JavaReturnStrategy, JavaWireWriter,
+    JavaBlittableField, JavaBlittableLayout, JavaEnum, JavaEnumField, JavaEnumKind,
+    JavaEnumVariant, JavaFunction, JavaModule, JavaParam, JavaRecord, JavaRecordField,
+    JavaRecordShape, JavaReturnStrategy, JavaWireWriter,
 };
 use crate::ir::abi::{
     AbiCall, AbiContract, AbiEnum, AbiEnumField, AbiEnumPayload, AbiEnumVariant, AbiParam,
@@ -14,8 +15,10 @@ use crate::ir::abi::{
 use crate::ir::contract::FfiContract;
 use crate::ir::definitions::{EnumDef, EnumRepr, FieldDef, FunctionDef, RecordDef, ReturnDef};
 use crate::ir::ids::{FieldName, RecordId};
-use crate::ir::ops::{FieldWriteOp, ReadOp, ReadSeq, SizeExpr, ValueExpr, WriteOp, WriteSeq};
-use crate::ir::plan::{ScalarOrigin, Transport};
+use crate::ir::ops::{
+    FieldReadOp, FieldWriteOp, OffsetExpr, ReadOp, ReadSeq, SizeExpr, ValueExpr, WriteOp, WriteSeq,
+};
+use crate::ir::plan::{ScalarOrigin, SpanContent, Transport};
 use crate::ir::types::{PrimitiveType, TypeExpr};
 
 pub struct JavaLowerer<'a> {
@@ -51,6 +54,7 @@ impl<'a> JavaLowerer<'a> {
             TypeExpr::Primitive(_) | TypeExpr::String | TypeExpr::Void => true,
             TypeExpr::Record(id) => supported.contains(id.as_str()),
             TypeExpr::Enum(id) => supported.contains(id.as_str()),
+            TypeExpr::Vec(inner) => Self::is_leaf_supported(inner, supported),
             _ => false,
         }
     }
@@ -184,7 +188,8 @@ impl<'a> JavaLowerer<'a> {
             .iter()
             .map(|field| self.lower_record_field(&record.id, field))
             .collect();
-        let shape = if self.options.min_java_version.supports_records() {
+        let blittable_layout = self.lower_blittable_layout(&record.id);
+        let shape = if self.can_use_native_record_syntax(record) {
             JavaRecordShape::NativeRecord
         } else {
             JavaRecordShape::ClassicClass
@@ -193,7 +198,60 @@ impl<'a> JavaLowerer<'a> {
             shape,
             class_name,
             fields,
+            blittable_layout,
         }
+    }
+
+    fn can_use_native_record_syntax(&self, record: &RecordDef) -> bool {
+        self.options.min_java_version.supports_records()
+            && !record
+                .fields
+                .iter()
+                .any(|field| Self::is_primitive_vec(&field.type_expr))
+    }
+
+    fn is_primitive_vec(ty: &TypeExpr) -> bool {
+        matches!(ty, TypeExpr::Vec(inner) if matches!(inner.as_ref(), TypeExpr::Primitive(_)))
+    }
+
+    fn lower_blittable_layout(&self, record_id: &RecordId) -> Option<JavaBlittableLayout> {
+        let abi_record = self.abi_record_for(record_id)?;
+        if !abi_record.is_blittable {
+            return None;
+        }
+        let struct_size = abi_record.size?;
+        let fields = match abi_record.decode_ops.ops.first() {
+            Some(ReadOp::Record { fields, .. }) => fields
+                .iter()
+                .map(Self::lower_blittable_field)
+                .collect::<Option<Vec<_>>>()?,
+            _ => return None,
+        };
+        Some(JavaBlittableLayout {
+            struct_size,
+            fields,
+        })
+    }
+
+    fn lower_blittable_field(field: &FieldReadOp) -> Option<JavaBlittableField> {
+        let (primitive, offset) = match field.seq.ops.first() {
+            Some(ReadOp::Primitive { primitive, offset }) => (*primitive, offset),
+            _ => return None,
+        };
+        let offset = match offset {
+            OffsetExpr::Base => 0,
+            OffsetExpr::BasePlus(offset) => *offset,
+            _ => return None,
+        };
+        let name = NamingConvention::field_name(field.name.as_str());
+        let const_name = NamingConvention::enum_constant_name(field.name.as_str());
+        Some(JavaBlittableField {
+            name: name.clone(),
+            const_name: const_name.clone(),
+            offset,
+            decode_expr: java_blittable_decode_expr(primitive, &const_name),
+            encode_expr: java_blittable_encode_expr(primitive, &const_name, &name),
+        })
     }
 
     fn lower_record_field(&self, record_id: &RecordId, field: &FieldDef) -> JavaRecordField {
@@ -227,6 +285,12 @@ impl<'a> JavaLowerer<'a> {
             TypeExpr::String | TypeExpr::Record(_) | TypeExpr::Enum(_) => {
                 format!("Objects.equals(this.{field}, other.{field})")
             }
+            TypeExpr::Vec(inner) => match inner.as_ref() {
+                TypeExpr::Primitive(_) => {
+                    format!("java.util.Arrays.equals(this.{field}, other.{field})")
+                }
+                _ => format!("Objects.equals(this.{field}, other.{field})"),
+            },
             _ => panic!("unsupported Java record field equality type: {:?}", ty),
         }
     }
@@ -253,6 +317,10 @@ impl<'a> JavaLowerer<'a> {
             TypeExpr::String | TypeExpr::Record(_) | TypeExpr::Enum(_) => {
                 format!("Objects.hashCode({field})")
             }
+            TypeExpr::Vec(inner) => match inner.as_ref() {
+                TypeExpr::Primitive(_) => format!("java.util.Arrays.hashCode({field})"),
+                _ => format!("Objects.hashCode({field})"),
+            },
             _ => panic!("unsupported Java record field hash type: {:?}", ty),
         }
     }
@@ -302,7 +370,16 @@ impl<'a> JavaLowerer<'a> {
         let params: Vec<JavaParam> = func
             .params
             .iter()
-            .map(|p| self.lower_param(p.name.as_str(), &p.type_expr, call, &wire_writers))
+            .enumerate()
+            .map(|(parameter_index, parameter)| {
+                self.lower_param(
+                    parameter.name.as_str(),
+                    &parameter.type_expr,
+                    parameter_index,
+                    call,
+                    &wire_writers,
+                )
+            })
             .collect();
 
         let strategy = self.return_strategy(&func.returns, call);
@@ -321,6 +398,7 @@ impl<'a> JavaLowerer<'a> {
         &self,
         name: &str,
         ty: &TypeExpr,
+        parameter_index: usize,
         call: &AbiCall,
         wire_writers: &[JavaWireWriter],
     ) -> JavaParam {
@@ -354,6 +432,55 @@ impl<'a> JavaLowerer<'a> {
                     mappings::java_type(tag_type).to_string(),
                     format!("{}.value", field_name),
                 )
+            }
+            TypeExpr::Vec(inner) => {
+                if let Some(Transport::Span(SpanContent::Scalar(ScalarOrigin::Primitive(
+                    primitive,
+                )))) = abi_transport
+                    && matches!(
+                        (inner.as_ref(), primitive),
+                        (
+                            TypeExpr::Primitive(PrimitiveType::ISize | PrimitiveType::USize),
+                            PrimitiveType::ISize | PrimitiveType::USize
+                        )
+                    )
+                {
+                    let native_expr =
+                        vec_pointer_sized_primitive_param_encode_expr(&field_name, parameter_index);
+                    return JavaParam {
+                        name: field_name,
+                        java_type,
+                        native_type: "ByteBuffer".to_string(),
+                        native_expr,
+                    };
+                }
+                if let Some(Transport::Span(SpanContent::Scalar(ScalarOrigin::CStyleEnum {
+                    tag_type,
+                    ..
+                }))) = abi_transport
+                {
+                    let native_expr = vec_c_style_enum_param_encode_expr(&field_name, *tag_type);
+                    return JavaParam {
+                        name: field_name,
+                        java_type,
+                        native_type: mappings::java_primitive_array_type(*tag_type).to_string(),
+                        native_expr,
+                    };
+                }
+                let has_wire_writer = wire_writers.iter().any(|w| w.param_name == name);
+                if has_wire_writer {
+                    let binding_name = wire_writers
+                        .iter()
+                        .find(|w| w.param_name == name)
+                        .map(|w| w.binding_name.as_str())
+                        .unwrap_or("");
+                    (
+                        "ByteBuffer".to_string(),
+                        format!("{}.toBuffer()", binding_name),
+                    )
+                } else {
+                    (java_type.clone(), field_name.clone())
+                }
             }
             TypeExpr::Record(_) | TypeExpr::Enum(_) => {
                 let binding_name = wire_writers
@@ -447,6 +574,15 @@ impl<'a> JavaLowerer<'a> {
                         }
                     }
                 }
+                TypeExpr::Vec(inner) => match &call.returns.decode_ops {
+                    Some(decode_seq) => JavaReturnStrategy::WireDecode {
+                        decode_expr: super::emit::emit_reader_read(decode_seq),
+                    },
+                    None => JavaReturnStrategy::BufferDecode {
+                        decode_expr: self
+                            .vec_buffer_decode_expr(inner, call.returns.transport.as_ref()),
+                    },
+                },
                 _ => JavaReturnStrategy::Void,
             },
         }
@@ -460,12 +596,65 @@ impl<'a> JavaLowerer<'a> {
             .expect("abi call not found for function")
     }
 
+    fn vec_buffer_decode_expr(&self, inner: &TypeExpr, transport: Option<&Transport>) -> String {
+        match transport {
+            Some(Transport::Span(SpanContent::Scalar(origin))) => match origin {
+                ScalarOrigin::Primitive(primitive) => vec_primitive_buffer_decode(*primitive),
+                ScalarOrigin::CStyleEnum { enum_id, tag_type } => {
+                    vec_c_style_enum_buffer_decode(enum_id.as_str(), *tag_type)
+                }
+            },
+            Some(Transport::Span(SpanContent::Composite(layout))) => {
+                format!(
+                    "{}.decodeBlittableVecFromRawBuffer(_buf)",
+                    NamingConvention::class_name(layout.record_id.as_str()),
+                )
+            }
+            _ => match inner {
+                TypeExpr::Primitive(primitive) => vec_primitive_buffer_decode(*primitive),
+                TypeExpr::Record(id) => match self.ffi.catalog.resolve_record(id) {
+                    Some(record) if record.is_blittable() => format!(
+                        "{}.decodeBlittableVecFromRawBuffer(_buf)",
+                        NamingConvention::class_name(id.as_str()),
+                    ),
+                    _ => panic!(
+                        "unsupported direct Vec<Record> return transport for non-blittable record: {:?}",
+                        id
+                    ),
+                },
+                _ => panic!(
+                    "unsupported direct Vec return transport for Java backend: {:?}",
+                    inner
+                ),
+            },
+        }
+    }
+
     fn java_type(&self, ty: &TypeExpr) -> String {
         match ty {
             TypeExpr::Primitive(p) => mappings::java_type(*p).to_string(),
             TypeExpr::String => "String".to_string(),
             TypeExpr::Record(id) => NamingConvention::class_name(id.as_str()),
             TypeExpr::Enum(id) => NamingConvention::class_name(id.as_str()),
+            TypeExpr::Vec(inner) => self.java_vec_type(inner),
+            _ => "Object".to_string(),
+        }
+    }
+
+    fn java_vec_type(&self, inner: &TypeExpr) -> String {
+        match inner {
+            TypeExpr::Primitive(p) => mappings::java_primitive_array_type(*p).to_string(),
+            _ => format!("java.util.List<{}>", self.java_boxed_type(inner)),
+        }
+    }
+
+    fn java_boxed_type(&self, ty: &TypeExpr) -> String {
+        match ty {
+            TypeExpr::Primitive(p) => mappings::java_boxed_type(*p).to_string(),
+            TypeExpr::String => "String".to_string(),
+            TypeExpr::Record(id) => NamingConvention::class_name(id.as_str()),
+            TypeExpr::Enum(id) => NamingConvention::class_name(id.as_str()),
+            TypeExpr::Vec(inner) => self.java_vec_type(inner),
             _ => "Object".to_string(),
         }
     }
@@ -616,6 +805,17 @@ impl<'a> JavaLowerer<'a> {
                 value: Self::prefix_value(value, binding),
                 layout: layout.clone(),
             },
+            WriteOp::Vec {
+                value,
+                element_type,
+                element,
+                layout,
+            } => WriteOp::Vec {
+                value: Self::prefix_value(value, binding),
+                element_type: element_type.clone(),
+                element: element.clone(),
+                layout: layout.clone(),
+            },
             other => other.clone(),
         }
     }
@@ -629,6 +829,15 @@ impl<'a> JavaLowerer<'a> {
             SizeExpr::WireSize { value, record_id } => SizeExpr::WireSize {
                 value: Self::prefix_value(value, binding),
                 record_id: record_id.clone(),
+            },
+            SizeExpr::VecSize {
+                value,
+                inner,
+                layout,
+            } => SizeExpr::VecSize {
+                value: Self::prefix_value(value, binding),
+                inner: inner.clone(),
+                layout: layout.clone(),
             },
             SizeExpr::Sum(parts) => SizeExpr::Sum(
                 parts
@@ -659,4 +868,132 @@ impl<'a> JavaLowerer<'a> {
             .find(|abi_enum| abi_enum.id == enumeration.id)
             .expect("abi enum missing")
     }
+}
+
+fn vec_primitive_buffer_decode(primitive: PrimitiveType) -> String {
+    match primitive {
+        PrimitiveType::Bool => "WireReader.booleanArrayFromRawBuffer(_buf)".to_string(),
+        PrimitiveType::I8 | PrimitiveType::U8 => "_buf != null ? _buf : new byte[0]".to_string(),
+        PrimitiveType::I16 | PrimitiveType::U16 => {
+            "WireReader.shortArrayFromRawBuffer(_buf)".to_string()
+        }
+        PrimitiveType::I32 | PrimitiveType::U32 => {
+            "WireReader.intArrayFromRawBuffer(_buf)".to_string()
+        }
+        PrimitiveType::I64 | PrimitiveType::U64 | PrimitiveType::ISize | PrimitiveType::USize => {
+            "WireReader.longArrayFromRawBuffer(_buf)".to_string()
+        }
+        PrimitiveType::F32 => "WireReader.floatArrayFromRawBuffer(_buf)".to_string(),
+        PrimitiveType::F64 => "WireReader.doubleArrayFromRawBuffer(_buf)".to_string(),
+    }
+}
+
+fn java_blittable_decode_expr(primitive: PrimitiveType, const_name: &str) -> String {
+    let offset = format!("OFFSET_{}", const_name);
+    match primitive {
+        PrimitiveType::Bool => format!("buf.get(base + {}) != 0", offset),
+        PrimitiveType::I8 | PrimitiveType::U8 => format!("buf.get(base + {})", offset),
+        PrimitiveType::I16 | PrimitiveType::U16 => {
+            format!("buf.getShort(base + {})", offset)
+        }
+        PrimitiveType::I32 | PrimitiveType::U32 => {
+            format!("buf.getInt(base + {})", offset)
+        }
+        PrimitiveType::I64 | PrimitiveType::U64 | PrimitiveType::ISize | PrimitiveType::USize => {
+            format!("buf.getLong(base + {})", offset)
+        }
+        PrimitiveType::F32 => format!("buf.getFloat(base + {})", offset),
+        PrimitiveType::F64 => format!("buf.getDouble(base + {})", offset),
+    }
+}
+
+fn java_blittable_encode_expr(
+    primitive: PrimitiveType,
+    const_name: &str,
+    field_name: &str,
+) -> String {
+    let offset = format!("OFFSET_{}", const_name);
+    let accessor = format!("item.{}()", field_name);
+    match primitive {
+        PrimitiveType::Bool => {
+            format!("buf.put(base + {}, (byte) ({} ? 1 : 0))", offset, accessor)
+        }
+        PrimitiveType::I8 | PrimitiveType::U8 => {
+            format!("buf.put(base + {}, {})", offset, accessor)
+        }
+        PrimitiveType::I16 | PrimitiveType::U16 => {
+            format!("buf.putShort(base + {}, {})", offset, accessor)
+        }
+        PrimitiveType::I32 | PrimitiveType::U32 => {
+            format!("buf.putInt(base + {}, {})", offset, accessor)
+        }
+        PrimitiveType::I64 | PrimitiveType::U64 | PrimitiveType::ISize | PrimitiveType::USize => {
+            format!("buf.putLong(base + {}, {})", offset, accessor)
+        }
+        PrimitiveType::F32 => {
+            format!("buf.putFloat(base + {}, {})", offset, accessor)
+        }
+        PrimitiveType::F64 => {
+            format!("buf.putDouble(base + {}, {})", offset, accessor)
+        }
+    }
+}
+
+fn vec_c_style_enum_buffer_decode(enum_id: &str, tag_type: PrimitiveType) -> String {
+    let class_name = NamingConvention::class_name(enum_id);
+    match tag_type {
+        PrimitiveType::I8 | PrimitiveType::U8 => {
+            format!(
+                "WireReader.mapByteArray(_buf, value -> {}.fromValue(value))",
+                class_name,
+            )
+        }
+        PrimitiveType::I16 | PrimitiveType::U16 => {
+            format!(
+                "WireReader.mapShortRawBuffer(_buf, value -> {}.fromValue(value))",
+                class_name,
+            )
+        }
+        PrimitiveType::I32 | PrimitiveType::U32 => {
+            format!(
+                "WireReader.mapIntRawBuffer(_buf, value -> {}.fromValue(value))",
+                class_name,
+            )
+        }
+        PrimitiveType::I64 | PrimitiveType::U64 | PrimitiveType::ISize | PrimitiveType::USize => {
+            format!(
+                "WireReader.mapLongRawBuffer(_buf, value -> {}.fromValue(value))",
+                class_name,
+            )
+        }
+        _ => panic!(
+            "unsupported C-style enum tag type for Vec decode: {:?}",
+            tag_type
+        ),
+    }
+}
+
+fn vec_c_style_enum_param_encode_expr(name: &str, tag_type: PrimitiveType) -> String {
+    match tag_type {
+        PrimitiveType::I8 | PrimitiveType::U8 => {
+            format!("WireReader.toByteArray({}, item -> item.value)", name)
+        }
+        PrimitiveType::I16 | PrimitiveType::U16 => {
+            format!("WireReader.toShortArray({}, item -> item.value)", name)
+        }
+        PrimitiveType::I32 | PrimitiveType::U32 => {
+            format!("WireReader.toIntArray({}, item -> item.value)", name)
+        }
+        PrimitiveType::I64 | PrimitiveType::U64 | PrimitiveType::ISize | PrimitiveType::USize => {
+            format!("WireReader.toLongArray({}, item -> item.value)", name)
+        }
+        _ => panic!(
+            "unsupported C-style enum tag type for Vec param encode: {:?}",
+            tag_type
+        ),
+    }
+}
+
+fn vec_pointer_sized_primitive_param_encode_expr(name: &str, slot: usize) -> String {
+    format!("WireReader.encodeLongVecInput({}, {})", name, slot)
 }

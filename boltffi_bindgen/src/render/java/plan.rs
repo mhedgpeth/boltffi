@@ -95,6 +95,7 @@ pub struct JavaRecord {
     pub shape: JavaRecordShape,
     pub class_name: String,
     pub fields: Vec<JavaRecordField>,
+    pub blittable_layout: Option<JavaBlittableLayout>,
 }
 
 impl JavaRecord {
@@ -102,9 +103,28 @@ impl JavaRecord {
         self.fields.is_empty()
     }
 
+    pub fn is_blittable(&self) -> bool {
+        self.blittable_layout.is_some()
+    }
+
     pub fn uses_native_record_syntax(&self) -> bool {
         matches!(self.shape, JavaRecordShape::NativeRecord)
     }
+}
+
+#[derive(Debug, Clone)]
+pub struct JavaBlittableLayout {
+    pub struct_size: usize,
+    pub fields: Vec<JavaBlittableField>,
+}
+
+#[derive(Debug, Clone)]
+pub struct JavaBlittableField {
+    pub name: String,
+    pub const_name: String,
+    pub offset: usize,
+    pub decode_expr: String,
+    pub encode_expr: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -135,6 +155,9 @@ pub enum JavaReturnStrategy {
     WireDecode {
         decode_expr: String,
     },
+    BufferDecode {
+        decode_expr: String,
+    },
 }
 
 impl JavaReturnStrategy {
@@ -154,9 +177,13 @@ impl JavaReturnStrategy {
         matches!(self, Self::WireDecode { .. })
     }
 
+    pub fn is_buffer(&self) -> bool {
+        matches!(self, Self::BufferDecode { .. })
+    }
+
     pub fn decode_expr(&self) -> &str {
         match self {
-            Self::WireDecode { decode_expr } => decode_expr,
+            Self::WireDecode { decode_expr } | Self::BufferDecode { decode_expr } => decode_expr,
             _ => "",
         }
     }
@@ -173,7 +200,7 @@ impl JavaReturnStrategy {
             Self::Void => "void",
             Self::Direct => return_type,
             Self::CStyleEnumDecode { native_type, .. } => native_type,
-            Self::WireDecode { .. } => "byte[]",
+            Self::WireDecode { .. } | Self::BufferDecode { .. } => "byte[]",
         }
     }
 }

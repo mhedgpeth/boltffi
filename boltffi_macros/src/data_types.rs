@@ -259,8 +259,10 @@ fn classify_enum(item_enum: &ItemEnum) -> DataTypeCategory {
         .variants
         .iter()
         .all(|variant| variant.fields.is_empty());
-    let has_integer_repr = extract_integer_repr(&item_enum.attrs).is_some();
-    match classification::classify_enum(is_c_style, has_integer_repr) {
+    let has_explicit_integer_repr = extract_integer_repr(&item_enum.attrs).is_some();
+    let has_effective_integer_repr =
+        has_explicit_integer_repr || (is_c_style && !has_any_repr(&item_enum.attrs));
+    match classification::classify_enum(is_c_style, has_effective_integer_repr) {
         PassableCategory::Scalar => DataTypeCategory::Scalar,
         PassableCategory::Blittable | PassableCategory::WireEncoded => {
             DataTypeCategory::WireEncoded

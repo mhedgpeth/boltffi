@@ -15,6 +15,9 @@ public final class {{ module.class_name }} {
         if (_buf == null) throw new RuntimeException("FFI call returned null buffer");
         WireReader reader = new WireReader(_buf);
         return {{ func.strategy.decode_expr() }};
+{%- elif func.strategy.is_buffer() %}
+        byte[] _buf = Native.{{ func.ffi_name }}({% for param in func.params %}{{ param.native_expr }}{% if !loop.last %}, {% endif %}{% endfor %});
+        return {{ func.strategy.decode_expr() }};
 {%- endif %}
 {%- else %}
         try (
@@ -35,6 +38,9 @@ public final class {{ module.class_name }} {
             byte[] _buf = Native.{{ func.ffi_name }}({% for param in func.params %}{{ param.native_expr }}{% if !loop.last %}, {% endif %}{% endfor %});
             if (_buf == null) throw new RuntimeException("FFI call returned null buffer");
             WireReader reader = new WireReader(_buf);
+            return {{ func.strategy.decode_expr() }};
+{%- elif func.strategy.is_buffer() %}
+            byte[] _buf = Native.{{ func.ffi_name }}({% for param in func.params %}{{ param.native_expr }}{% if !loop.last %}, {% endif %}{% endfor %});
             return {{ func.strategy.decode_expr() }};
 {%- endif %}
         }

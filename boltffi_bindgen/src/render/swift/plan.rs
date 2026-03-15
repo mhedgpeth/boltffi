@@ -999,7 +999,7 @@ impl SwiftParam {
             }
             SwiftConversion::EnumBufferInput { element_type, .. } => {
                 format!(
-                    "UnsafeRawPointer({n}Ptr.baseAddress!).assumingMemoryBound(to: {t}.self), UInt({n}Ptr.count)",
+                    "{n}Ptr.baseAddress.map {{ UnsafeRawPointer($0).assumingMemoryBound(to: {t}.self) }}, UInt({n}Ptr.count)",
                     n = self.name,
                     t = element_type,
                 )

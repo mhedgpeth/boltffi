@@ -41,3 +41,17 @@ pub fn jni_type(primitive: PrimitiveType) -> &'static str {
         PrimitiveType::F64 => "double",
     }
 }
+
+pub fn java_primitive_array_type(primitive: PrimitiveType) -> &'static str {
+    match primitive {
+        PrimitiveType::Bool => "boolean[]",
+        PrimitiveType::U8 | PrimitiveType::I8 => "byte[]",
+        PrimitiveType::U16 | PrimitiveType::I16 => "short[]",
+        PrimitiveType::U32 | PrimitiveType::I32 => "int[]",
+        PrimitiveType::U64 | PrimitiveType::I64 | PrimitiveType::USize | PrimitiveType::ISize => {
+            "long[]"
+        }
+        PrimitiveType::F32 => "float[]",
+        PrimitiveType::F64 => "double[]",
+    }
+}
