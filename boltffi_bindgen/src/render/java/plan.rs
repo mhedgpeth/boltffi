@@ -10,6 +10,7 @@ pub struct JavaModule {
     pub records: Vec<JavaRecord>,
     pub enums: Vec<JavaEnum>,
     pub functions: Vec<JavaFunction>,
+    pub classes: Vec<JavaClass>,
 }
 
 impl JavaModule {
@@ -19,6 +20,7 @@ impl JavaModule {
 
     pub fn has_wire_params(&self) -> bool {
         self.functions.iter().any(|f| !f.wire_writers.is_empty())
+            || self.classes.iter().any(|c| c.has_wire_params())
     }
 
     pub fn needs_wire_writer(&self) -> bool {
@@ -160,6 +162,10 @@ pub enum JavaReturnStrategy {
     BufferDecode {
         decode_expr: String,
     },
+    HandleReturn {
+        class_name: String,
+        nullable: bool,
+    },
 }
 
 impl JavaReturnStrategy {
@@ -183,6 +189,10 @@ impl JavaReturnStrategy {
         matches!(self, Self::BufferDecode { .. })
     }
 
+    pub fn is_handle(&self) -> bool {
+        matches!(self, Self::HandleReturn { .. })
+    }
+
     pub fn decode_expr(&self) -> &str {
         match self {
             Self::WireDecode { decode_expr } | Self::BufferDecode { decode_expr } => decode_expr,
@@ -197,11 +207,23 @@ impl JavaReturnStrategy {
         }
     }
 
+    pub fn handle_class(&self) -> &str {
+        match self {
+            Self::HandleReturn { class_name, .. } => class_name,
+            _ => "",
+        }
+    }
+
+    pub fn handle_nullable(&self) -> bool {
+        matches!(self, Self::HandleReturn { nullable: true, .. })
+    }
+
     pub fn native_return_type<'a>(&'a self, return_type: &'a str) -> &'a str {
         match self {
             Self::Void => "void",
             Self::Direct => return_type,
             Self::CStyleEnumDecode { native_type, .. } => native_type,
+            Self::HandleReturn { .. } => "long",
             Self::WireDecode { .. } | Self::BufferDecode { .. } => "byte[]",
         }
     }
@@ -237,4 +259,69 @@ pub struct JavaParam {
     pub java_type: String,
     pub native_type: String,
     pub native_expr: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct JavaClass {
+    pub class_name: String,
+    pub ffi_free: String,
+    pub constructors: Vec<JavaConstructor>,
+    pub methods: Vec<JavaClassMethod>,
+}
+
+impl JavaClass {
+    pub fn has_factory_constructors(&self) -> bool {
+        self.constructors
+            .iter()
+            .any(|c| matches!(c.kind, JavaConstructorKind::Factory))
+    }
+
+    pub fn has_static_methods(&self) -> bool {
+        self.methods.iter().any(|m| m.is_static)
+    }
+
+    pub fn has_wire_params(&self) -> bool {
+        self.constructors.iter().any(|c| !c.wire_writers.is_empty())
+            || self.methods.iter().any(|m| !m.wire_writers.is_empty())
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum JavaConstructorKind {
+    Primary,
+    Factory,
+    Secondary,
+}
+
+#[derive(Debug, Clone)]
+pub struct JavaConstructor {
+    pub kind: JavaConstructorKind,
+    pub name: String,
+    pub is_fallible: bool,
+    pub params: Vec<JavaParam>,
+    pub ffi_name: String,
+    pub wire_writers: Vec<JavaWireWriter>,
+}
+
+impl JavaConstructor {
+    pub fn is_factory(&self) -> bool {
+        matches!(self.kind, JavaConstructorKind::Factory)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct JavaClassMethod {
+    pub name: String,
+    pub ffi_name: String,
+    pub is_static: bool,
+    pub params: Vec<JavaParam>,
+    pub return_type: String,
+    pub strategy: JavaReturnStrategy,
+    pub wire_writers: Vec<JavaWireWriter>,
+}
+
+impl JavaClassMethod {
+    pub fn native_return_type(&self) -> &str {
+        self.strategy.native_return_type(&self.return_type)
+    }
 }
