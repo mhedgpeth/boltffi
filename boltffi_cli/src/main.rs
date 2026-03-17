@@ -39,6 +39,16 @@ struct Cli {
     #[arg(short, long, global = true, help = "Suppress all output")]
     quiet: bool,
 
+    #[arg(
+        long = "cargo-arg",
+        global = true,
+        action = clap::ArgAction::Append,
+        allow_hyphen_values = true,
+        value_name = "ARG",
+        help = "Pass an argument to cargo invocations (repeatable)"
+    )]
+    cargo_args: Vec<String>,
+
     #[command(subcommand)]
     command: Commands,
 }
@@ -279,7 +289,7 @@ fn main() {
     };
 
     let reporter = reporter::Reporter::new(verbosity);
-    let result = execute_command(cli.command, &reporter);
+    let result = execute_command(cli.command, &reporter, cli.cargo_args);
 
     if let Err(err) = result {
         eprintln!("\n{} {}", console::style("error:").red().bold(), err);
@@ -287,7 +297,11 @@ fn main() {
     }
 }
 
-fn execute_command(command: Commands, reporter: &reporter::Reporter) -> Result<()> {
+fn execute_command(
+    command: Commands,
+    reporter: &reporter::Reporter,
+    cargo_args: Vec<String>,
+) -> Result<()> {
     match command {
         Commands::Init { name } => {
             let options = InitOptions {
@@ -391,6 +405,7 @@ fn execute_command(command: Commands, reporter: &reporter::Reporter) -> Result<(
                     })
                     .unwrap_or(BuildPlatform::All),
                 release,
+                cargo_args,
             };
             run_build(&config, options).map(|_| ())
         }
@@ -408,6 +423,7 @@ fn execute_command(command: Commands, reporter: &reporter::Reporter) -> Result<(
                     regenerate,
                     no_build,
                     experimental,
+                    cargo_args: cargo_args.clone(),
                 }),
                 PackTargetArg::Apple {
                     release,
@@ -429,6 +445,7 @@ fn execute_command(command: Commands, reporter: &reporter::Reporter) -> Result<(
                         PackLayoutArg::Split => crate::config::SpmLayout::Split,
                         PackLayoutArg::FfiOnly => crate::config::SpmLayout::FfiOnly,
                     }),
+                    cargo_args: cargo_args.clone(),
                 }),
                 PackTargetArg::Android {
                     release,
@@ -438,6 +455,7 @@ fn execute_command(command: Commands, reporter: &reporter::Reporter) -> Result<(
                     release,
                     regenerate,
                     no_build,
+                    cargo_args: cargo_args.clone(),
                 }),
                 PackTargetArg::Wasm {
                     release,
@@ -447,6 +465,7 @@ fn execute_command(command: Commands, reporter: &reporter::Reporter) -> Result<(
                     release,
                     regenerate,
                     no_build,
+                    cargo_args: cargo_args.clone(),
                 }),
                 PackTargetArg::Java {
                     release,
@@ -456,6 +475,7 @@ fn execute_command(command: Commands, reporter: &reporter::Reporter) -> Result<(
                     release,
                     regenerate,
                     no_build,
+                    cargo_args: cargo_args.clone(),
                 }),
             };
             run_pack(&config, command, reporter)
@@ -463,7 +483,7 @@ fn execute_command(command: Commands, reporter: &reporter::Reporter) -> Result<(
 
         Commands::Release { platform } => {
             let config = load_config()?;
-            run_release(&config, platform, reporter)
+            run_release(&config, platform, reporter, cargo_args)
         }
 
         Commands::Verify { path, json } => {
@@ -501,6 +521,7 @@ fn run_release(
     config: &Config,
     platform: Option<BuildPlatformArg>,
     reporter: &reporter::Reporter,
+    cargo_args: Vec<String>,
 ) -> Result<()> {
     reporter.section("🚀", "Running full release pipeline");
 
@@ -533,6 +554,7 @@ fn run_release(
             })
             .unwrap_or(BuildPlatform::All),
         release: true,
+        cargo_args: cargo_args.clone(),
     };
     run_build(config, build_options)?;
     println!();
@@ -563,6 +585,7 @@ fn run_release(
                         spm_only: false,
                         xcframework_only: false,
                         layout: None,
+                        cargo_args: cargo_args.clone(),
                     }),
                     reporter,
                 )?;
@@ -576,6 +599,7 @@ fn run_release(
                         release: true,
                         regenerate: false,
                         no_build: true,
+                        cargo_args: cargo_args.clone(),
                     }),
                     reporter,
                 )?;
@@ -589,6 +613,7 @@ fn run_release(
                         release: true,
                         regenerate: false,
                         no_build: true,
+                        cargo_args: cargo_args.clone(),
                     }),
                     reporter,
                 )?;
@@ -606,6 +631,7 @@ fn run_release(
                         spm_only: false,
                         xcframework_only: false,
                         layout: None,
+                        cargo_args: cargo_args.clone(),
                     }),
                     reporter,
                 )?;
@@ -617,6 +643,7 @@ fn run_release(
                         release: true,
                         regenerate: false,
                         no_build: true,
+                        cargo_args: cargo_args.clone(),
                     }),
                     reporter,
                 )?;
@@ -628,6 +655,7 @@ fn run_release(
                         release: true,
                         regenerate: false,
                         no_build: true,
+                        cargo_args: cargo_args.clone(),
                     }),
                     reporter,
                 )?;

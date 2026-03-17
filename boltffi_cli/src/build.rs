@@ -10,10 +10,116 @@ use crate::target::{Platform, RustTarget};
 
 pub type OutputCallback = Box<dyn Fn(&str) + Send>;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CargoBuildProfile {
+    Debug,
+    Release,
+    Named(String),
+}
+
+impl CargoBuildProfile {
+    pub fn resolve(default_release: bool, cargo_args: &[String]) -> Self {
+        let default_profile = if default_release {
+            Self::Release
+        } else {
+            Self::Debug
+        };
+
+        let mut skip_next_argument = false;
+
+        cargo_args.iter().enumerate().fold(
+            default_profile,
+            |resolved_profile, (index, argument)| {
+                if skip_next_argument {
+                    skip_next_argument = false;
+                    return resolved_profile;
+                }
+
+                match argument.as_str() {
+                    "--release" => Self::Release,
+                    "--profile" => {
+                        skip_next_argument = true;
+                        cargo_args
+                            .get(index + 1)
+                            .map(|profile_name| Self::from_profile_name(profile_name))
+                            .unwrap_or(resolved_profile)
+                    }
+                    _ => argument
+                        .strip_prefix("--profile=")
+                        .filter(|profile_name| !profile_name.is_empty())
+                        .map(Self::from_profile_name)
+                        .unwrap_or(resolved_profile),
+                }
+            },
+        )
+    }
+
+    pub fn output_directory_name(&self) -> &str {
+        match self {
+            Self::Debug => "debug",
+            Self::Release => "release",
+            Self::Named(profile_name) => profile_name,
+        }
+    }
+
+    pub fn is_release_like(&self) -> bool {
+        !matches!(self, Self::Debug)
+    }
+
+    fn from_profile_name(profile_name: &str) -> Self {
+        match profile_name {
+            "debug" | "dev" => Self::Debug,
+            "release" => Self::Release,
+            _ => Self::Named(profile_name.to_string()),
+        }
+    }
+}
+
+pub fn resolve_build_profile(default_release: bool, cargo_args: &[String]) -> CargoBuildProfile {
+    CargoBuildProfile::resolve(default_release, cargo_args)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CargoBuildCommandArgs {
+    toolchain_selector: Option<String>,
+    command_args: Vec<String>,
+}
+
+impl CargoBuildCommandArgs {
+    fn from_passthrough_args(cargo_args: &[String]) -> Self {
+        let toolchain_selector_index = cargo_args
+            .iter()
+            .position(|argument| is_toolchain_selector(argument));
+
+        let (toolchain_selector, command_args) = toolchain_selector_index
+            .map(|index| {
+                let toolchain_selector = cargo_args.get(index).cloned();
+                let command_args = cargo_args
+                    .iter()
+                    .take(index)
+                    .chain(cargo_args.iter().skip(index + 1))
+                    .cloned()
+                    .collect();
+                (toolchain_selector, command_args)
+            })
+            .unwrap_or_else(|| (None, cargo_args.to_vec()));
+
+        Self {
+            toolchain_selector,
+            command_args,
+        }
+    }
+}
+
+fn is_toolchain_selector(argument: &str) -> bool {
+    argument.starts_with('+') && argument.len() > 1
+}
+
 #[derive(Default)]
 pub struct BuildOptions {
     pub release: bool,
     pub package: Option<String>,
+    pub cargo_args: Vec<String>,
     pub on_output: Option<OutputCallback>,
 }
 
@@ -63,18 +169,12 @@ impl<'a> Builder<'a> {
     }
 
     pub fn build_host(&self) -> Result<BuildResult> {
+        let command_args = self.cargo_build_command_args();
         let mut command = Command::new("cargo");
-        command.arg("build");
+        self.apply_cargo_build_prefix(&mut command, &command_args);
 
-        if self.options.release {
-            command.arg("--release");
-        }
-
-        if let Some(ref package) = self.options.package {
-            command.arg("-p").arg(package);
-        } else {
-            command.arg("-p").arg(self.config.library_name());
-        }
+        self.apply_common_build_args(&mut command);
+        command.args(&command_args.command_args);
 
         let success = run_command_streaming(&mut command, self.options.on_output.as_ref());
 
@@ -85,20 +185,13 @@ impl<'a> Builder<'a> {
     }
 
     pub fn build_wasm_with_triple(&self, triple: &str) -> Result<Vec<BuildResult>> {
+        let command_args = self.cargo_build_command_args();
         let mut command = Command::new("cargo");
-        command.arg("build");
-
-        if self.options.release {
-            command.arg("--release");
-        }
-
+        self.apply_cargo_build_prefix(&mut command, &command_args);
         command.arg("--target").arg(triple);
 
-        if let Some(ref package) = self.options.package {
-            command.arg("-p").arg(package);
-        } else {
-            command.arg("-p").arg(self.config.library_name());
-        }
+        self.apply_common_build_args(&mut command);
+        command.args(&command_args.command_args);
 
         let success = run_command_streaming(&mut command, self.options.on_output.as_ref());
 
@@ -113,20 +206,13 @@ impl<'a> Builder<'a> {
         target: &RustTarget,
         android_toolchain: Option<&AndroidToolchain>,
     ) -> Result<BuildResult> {
+        let command_args = self.cargo_build_command_args();
         let mut cmd = Command::new("cargo");
-        cmd.arg("build");
-
-        if self.options.release {
-            cmd.arg("--release");
-        }
-
+        self.apply_cargo_build_prefix(&mut cmd, &command_args);
         cmd.arg("--target").arg(target.triple());
 
-        if let Some(ref package) = self.options.package {
-            cmd.arg("-p").arg(package);
-        } else {
-            cmd.arg("-p").arg(self.config.library_name());
-        }
+        self.apply_common_build_args(&mut cmd);
+        cmd.args(&command_args.command_args);
 
         if target.platform() == Platform::Android {
             android_toolchain
@@ -140,6 +226,37 @@ impl<'a> Builder<'a> {
             triple: target.triple().to_string(),
             success,
         })
+    }
+
+    fn package_name(&self) -> &str {
+        self.options
+            .package
+            .as_deref()
+            .unwrap_or(self.config.library_name())
+    }
+
+    fn apply_common_build_args(&self, command: &mut Command) {
+        if self.options.release {
+            command.arg("--release");
+        }
+
+        command.arg("-p").arg(self.package_name());
+    }
+
+    fn cargo_build_command_args(&self) -> CargoBuildCommandArgs {
+        CargoBuildCommandArgs::from_passthrough_args(&self.options.cargo_args)
+    }
+
+    fn apply_cargo_build_prefix(
+        &self,
+        command: &mut Command,
+        command_args: &CargoBuildCommandArgs,
+    ) {
+        if let Some(toolchain_selector) = command_args.toolchain_selector.as_deref() {
+            command.arg(toolchain_selector);
+        }
+
+        command.arg("build");
     }
 }
 
@@ -208,4 +325,64 @@ pub fn failed_targets(results: &[BuildResult]) -> Vec<String> {
         .filter(|r| !r.success)
         .map(|r| r.triple.clone())
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{CargoBuildCommandArgs, CargoBuildProfile, resolve_build_profile};
+
+    #[test]
+    fn resolves_release_profile_from_passthrough_args() {
+        let cargo_args = vec!["--locked".to_string(), "--release".to_string()];
+
+        assert_eq!(
+            resolve_build_profile(false, &cargo_args),
+            CargoBuildProfile::Release
+        );
+    }
+
+    #[test]
+    fn resolves_named_profile_from_passthrough_args() {
+        let cargo_args = vec!["--profile".to_string(), "mobile-release".to_string()];
+
+        assert_eq!(
+            resolve_build_profile(false, &cargo_args),
+            CargoBuildProfile::Named("mobile-release".to_string())
+        );
+    }
+
+    #[test]
+    fn resolves_debug_profile_from_dev_profile_name() {
+        let cargo_args = vec!["--profile=dev".to_string()];
+
+        assert_eq!(
+            resolve_build_profile(true, &cargo_args),
+            CargoBuildProfile::Debug
+        );
+    }
+
+    #[test]
+    fn extracts_toolchain_selector_from_passthrough_args() {
+        let cargo_args = vec![
+            "--locked".to_string(),
+            "+nightly".to_string(),
+            "--features".to_string(),
+            "mobile".to_string(),
+        ];
+
+        let command_args = CargoBuildCommandArgs::from_passthrough_args(&cargo_args);
+
+        assert_eq!(
+            command_args.toolchain_selector,
+            Some("+nightly".to_string())
+        );
+        assert_eq!(
+            command_args.command_args,
+            vec![
+                "--locked".to_string(),
+                "--features".to_string(),
+                "mobile".to_string()
+            ]
+        );
+    }
 }

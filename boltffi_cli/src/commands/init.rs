@@ -1,9 +1,9 @@
 use std::path::{Path, PathBuf};
 
 use crate::config::{
-    AndroidConfig, AndroidKotlinConfig, AndroidPackConfig, AppleConfig, AppleSwiftConfig, Config,
-    ErrorStyle, FactoryStyle, HeaderConfig, JavaConfig, PackageConfig, SpmConfig, TargetsConfig,
-    WasmConfig, XcframeworkConfig,
+    AndroidConfig, AndroidKotlinConfig, AndroidPackConfig, AppleConfig, AppleSwiftConfig,
+    CargoConfig, Config, ErrorStyle, FactoryStyle, HeaderConfig, JavaConfig, PackageConfig,
+    SpmConfig, TargetsConfig, WasmConfig, XcframeworkConfig,
 };
 use crate::error::Result;
 
@@ -66,6 +66,7 @@ fn create_default_config(package_name: &str) -> Config {
 
     Config {
         experimental: Vec::new(),
+        cargo: CargoConfig::default(),
         package: PackageConfig {
             name: package_name.to_string(),
             crate_name: None,

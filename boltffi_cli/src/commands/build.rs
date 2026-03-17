@@ -1,5 +1,6 @@
 use crate::build::{
     BuildOptions, BuildResult, Builder, all_successful, count_successful, failed_targets,
+    resolve_build_profile,
 };
 use crate::config::Config;
 use crate::error::{CliError, Result};
@@ -14,20 +15,36 @@ pub enum BuildPlatform {
 pub struct BuildCommandOptions {
     pub platform: BuildPlatform,
     pub release: bool,
+    pub cargo_args: Vec<String>,
 }
 
 pub fn run_build(config: &Config, options: BuildCommandOptions) -> Result<Vec<BuildResult>> {
+    let BuildCommandOptions {
+        platform,
+        release,
+        cargo_args: cli_cargo_args,
+    } = options;
+
+    let cargo_args: Vec<String> = config
+        .cargo_args_for_command("build")
+        .into_iter()
+        .chain(cli_cargo_args)
+        .collect();
+
+    let build_profile = resolve_build_profile(release, &cargo_args);
+
     let build_options = BuildOptions {
-        release: options.release,
+        release,
         package: Some(config.library_name().to_string()),
+        cargo_args,
         on_output: None,
     };
 
     let builder = Builder::new(config, build_options);
 
-    let profile = if options.release { "release" } else { "debug" };
+    let profile = build_profile.output_directory_name();
 
-    let results = match options.platform {
+    let results = match platform {
         BuildPlatform::Apple => {
             if !config.is_apple_enabled() {
                 return Ok(Vec::new());
