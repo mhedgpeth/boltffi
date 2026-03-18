@@ -4,6 +4,7 @@ import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
 import java.util.Optional;
+import java.util.concurrent.CompletableFuture;
 
 public final class DemoTest {
     public static void main(String[] args) {
@@ -26,6 +27,8 @@ public final class DemoTest {
         testVecStrings();
         testOptions();
         testRecordsWithVecs();
+        testAsyncFunctions();
+        testAsyncClassMethods();
         System.out.println("All tests passed!");
     }
 
@@ -478,6 +481,62 @@ public final class DemoTest {
         assert ts.scores().length == 2 : "echoTaggedScores.scores.length";
         assert Math.abs(Demo.averageScore(new TaggedScores("x", new double[]{80.0, 100.0})) - 90.0) < 0.0001 : "averageScore";
 
+        System.out.println("  PASS\n");
+    }
+
+    private static void testAsyncFunctions() {
+        System.out.println("Testing async functions...");
+        try {
+            CompletableFuture<Integer> addFuture = Demo.asyncAdd(3, 7);
+            assert addFuture.get() == 10 : "asyncAdd(3, 7)";
+
+            CompletableFuture<String> echoFuture = Demo.asyncEcho("hello async");
+            assert echoFuture.get().equals("Echo: hello async") : "asyncEcho";
+
+            CompletableFuture<int[]> doubleFuture = Demo.asyncDoubleAll(new int[]{1, 2, 3});
+            int[] doubled = doubleFuture.get();
+            assert doubled.length == 3 : "asyncDoubleAll length";
+            assert doubled[0] == 2 && doubled[1] == 4 && doubled[2] == 6 : "asyncDoubleAll values";
+
+            CompletableFuture<Optional<Integer>> findSome = Demo.asyncFindPositive(new int[]{-1, 0, 5, 3});
+            assert findSome.get().isPresent() && findSome.get().get() == 5 : "asyncFindPositive some";
+
+            CompletableFuture<Optional<Integer>> findNone = Demo.asyncFindPositive(new int[]{-1, -2, -3});
+            assert !findNone.get().isPresent() : "asyncFindPositive none";
+
+            CompletableFuture<String> concatFuture = Demo.asyncConcat(Arrays.asList("a", "b", "c"));
+            assert concatFuture.get().equals("a, b, c") : "asyncConcat";
+        } catch (Exception e) {
+            throw new RuntimeException("async function test failed", e);
+        }
+        System.out.println("  PASS\n");
+    }
+
+    private static void testAsyncClassMethods() {
+        System.out.println("Testing async class methods...");
+        try {
+            AsyncWorker worker = new AsyncWorker("test");
+            assert worker.getPrefix().equals("test") : "AsyncWorker.getPrefix";
+
+            String processed = worker.process("data").get();
+            assert processed.equals("test: data") : "AsyncWorker.process";
+
+            Optional<String> found = worker.findItem(42).get();
+            assert found.isPresent() : "AsyncWorker.findItem some";
+            assert found.get().equals("test_42") : "AsyncWorker.findItem value";
+
+            Optional<String> notFound = worker.findItem(-1).get();
+            assert !notFound.isPresent() : "AsyncWorker.findItem none";
+
+            List<String> batch = worker.processBatch(Arrays.asList("x", "y")).get();
+            assert batch.size() == 2 : "AsyncWorker.processBatch size";
+            assert batch.get(0).equals("test: x") : "AsyncWorker.processBatch[0]";
+            assert batch.get(1).equals("test: y") : "AsyncWorker.processBatch[1]";
+
+            worker.close();
+        } catch (Exception e) {
+            throw new RuntimeException("async class method test failed", e);
+        }
         System.out.println("  PASS\n");
     }
 }
