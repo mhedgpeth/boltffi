@@ -1,6 +1,75 @@
 public final class {{ module.class_name }} {
     private {{ module.class_name }}() {}
 {%- for func in module.functions %}
+{%- if func.is_async() %}
+{%- match func.async_call %}
+{%- when Some with (ac) %}
+{% if module.async_mode.is_virtual_thread() %}
+{%- if ac.complete_strategy.is_void() %}
+    public static void {{ func.name }}({% for param in func.params %}{{ param.java_type }} {{ param.name }}{% if !loop.last %}, {% endif %}{% endfor %}) {
+        BoltFFIAsync.callAsyncVoid(
+{%- else %}
+    public static {{ func.return_type }} {{ func.name }}({% for param in func.params %}{{ param.java_type }} {{ param.name }}{% if !loop.last %}, {% endif %}{% endfor %}) {
+        return BoltFFIAsync.callAsync(
+{%- endif %}
+{%- else %}
+{%- if ac.complete_strategy.is_void() %}
+    public static CompletableFuture<Void> {{ func.name }}({% for param in func.params %}{{ param.java_type }} {{ param.name }}{% if !loop.last %}, {% endif %}{% endfor %}) {
+        return BoltFFIAsync.callAsyncVoid(
+{%- else %}
+    public static CompletableFuture<{{ func.boxed_return_type() }}> {{ func.name }}({% for param in func.params %}{{ param.java_type }} {{ param.name }}{% if !loop.last %}, {% endif %}{% endfor %}) {
+        return BoltFFIAsync.callAsync(
+{%- endif %}
+{%- endif %}
+{%- if func.wire_writers.is_empty() %}
+                () -> Native.{{ func.ffi_name }}({% for param in func.params %}{{ param.native_expr }}{% if !loop.last %}, {% endif %}{% endfor %}),
+{%- else %}
+                () -> {
+{%- for writer in func.wire_writers %}
+                    try (WireWriter {{ writer.binding_name }} = new WireWriter({{ writer.size_expr }})) {
+                        {{ writer.encode_expr }};
+{%- endfor %}
+                        return Native.{{ func.ffi_name }}({% for param in func.params %}{{ param.native_expr }}{% if !loop.last %}, {% endif %}{% endfor %});
+{%- for _writer in func.wire_writers %}
+                    }
+{%- endfor %}
+                },
+{%- endif %}
+                (future, contHandle) -> Native.{{ ac.poll }}(future, contHandle),
+{%- if ac.complete_strategy.is_void() %}
+                future -> Native.{{ ac.complete }}(future),
+{%- elif ac.complete_strategy.is_direct() %}
+                future -> Native.{{ ac.complete }}(future),
+{%- elif ac.complete_strategy.is_wire() %}
+                future -> {
+                    byte[] _buf = Native.{{ ac.complete }}(future);
+                    if (_buf == null) throw new RuntimeException("FFI call returned null buffer");
+                    WireReader reader = new WireReader(_buf);
+                    return {{ ac.complete_strategy.decode_expr() }};
+                },
+{%- elif ac.complete_strategy.is_buffer() %}
+                future -> {
+                    byte[] _buf = Native.{{ ac.complete }}(future);
+                    return {{ ac.complete_strategy.decode_expr() }};
+                },
+{%- elif ac.complete_strategy.is_c_style_enum() %}
+                future -> {{ ac.complete_strategy.c_style_enum_class() }}.fromValue(Native.{{ ac.complete }}(future)),
+{%- elif ac.complete_strategy.is_handle() %}
+                future -> {
+                    long _handle = Native.{{ ac.complete }}(future);
+{%- if ac.complete_strategy.handle_nullable() %}
+                    if (_handle == 0L) return null;
+{%- endif %}
+                    return new {{ ac.complete_strategy.handle_class() }}(_handle);
+                },
+{%- endif %}
+                future -> Native.{{ ac.free }}(future),
+                future -> Native.{{ ac.cancel }}(future)
+        );
+    }
+{%- when None %}
+{%- endmatch %}
+{%- else %}
 
     public static {{ func.return_type }} {{ func.name }}({% for param in func.params %}{{ param.java_type }} {{ param.name }}{% if !loop.last %}, {% endif %}{% endfor %}) {
 {%- if func.wire_writers.is_empty() %}
@@ -46,5 +115,6 @@ public final class {{ module.class_name }} {
         }
 {%- endif %}
     }
+{%- endif %}
 {%- endfor %}
 }

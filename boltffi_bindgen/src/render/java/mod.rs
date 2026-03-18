@@ -41,4 +41,12 @@ impl JavaVersion {
     pub fn supports_sealed(&self) -> bool {
         self.0 >= 17
     }
+
+    pub fn supports_virtual_threads(&self) -> bool {
+        self.0 >= 21
+    }
+
+    pub fn supports_completable_future(&self) -> bool {
+        self.0 >= 8
+    }
 }

@@ -4,14 +4,14 @@ use super::JavaOptions;
 use super::mappings;
 use super::names::NamingConvention;
 use super::plan::{
-    JavaBlittableField, JavaBlittableLayout, JavaClass, JavaClassMethod, JavaConstructor,
-    JavaConstructorKind, JavaEnum, JavaEnumField, JavaEnumKind, JavaEnumVariant, JavaFunction,
-    JavaModule, JavaParam, JavaRecord, JavaRecordField, JavaRecordShape, JavaReturnStrategy,
-    JavaWireWriter,
+    JavaAsyncCall, JavaAsyncMode, JavaBlittableField, JavaBlittableLayout, JavaClass,
+    JavaClassMethod, JavaConstructor, JavaConstructorKind, JavaEnum, JavaEnumField, JavaEnumKind,
+    JavaEnumVariant, JavaFunction, JavaModule, JavaParam, JavaRecord, JavaRecordField,
+    JavaRecordShape, JavaReturnStrategy, JavaWireWriter,
 };
 use crate::ir::abi::{
     AbiCall, AbiContract, AbiEnum, AbiEnumField, AbiEnumPayload, AbiEnumVariant, AbiParam,
-    AbiRecord, CallId, ParamRole,
+    AbiRecord, CallId, CallMode, ParamRole,
 };
 use crate::ir::contract::FfiContract;
 use crate::ir::definitions::{
@@ -153,7 +153,7 @@ impl<'a> JavaLowerer<'a> {
             .ffi
             .functions
             .iter()
-            .filter(|f| !f.is_async && self.is_supported_function(f))
+            .filter(|f| self.is_supported_function(f))
             .map(|f| self.lower_function(f))
             .collect();
 
@@ -169,6 +169,7 @@ impl<'a> JavaLowerer<'a> {
             class_name: NamingConvention::class_name(&self.module_name),
             lib_name,
             java_version: self.options.min_java_version,
+            async_mode: JavaAsyncMode::from_version(self.options.min_java_version),
             prefix,
             records,
             enums,
@@ -467,7 +468,11 @@ impl<'a> JavaLowerer<'a> {
             })
             .collect();
 
-        let strategy = self.return_strategy(&func.returns, call);
+        let async_call = self.async_call_from_mode(call, &func.returns);
+        let strategy = match &async_call {
+            Some(ac) => ac.complete_strategy.clone(),
+            None => self.return_strategy(&func.returns, call),
+        };
 
         JavaFunction {
             name: NamingConvention::method_name(func.id.as_str()),
@@ -476,6 +481,7 @@ impl<'a> JavaLowerer<'a> {
             return_type: self.return_java_type(&func.returns),
             strategy,
             wire_writers,
+            async_call,
         }
     }
 
@@ -696,6 +702,25 @@ impl<'a> JavaLowerer<'a> {
         }
     }
 
+    fn async_call_from_mode(&self, call: &AbiCall, returns: &ReturnDef) -> Option<JavaAsyncCall> {
+        let async_abi = match &call.mode {
+            CallMode::Async(async_call) => async_call,
+            CallMode::Sync => return None,
+        };
+        let result_call = AbiCall {
+            returns: async_abi.result.clone(),
+            ..call.clone()
+        };
+        let complete_strategy = self.return_strategy(returns, &result_call);
+        Some(JavaAsyncCall {
+            poll: async_abi.poll.as_str().to_string(),
+            complete: async_abi.complete.as_str().to_string(),
+            cancel: async_abi.cancel.as_str().to_string(),
+            free: async_abi.free.as_str().to_string(),
+            complete_strategy,
+        })
+    }
+
     fn abi_call_for_function(&self, func: &FunctionDef) -> &AbiCall {
         self.abi
             .calls
@@ -767,7 +792,6 @@ impl<'a> JavaLowerer<'a> {
         let methods = class
             .methods
             .iter()
-            .filter(|m| !m.is_async)
             .filter(|m| self.is_supported_method(m))
             .map(|m| self.lower_class_method(class, m))
             .collect();
@@ -867,7 +891,11 @@ impl<'a> JavaLowerer<'a> {
             })
             .collect();
 
-        let strategy = self.return_strategy(&method.returns, &call);
+        let async_call = self.async_call_from_mode(&call, &method.returns);
+        let strategy = match &async_call {
+            Some(ac) => ac.complete_strategy.clone(),
+            None => self.return_strategy(&method.returns, &call),
+        };
 
         JavaClassMethod {
             name: NamingConvention::method_name(method.id.as_str()),
@@ -877,6 +905,7 @@ impl<'a> JavaLowerer<'a> {
             return_type: self.return_java_type(&method.returns),
             strategy,
             wire_writers,
+            async_call,
         }
     }
 
@@ -2237,7 +2266,7 @@ mod tests {
     }
 
     #[test]
-    fn async_functions_are_filtered_out() {
+    fn async_functions_are_included_with_async_call() {
         let mut contract = empty_contract();
         contract.functions.push(FunctionDef {
             id: FunctionId::new("slow_op"),
@@ -2252,8 +2281,19 @@ mod tests {
             .push(function("fast_op", vec![], ReturnDef::Void));
 
         let module = lower(&contract);
-        assert_eq!(module.functions.len(), 1);
-        assert_eq!(module.functions[0].name, "fastOp");
+        assert_eq!(module.functions.len(), 2);
+        let slow = module
+            .functions
+            .iter()
+            .find(|f| f.name == "slowOp")
+            .unwrap();
+        let fast = module
+            .functions
+            .iter()
+            .find(|f| f.name == "fastOp")
+            .unwrap();
+        assert!(slow.is_async());
+        assert!(!fast.is_async());
     }
 
     #[test]
@@ -2607,7 +2647,7 @@ mod tests {
     }
 
     #[test]
-    fn class_filters_async_methods() {
+    fn class_includes_async_methods_with_async_call() {
         let mut contract = empty_contract();
         contract.catalog.insert_class(class_def(
             "worker",
@@ -2632,8 +2672,16 @@ mod tests {
 
         let module = lower(&contract);
         let class = &module.classes[0];
-        assert_eq!(class.methods.len(), 1);
-        assert_eq!(class.methods[0].name, "syncOp");
+        assert_eq!(class.methods.len(), 2);
+        let sync_method = class.methods.iter().find(|m| m.name == "syncOp").unwrap();
+        let async_method = class.methods.iter().find(|m| m.name == "asyncOp").unwrap();
+        assert!(!sync_method.is_async());
+        assert!(async_method.is_async());
+        let ac = async_method.async_call.as_ref().unwrap();
+        assert!(!ac.poll.is_empty());
+        assert!(!ac.complete.is_empty());
+        assert!(!ac.cancel.is_empty());
+        assert!(!ac.free.is_empty());
     }
 
     #[test]
@@ -2765,5 +2813,100 @@ mod tests {
         assert_eq!(factory_class.methods[0].return_type, "Target");
         assert!(factory_class.methods[0].strategy.is_handle());
         assert_eq!(factory_class.methods[0].strategy.handle_class(), "Target");
+    }
+
+    #[test]
+    fn async_function_has_poll_complete_cancel_free() {
+        let mut contract = empty_contract();
+        contract.functions.push(FunctionDef {
+            id: FunctionId::new("fetch_data"),
+            params: vec![],
+            returns: ReturnDef::Value(TypeExpr::String),
+            is_async: true,
+            doc: None,
+            deprecated: None,
+        });
+
+        let module = lower(&contract);
+        let func = &module.functions[0];
+        assert!(func.is_async());
+        let ac = func.async_call.as_ref().unwrap();
+        assert!(ac.poll.contains("fetch_data"));
+        assert!(ac.complete.contains("fetch_data"));
+        assert!(ac.cancel.contains("fetch_data"));
+        assert!(ac.free.contains("fetch_data"));
+    }
+
+    #[test]
+    fn async_mode_is_virtual_thread_for_java21() {
+        let mut contract = empty_contract();
+        contract.functions.push(FunctionDef {
+            id: FunctionId::new("op"),
+            params: vec![],
+            returns: ReturnDef::Void,
+            is_async: true,
+            doc: None,
+            deprecated: None,
+        });
+
+        let module = lower_with_version(&contract, JavaVersion::JAVA_21);
+        assert!(module.async_mode.is_virtual_thread());
+
+        let module8 = lower_with_version(&contract, JavaVersion::JAVA_8);
+        assert!(module8.async_mode.is_completable_future());
+    }
+
+    #[test]
+    fn async_function_strategy_matches_return_type() {
+        let mut contract = empty_contract();
+        contract.functions.push(FunctionDef {
+            id: FunctionId::new("fetch_data"),
+            params: vec![],
+            returns: ReturnDef::Value(TypeExpr::String),
+            is_async: true,
+            doc: None,
+            deprecated: None,
+        });
+
+        let module = lower(&contract);
+        let func = &module.functions[0];
+        let ac = func.async_call.as_ref().unwrap();
+        assert!(ac.complete_strategy.is_wire());
+    }
+
+    #[test]
+    fn async_function_boxed_return_type_for_primitives() {
+        let mut contract = empty_contract();
+        contract.functions.push(FunctionDef {
+            id: FunctionId::new("get_count"),
+            params: vec![],
+            returns: ReturnDef::Value(TypeExpr::Primitive(PrimitiveType::I32)),
+            is_async: true,
+            doc: None,
+            deprecated: None,
+        });
+
+        let module = lower(&contract);
+        let func = &module.functions[0];
+        assert_eq!(func.return_type, "int");
+        assert_eq!(func.boxed_return_type(), "Integer");
+    }
+
+    #[test]
+    fn async_void_function_strategy() {
+        let mut contract = empty_contract();
+        contract.functions.push(FunctionDef {
+            id: FunctionId::new("fire_and_forget"),
+            params: vec![],
+            returns: ReturnDef::Void,
+            is_async: true,
+            doc: None,
+            deprecated: None,
+        });
+
+        let module = lower(&contract);
+        let func = &module.functions[0];
+        let ac = func.async_call.as_ref().unwrap();
+        assert!(ac.complete_strategy.is_void());
     }
 }

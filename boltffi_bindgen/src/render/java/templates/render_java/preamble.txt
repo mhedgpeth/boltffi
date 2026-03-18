@@ -9,6 +9,11 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.function.IntFunction;
+{%- if module.has_async() %}
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicLong;
+{%- endif %}
 
 final class WireReader {
     private final byte[] data;
@@ -638,3 +643,223 @@ final class WireWriter implements AutoCloseable {
     }
 }
 {% endif %}
+{%- if module.has_async() %}
+final class BoltFFIContinuationMap {
+    private static final AtomicLong NEXT_HANDLE = new AtomicLong(1);
+    private static final ConcurrentHashMap<Long, CompletableFuture<Byte>> MAP = new ConcurrentHashMap<>();
+
+    static long insert(CompletableFuture<Byte> future) {
+        long handle = NEXT_HANDLE.getAndIncrement();
+        MAP.put(handle, future);
+        return handle;
+    }
+
+    static void complete(long handle, byte pollResult) {
+        CompletableFuture<Byte> future = MAP.remove(handle);
+        if (future != null) {
+            future.complete(pollResult);
+        }
+    }
+}
+{%- if module.async_mode.is_virtual_thread() %}
+
+final class BoltFFIAsync {
+    private static final byte POLL_READY = 0;
+
+    interface FutureCreator {
+        long create();
+    }
+
+    interface FuturePoll {
+        void poll(long future, long contHandle);
+    }
+
+    interface FutureComplete<T> {
+        T complete(long future);
+    }
+
+    interface FutureLifecycle {
+        void apply(long future);
+    }
+
+    static <T> T callAsync(
+            FutureCreator createFuture,
+            FuturePoll poll,
+            FutureComplete<T> complete,
+            FutureLifecycle free,
+            FutureLifecycle cancel
+    ) {
+        long rustFuture = createFuture.create();
+        try {
+            byte pollResult;
+            do {
+                CompletableFuture<Byte> signal = new CompletableFuture<>();
+                long contHandle = BoltFFIContinuationMap.insert(signal);
+                poll.poll(rustFuture, contHandle);
+                try {
+                    pollResult = signal.get();
+                } catch (Exception e) {
+                    cancel.apply(rustFuture);
+                    throw new RuntimeException("async poll interrupted", e);
+                }
+            } while (pollResult != POLL_READY);
+            return complete.complete(rustFuture);
+        } finally {
+            free.apply(rustFuture);
+        }
+    }
+
+    static void callAsyncVoid(
+            FutureCreator createFuture,
+            FuturePoll poll,
+            FutureLifecycle completeVoid,
+            FutureLifecycle free,
+            FutureLifecycle cancel
+    ) {
+        long rustFuture = createFuture.create();
+        try {
+            byte pollResult;
+            do {
+                CompletableFuture<Byte> signal = new CompletableFuture<>();
+                long contHandle = BoltFFIContinuationMap.insert(signal);
+                poll.poll(rustFuture, contHandle);
+                try {
+                    pollResult = signal.get();
+                } catch (Exception e) {
+                    cancel.apply(rustFuture);
+                    throw new RuntimeException("async poll interrupted", e);
+                }
+            } while (pollResult != POLL_READY);
+            completeVoid.apply(rustFuture);
+        } finally {
+            free.apply(rustFuture);
+        }
+    }
+}
+{%- else %}
+
+final class BoltFFIAsync {
+    private static final byte POLL_READY = 0;
+
+    interface FutureCreator {
+        long create();
+    }
+
+    interface FuturePoll {
+        void poll(long future, long contHandle);
+    }
+
+    interface FutureComplete<T> {
+        T complete(long future);
+    }
+
+    interface FutureLifecycle {
+        void apply(long future);
+    }
+
+    static <T> CompletableFuture<T> callAsync(
+            FutureCreator createFuture,
+            FuturePoll poll,
+            FutureComplete<T> complete,
+            FutureLifecycle free,
+            FutureLifecycle cancel
+    ) {
+        CompletableFuture<T> result = new CompletableFuture<>();
+        long rustFuture;
+        try {
+            rustFuture = createFuture.create();
+        } catch (Exception e) {
+            result.completeExceptionally(e);
+            return result;
+        }
+        pollLoop(rustFuture, poll, complete, free, cancel, result);
+        return result;
+    }
+
+    private static <T> void pollLoop(
+            long rustFuture,
+            FuturePoll poll,
+            FutureComplete<T> complete,
+            FutureLifecycle free,
+            FutureLifecycle cancel,
+            CompletableFuture<T> result
+    ) {
+        CompletableFuture<Byte> signal = new CompletableFuture<>();
+        long contHandle = BoltFFIContinuationMap.insert(signal);
+        poll.poll(rustFuture, contHandle);
+        signal.whenComplete((pollResult, error) -> {
+            if (error != null) {
+                try { cancel.apply(rustFuture); } catch (Exception ignored) {}
+                try { free.apply(rustFuture); } catch (Exception ignored) {}
+                result.completeExceptionally(error);
+                return;
+            }
+            if (pollResult != POLL_READY) {
+                pollLoop(rustFuture, poll, complete, free, cancel, result);
+                return;
+            }
+            try {
+                T value = complete.complete(rustFuture);
+                result.complete(value);
+            } catch (Exception e) {
+                result.completeExceptionally(e);
+            } finally {
+                try { free.apply(rustFuture); } catch (Exception ignored) {}
+            }
+        });
+    }
+
+    static CompletableFuture<Void> callAsyncVoid(
+            FutureCreator createFuture,
+            FuturePoll poll,
+            FutureLifecycle completeVoid,
+            FutureLifecycle free,
+            FutureLifecycle cancel
+    ) {
+        CompletableFuture<Void> result = new CompletableFuture<>();
+        long rustFuture;
+        try {
+            rustFuture = createFuture.create();
+        } catch (Exception e) {
+            result.completeExceptionally(e);
+            return result;
+        }
+        pollLoopVoid(rustFuture, poll, completeVoid, free, cancel, result);
+        return result;
+    }
+
+    private static void pollLoopVoid(
+            long rustFuture,
+            FuturePoll poll,
+            FutureLifecycle completeVoid,
+            FutureLifecycle free,
+            FutureLifecycle cancel,
+            CompletableFuture<Void> result
+    ) {
+        CompletableFuture<Byte> signal = new CompletableFuture<>();
+        long contHandle = BoltFFIContinuationMap.insert(signal);
+        poll.poll(rustFuture, contHandle);
+        signal.whenComplete((pollResult, error) -> {
+            if (error != null) {
+                try { cancel.apply(rustFuture); } catch (Exception ignored) {}
+                try { free.apply(rustFuture); } catch (Exception ignored) {}
+                result.completeExceptionally(error);
+                return;
+            }
+            if (pollResult != POLL_READY) {
+                pollLoopVoid(rustFuture, poll, completeVoid, free, cancel, result);
+                return;
+            }
+            try {
+                completeVoid.apply(rustFuture);
+                result.complete(null);
+            } catch (Exception e) {
+                result.completeExceptionally(e);
+            } finally {
+                try { free.apply(rustFuture); } catch (Exception ignored) {}
+            }
+        });
+    }
+}
+{%- endif %}
+{%- endif %}

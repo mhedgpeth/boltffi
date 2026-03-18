@@ -18,12 +18,27 @@ final class Native {
 
     @SuppressWarnings("unused")
     static void boltffiFutureContinuationCallback(long handle, byte pollResult) {
+{%- if module.has_async() %}
+        BoltFFIContinuationMap.complete(handle, pollResult);
+{%- endif %}
     }
 
     static native void {{ module.prefix }}_free_string(long ptr);
     static native byte[] {{ module.prefix }}_last_error_message();
 {%- for func in module.functions %}
+{%- if func.is_async() %}
+{%- match func.async_call %}
+{%- when Some with (ac) %}
+    static native long {{ func.ffi_name }}({% for param in func.params %}{{ param.native_type }} {{ param.name }}{% if !loop.last %}, {% endif %}{% endfor %});
+    static native void {{ ac.poll }}(long future, long contHandle);
+    static native {{ func.native_return_type() }} {{ ac.complete }}(long future);
+    static native void {{ ac.cancel }}(long future);
+    static native void {{ ac.free }}(long future);
+{%- when None %}
+{%- endmatch %}
+{%- else %}
     static native {{ func.native_return_type() }} {{ func.ffi_name }}({% for param in func.params %}{{ param.native_type }} {{ param.name }}{% if !loop.last %}, {% endif %}{% endfor %});
+{%- endif %}
 {%- endfor %}
 {%- for class in module.classes %}
     static native void {{ class.ffi_free }}(long handle);
@@ -31,10 +46,30 @@ final class Native {
     static native long {{ ctor.ffi_name }}({% for param in ctor.params %}{{ param.native_type }} {{ param.name }}{% if !loop.last %}, {% endif %}{% endfor %});
 {%- endfor %}
 {%- for method in class.methods %}
+{%- if method.is_async() %}
+{%- match method.async_call %}
+{%- when Some with (ac) %}
+{%- if method.is_static %}
+    static native long {{ method.ffi_name }}({% for param in method.params %}{{ param.native_type }} {{ param.name }}{% if !loop.last %}, {% endif %}{% endfor %});
+    static native void {{ ac.poll }}(long future, long contHandle);
+    static native {{ method.native_return_type() }} {{ ac.complete }}(long future);
+    static native void {{ ac.cancel }}(long future);
+    static native void {{ ac.free }}(long future);
+{%- else %}
+    static native long {{ method.ffi_name }}(long handle{% if !method.params.is_empty() %}, {% endif %}{% for param in method.params %}{{ param.native_type }} {{ param.name }}{% if !loop.last %}, {% endif %}{% endfor %});
+    static native void {{ ac.poll }}(long handle, long future, long contHandle);
+    static native {{ method.native_return_type() }} {{ ac.complete }}(long handle, long future);
+    static native void {{ ac.cancel }}(long handle, long future);
+    static native void {{ ac.free }}(long handle, long future);
+{%- endif %}
+{%- when None %}
+{%- endmatch %}
+{%- else %}
 {%- if method.is_static %}
     static native {{ method.native_return_type() }} {{ method.ffi_name }}({% for param in method.params %}{{ param.native_type }} {{ param.name }}{% if !loop.last %}, {% endif %}{% endfor %});
 {%- else %}
     static native {{ method.native_return_type() }} {{ method.ffi_name }}(long handle{% if !method.params.is_empty() %}, {% endif %}{% for param in method.params %}{{ param.native_type }} {{ param.name }}{% if !loop.last %}, {% endif %}{% endfor %});
+{%- endif %}
 {%- endif %}
 {%- endfor %}
 {%- endfor %}

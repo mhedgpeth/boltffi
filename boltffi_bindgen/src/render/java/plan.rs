@@ -1,11 +1,45 @@
 use super::JavaVersion;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum JavaAsyncMode {
+    CompletableFuture,
+    VirtualThread,
+}
+
+impl JavaAsyncMode {
+    pub fn from_version(version: JavaVersion) -> Self {
+        if version.supports_virtual_threads() {
+            Self::VirtualThread
+        } else {
+            Self::CompletableFuture
+        }
+    }
+
+    pub fn is_completable_future(&self) -> bool {
+        matches!(self, Self::CompletableFuture)
+    }
+
+    pub fn is_virtual_thread(&self) -> bool {
+        matches!(self, Self::VirtualThread)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct JavaAsyncCall {
+    pub poll: String,
+    pub complete: String,
+    pub cancel: String,
+    pub free: String,
+    pub complete_strategy: JavaReturnStrategy,
+}
+
 #[derive(Debug, Clone)]
 pub struct JavaModule {
     pub package_name: String,
     pub class_name: String,
     pub lib_name: String,
     pub java_version: JavaVersion,
+    pub async_mode: JavaAsyncMode,
     pub prefix: String,
     pub records: Vec<JavaRecord>,
     pub enums: Vec<JavaEnum>,
@@ -16,6 +50,14 @@ pub struct JavaModule {
 impl JavaModule {
     pub fn package_path(&self) -> String {
         self.package_name.replace('.', "/")
+    }
+
+    pub fn has_async(&self) -> bool {
+        self.functions.iter().any(|f| f.async_call.is_some())
+            || self
+                .classes
+                .iter()
+                .any(|c| c.methods.iter().any(|m| m.async_call.is_some()))
     }
 
     pub fn has_wire_params(&self) -> bool {
@@ -237,9 +279,18 @@ pub struct JavaFunction {
     pub return_type: String,
     pub strategy: JavaReturnStrategy,
     pub wire_writers: Vec<JavaWireWriter>,
+    pub async_call: Option<JavaAsyncCall>,
 }
 
 impl JavaFunction {
+    pub fn is_async(&self) -> bool {
+        self.async_call.is_some()
+    }
+
+    pub fn boxed_return_type(&self) -> &str {
+        box_java_type(&self.return_type)
+    }
+
     pub fn native_return_type(&self) -> &str {
         self.strategy.native_return_type(&self.return_type)
     }
@@ -280,6 +331,10 @@ impl JavaClass {
         self.methods.iter().any(|m| m.is_static)
     }
 
+    pub fn has_async_methods(&self) -> bool {
+        self.methods.iter().any(|m| m.async_call.is_some())
+    }
+
     pub fn has_wire_params(&self) -> bool {
         self.constructors.iter().any(|c| !c.wire_writers.is_empty())
             || self.methods.iter().any(|m| !m.wire_writers.is_empty())
@@ -318,10 +373,33 @@ pub struct JavaClassMethod {
     pub return_type: String,
     pub strategy: JavaReturnStrategy,
     pub wire_writers: Vec<JavaWireWriter>,
+    pub async_call: Option<JavaAsyncCall>,
 }
 
 impl JavaClassMethod {
+    pub fn is_async(&self) -> bool {
+        self.async_call.is_some()
+    }
+
+    pub fn boxed_return_type(&self) -> &str {
+        box_java_type(&self.return_type)
+    }
+
     pub fn native_return_type(&self) -> &str {
         self.strategy.native_return_type(&self.return_type)
+    }
+}
+
+fn box_java_type(java_type: &str) -> &str {
+    match java_type {
+        "void" => "Void",
+        "boolean" => "Boolean",
+        "byte" => "Byte",
+        "short" => "Short",
+        "int" => "Integer",
+        "long" => "Long",
+        "float" => "Float",
+        "double" => "Double",
+        other => other,
     }
 }

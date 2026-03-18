@@ -53,6 +53,7 @@ pub struct DataEnumAbstractTemplate<'a> {
 pub struct ClassTemplate<'a> {
     pub class: &'a JavaClass,
     pub package_name: &'a str,
+    pub async_mode: &'a super::plan::JavaAsyncMode,
 }
 
 #[cfg(test)]
@@ -60,8 +61,8 @@ mod tests {
     use super::*;
     use crate::render::java::JavaVersion;
     use crate::render::java::plan::{
-        JavaClassMethod, JavaConstructor, JavaConstructorKind, JavaFunction, JavaParam,
-        JavaReturnStrategy, JavaWireWriter,
+        JavaAsyncMode, JavaClassMethod, JavaConstructor, JavaConstructorKind, JavaFunction,
+        JavaParam, JavaReturnStrategy, JavaWireWriter,
     };
 
     fn java_param(name: &str, java_type: &str, native_type: &str, native_expr: &str) -> JavaParam {
@@ -93,6 +94,7 @@ mod tests {
             class_name: "Test".to_string(),
             lib_name: "test".to_string(),
             java_version: JavaVersion::JAVA_17,
+            async_mode: JavaAsyncMode::CompletableFuture,
             prefix: "boltffi".to_string(),
             records: vec![],
             enums: vec![],
@@ -118,12 +120,14 @@ mod tests {
                     nullable: true,
                 },
                 wire_writers: vec![],
+                async_call: None,
             }],
         };
 
         let source = ClassTemplate {
             class: &class,
             package_name: "com.test",
+            async_mode: &JavaAsyncMode::CompletableFuture,
         }
         .render()
         .expect("class template should render");
@@ -163,6 +167,7 @@ mod tests {
                         native_type: "int".to_string(),
                     },
                     wire_writers: vec![payload_writer.clone()],
+                    async_call: None,
                 },
                 JavaClassMethod {
                     name: "stateWithPayload".to_string(),
@@ -175,6 +180,7 @@ mod tests {
                         native_type: "int".to_string(),
                     },
                     wire_writers: vec![payload_writer],
+                    async_call: None,
                 },
             ],
         };
@@ -182,6 +188,7 @@ mod tests {
         let source = ClassTemplate {
             class: &class,
             package_name: "com.test",
+            async_mode: &JavaAsyncMode::CompletableFuture,
         }
         .render()
         .expect("class template should render");
@@ -220,6 +227,7 @@ mod tests {
                     return_type: "int".to_string(),
                     strategy: JavaReturnStrategy::Direct,
                     wire_writers: vec![],
+                    async_call: None,
                 },
                 JavaClassMethod {
                     name: "get".to_string(),
@@ -229,6 +237,7 @@ mod tests {
                     return_type: "int".to_string(),
                     strategy: JavaReturnStrategy::Direct,
                     wire_writers: vec![],
+                    async_call: None,
                 },
             ],
         };
@@ -240,6 +249,7 @@ mod tests {
                 return_type: "void".to_string(),
                 strategy: JavaReturnStrategy::Void,
                 wire_writers: vec![],
+                async_call: None,
             }],
             ..java_module(vec![class])
         };

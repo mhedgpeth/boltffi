@@ -1,6 +1,9 @@
 package {{ package_name }};
 
 import java.util.concurrent.atomic.AtomicBoolean;
+{%- if class.has_async_methods() && async_mode.is_completable_future() %}
+import java.util.concurrent.CompletableFuture;
+{%- endif %}
 
 public final class {{ class.class_name }} implements AutoCloseable {
     private final long handle;
@@ -45,12 +48,16 @@ public final class {{ class.class_name }} implements AutoCloseable {
     }
 {%- endif %}{% endfor %}
 
+    long rawHandle() {
+        return handle;
+    }
+
     @Override
     public void close() {
         if (!closed.compareAndSet(false, true)) return;
         Native.{{ class.ffi_free }}(handle);
     }
-{%- if class.has_factory_constructors() || class.has_static_methods() %}
+{%- if class.has_factory_constructors() || class.has_static_methods() || class.has_async_methods() %}
 {%- for ctor in class.constructors %}{% if ctor.is_factory() %}
 
     public static {{ class.class_name }} {{ ctor.name }}({% for param in ctor.params %}{{ param.java_type }} {{ param.name }}{% if !loop.last %}, {% endif %}{% endfor %}) {
@@ -82,7 +89,7 @@ public final class {{ class.class_name }} implements AutoCloseable {
 {%- endif %}
     }
 {%- endif %}{% endfor %}
-{%- for method in class.methods %}{% if method.is_static %}
+{%- for method in class.methods %}{% if method.is_static && !method.is_async() %}
 
     public static {{ method.return_type }} {{ method.name }}({% for param in method.params %}{{ param.java_type }} {{ param.name }}{% if !loop.last %}, {% endif %}{% endfor %}) {
 {%- if method.wire_writers.is_empty() %}
@@ -141,8 +148,74 @@ public final class {{ class.class_name }} implements AutoCloseable {
 {%- endif %}
     }
 {%- endif %}{% endfor %}
+{%- for method in class.methods %}{% if method.is_async() %}
+{%- let ac = method.async_call.as_ref().unwrap() %}
+{% if async_mode.is_virtual_thread() %}
+{%- if ac.complete_strategy.is_void() %}
+    public{% if method.is_static %} static{% endif %} void {{ method.name }}({% for param in method.params %}{{ param.java_type }} {{ param.name }}{% if !loop.last %}, {% endif %}{% endfor %}) {
+        BoltFFIAsync.callAsyncVoid(
+{%- else %}
+    public{% if method.is_static %} static{% endif %} {{ method.return_type }} {{ method.name }}({% for param in method.params %}{{ param.java_type }} {{ param.name }}{% if !loop.last %}, {% endif %}{% endfor %}) {
+        return BoltFFIAsync.callAsync(
 {%- endif %}
-{%- for method in class.methods %}{% if !method.is_static %}
+{%- else %}
+{%- if ac.complete_strategy.is_void() %}
+    public{% if method.is_static %} static{% endif %} CompletableFuture<Void> {{ method.name }}({% for param in method.params %}{{ param.java_type }} {{ param.name }}{% if !loop.last %}, {% endif %}{% endfor %}) {
+        return BoltFFIAsync.callAsyncVoid(
+{%- else %}
+    public{% if method.is_static %} static{% endif %} CompletableFuture<{{ method.boxed_return_type() }}> {{ method.name }}({% for param in method.params %}{{ param.java_type }} {{ param.name }}{% if !loop.last %}, {% endif %}{% endfor %}) {
+        return BoltFFIAsync.callAsync(
+{%- endif %}
+{%- endif %}
+{%- if method.wire_writers.is_empty() %}
+                () -> Native.{{ method.ffi_name }}({% if !method.is_static %}handle{% if !method.params.is_empty() %}, {% endif %}{% endif %}{% for param in method.params %}{{ param.native_expr }}{% if !loop.last %}, {% endif %}{% endfor %}),
+{%- else %}
+                () -> {
+{%- for writer in method.wire_writers %}
+                    try (WireWriter {{ writer.binding_name }} = new WireWriter({{ writer.size_expr }})) {
+                        {{ writer.encode_expr }};
+{%- endfor %}
+                        return Native.{{ method.ffi_name }}({% if !method.is_static %}handle{% if !method.params.is_empty() %}, {% endif %}{% endif %}{% for param in method.params %}{{ param.native_expr }}{% if !loop.last %}, {% endif %}{% endfor %});
+{%- for _writer in method.wire_writers %}
+                    }
+{%- endfor %}
+                },
+{%- endif %}
+                (future, contHandle) -> Native.{{ ac.poll }}({% if !method.is_static %}handle, {% endif %}future, contHandle),
+{%- if ac.complete_strategy.is_void() %}
+                future -> Native.{{ ac.complete }}({% if !method.is_static %}handle, {% endif %}future),
+{%- elif ac.complete_strategy.is_direct() %}
+                future -> Native.{{ ac.complete }}({% if !method.is_static %}handle, {% endif %}future),
+{%- elif ac.complete_strategy.is_wire() %}
+                future -> {
+                    byte[] _buf = Native.{{ ac.complete }}({% if !method.is_static %}handle, {% endif %}future);
+                    if (_buf == null) throw new RuntimeException("FFI call returned null buffer");
+                    WireReader reader = new WireReader(_buf);
+                    return {{ ac.complete_strategy.decode_expr() }};
+                },
+{%- elif ac.complete_strategy.is_buffer() %}
+                future -> {
+                    byte[] _buf = Native.{{ ac.complete }}({% if !method.is_static %}handle, {% endif %}future);
+                    return {{ ac.complete_strategy.decode_expr() }};
+                },
+{%- elif ac.complete_strategy.is_c_style_enum() %}
+                future -> {{ ac.complete_strategy.c_style_enum_class() }}.fromValue(Native.{{ ac.complete }}({% if !method.is_static %}handle, {% endif %}future)),
+{%- elif ac.complete_strategy.is_handle() %}
+                future -> {
+                    long _handle = Native.{{ ac.complete }}({% if !method.is_static %}handle, {% endif %}future);
+{%- if ac.complete_strategy.handle_nullable() %}
+                    if (_handle == 0L) return null;
+{%- endif %}
+                    return new {{ ac.complete_strategy.handle_class() }}(_handle);
+                },
+{%- endif %}
+                future -> Native.{{ ac.free }}({% if !method.is_static %}handle, {% endif %}future),
+                future -> Native.{{ ac.cancel }}({% if !method.is_static %}handle, {% endif %}future)
+        );
+    }
+{%- endif %}{% endfor %}
+{%- endif %}
+{%- for method in class.methods %}{% if !method.is_static && !method.is_async() %}
 
     public {{ method.return_type }} {{ method.name }}({% for param in method.params %}{{ param.java_type }} {{ param.name }}{% if !loop.last %}, {% endif %}{% endfor %}) {
 {%- if method.wire_writers.is_empty() %}
