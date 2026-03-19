@@ -578,6 +578,7 @@ mod tests {
     };
     use crate::ir::ids::{ClassId, FunctionId, MethodId, ParamName};
     use crate::ir::types::{PrimitiveType, TypeExpr};
+    use crate::render::java::JavaVersion;
     use std::env;
     use std::fs;
     use std::process::Command;
@@ -873,6 +874,95 @@ mod tests {
             }
         }
         assert!(status.success(), "async Java sources should compile");
+
+        let _ = fs::remove_dir_all(tmp_root);
+    }
+
+    #[test]
+    fn emit_async_vt_java_compiles_with_javac_when_available() {
+        if Command::new("javac").arg("-version").output().is_err() {
+            return;
+        }
+
+        let mut contract = empty_contract();
+
+        contract.functions.push(async_function(
+            "fetch_name",
+            vec![param("id", TypeExpr::Primitive(PrimitiveType::I64))],
+            ReturnDef::Value(TypeExpr::String),
+        ));
+        contract
+            .functions
+            .push(async_function("fire_event", vec![], ReturnDef::Void));
+        contract.functions.push(async_function(
+            "get_count",
+            vec![],
+            ReturnDef::Value(TypeExpr::Primitive(PrimitiveType::I32)),
+        ));
+
+        contract.catalog.insert_class(class_def(
+            "session",
+            vec![default_ctor(vec![])],
+            vec![
+                async_instance_method("load", vec![], ReturnDef::Value(TypeExpr::String)),
+                async_instance_method("save", vec![], ReturnDef::Void),
+                instance_method(
+                    "get_id",
+                    vec![],
+                    ReturnDef::Value(TypeExpr::Primitive(PrimitiveType::I64)),
+                ),
+                static_method(
+                    "count",
+                    vec![],
+                    ReturnDef::Value(TypeExpr::Primitive(PrimitiveType::I32)),
+                ),
+            ],
+        ));
+
+        let abi = IrLowerer::new(&contract).to_abi_contract();
+        let output = JavaEmitter::emit(
+            &contract,
+            &abi,
+            "com.test".to_string(),
+            "test".to_string(),
+            JavaOptions {
+                min_java_version: JavaVersion::JAVA_21,
+                ..Default::default()
+            },
+        );
+
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("time should be monotonic")
+            .as_nanos();
+        let tmp_root = env::temp_dir().join(format!("boltffi-java-async-vt-{}", nanos));
+        let package_dir = tmp_root.join(&output.package_path);
+        fs::create_dir_all(&package_dir).expect("should create package directory");
+
+        let source_paths: Vec<_> = output
+            .files
+            .iter()
+            .map(|file| {
+                let path = package_dir.join(&file.file_name);
+                fs::write(&path, &file.source).expect("should write generated source");
+                path
+            })
+            .collect();
+
+        let status = Command::new("javac")
+            .args(&source_paths)
+            .status()
+            .expect("javac should execute");
+
+        if !status.success() {
+            for file in &output.files {
+                eprintln!("=== {} ===\n{}", file.file_name, file.source);
+            }
+        }
+        assert!(
+            status.success(),
+            "async virtual-thread Java sources should compile"
+        );
 
         let _ = fs::remove_dir_all(tmp_root);
     }
