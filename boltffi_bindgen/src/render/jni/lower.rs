@@ -2666,6 +2666,8 @@ mod tests {
                 ],
             },
             is_error: false,
+            constructors: vec![],
+            methods: vec![],
             doc: None,
             deprecated: None,
         });

@@ -1,6 +1,6 @@
 ---
 source: boltffi_bindgen/src/render/swift/templates.rs
-expression: render_record(&record)
+expression: render_record(&record, "")
 ---
 /// A physical location with coordinates.
 public struct Location: Hashable, Equatable, Sendable {

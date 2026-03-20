@@ -1668,6 +1668,8 @@ mod tests {
                 ],
             },
             is_error: false,
+            constructors: vec![],
+            methods: vec![],
             doc: None,
             deprecated: None,
         });
@@ -1709,6 +1711,8 @@ mod tests {
                 ],
             },
             is_error: false,
+            constructors: vec![],
+            methods: vec![],
             doc: None,
             deprecated: None,
         });
@@ -1732,6 +1736,8 @@ mod tests {
                 }],
             },
             is_error: false,
+            constructors: vec![],
+            methods: vec![],
             doc: None,
             deprecated: None,
         });
@@ -1757,6 +1763,8 @@ mod tests {
                 }],
             },
             is_error: false,
+            constructors: vec![],
+            methods: vec![],
             doc: None,
             deprecated: None,
         });
@@ -1783,6 +1791,8 @@ mod tests {
                 }],
             },
             is_error: false,
+            constructors: vec![],
+            methods: vec![],
             doc: None,
             deprecated: None,
         });
@@ -1975,6 +1985,8 @@ mod tests {
                 }],
             },
             is_error: false,
+            constructors: vec![],
+            methods: vec![],
             doc: None,
             deprecated: None,
         });
@@ -2115,6 +2127,8 @@ mod tests {
                 }],
             },
             is_error: false,
+            constructors: vec![],
+            methods: vec![],
             doc: None,
             deprecated: None,
         });

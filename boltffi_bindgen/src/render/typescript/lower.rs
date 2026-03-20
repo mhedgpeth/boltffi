@@ -1783,6 +1783,8 @@ mod tests {
                 ],
             },
             is_error: false,
+            constructors: vec![],
+            methods: vec![],
             doc: None,
             deprecated: None,
         }
@@ -1805,6 +1807,7 @@ mod tests {
             constructors: vec![ConstructorDef::Default {
                 params: vec![],
                 is_fallible: false,
+                is_optional: false,
                 doc: None,
                 deprecated: None,
             }],
@@ -2241,6 +2244,7 @@ mod tests {
             constructors: vec![ConstructorDef::Default {
                 params: vec![primitive_param("initial", PrimitiveType::I32)],
                 is_fallible: false,
+                is_optional: false,
                 doc: None,
                 deprecated: None,
             }],
@@ -2273,12 +2277,14 @@ mod tests {
                 ConstructorDef::Default {
                     params: vec![],
                     is_fallible: false,
+                    is_optional: false,
                     doc: None,
                     deprecated: None,
                 },
                 ConstructorDef::NamedFactory {
                     name: MethodId::new("connect"),
                     is_fallible: false,
+                    is_optional: false,
                     doc: None,
                     deprecated: None,
                 },
@@ -2565,6 +2571,7 @@ mod tests {
                     doc: None,
                 }],
                 is_fallible: false,
+                is_optional: false,
                 doc: None,
                 deprecated: None,
             }],

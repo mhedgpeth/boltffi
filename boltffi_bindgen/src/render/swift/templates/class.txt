@@ -7,13 +7,17 @@
 {%- for ctor in cls.constructors %}
 {%- if ctor.is_designated() %}
 
-{{ self::swift_doc_block(ctor.doc(), "    ") }}    public init({% for p in ctor.params() %}{{ p.signature() }}{% if !loop.last %}, {% endif %}{% endfor %}){% if ctor.is_fallible() %} throws{% endif %} {
+{{ self::swift_doc_block(ctor.doc(), "    ") }}    public init{% if ctor.is_optional() %}?{% endif %}({% for p in ctor.params() %}{{ p.signature() }}{% if !loop.last %}, {% endif %}{% endfor %}){% if ctor.is_fallible() %} throws{% endif %} {
 {%- for param in ctor.params() %}
 {%- if let Some(wrapper) = param.wrapper_code() %}
         {{ wrapper }}
 {%- endif %}
 {%- endfor %}
-{%- if ctor.is_fallible() %}
+{%- if ctor.is_optional() %}
+        guard let ptr = {% for w in ctor.annotated_closure_wrappers() %}{{ w }} {% endfor %}{{ ctor.call_expr() }}{% for _ in ctor.closure_wrappers() %} }{% endfor %} else {
+            return nil
+        }
+{%- elif ctor.is_fallible() %}
         guard let ptr = {% for w in ctor.annotated_closure_wrappers() %}{{ w }} {% endfor %}{{ ctor.call_expr() }}{% for _ in ctor.closure_wrappers() %} }{% endfor %} else {
             throw FfiError(message: takeLastErrorMessage())
         }
@@ -24,8 +28,12 @@
     }
 {%- else if ctor.is_factory() %}
 
-{{ self::swift_doc_block(ctor.doc(), "    ") }}    public static func {{ ctor.name().unwrap() }}(){% if ctor.is_fallible() %} throws{% endif %} -> {{ cls.name }} {
-{%- if ctor.is_fallible() %}
+{{ self::swift_doc_block(ctor.doc(), "    ") }}    public static func {{ ctor.name().unwrap() }}(){% if ctor.is_fallible() %} throws{% endif %} -> {{ cls.name }}{% if ctor.is_optional() %}?{% endif %} {
+{%- if ctor.is_optional() %}
+        guard let ptr = {{ ctor.ffi_symbol() }}() else {
+            return nil
+        }
+{%- elif ctor.is_fallible() %}
         guard let ptr = {{ ctor.ffi_symbol() }}() else {
             throw FfiError(message: takeLastErrorMessage())
         }
@@ -36,13 +44,17 @@
     }
 {%- else if ctor.is_convenience() %}
 
-{{ self::swift_doc_block(ctor.doc(), "    ") }}    public convenience init({% for p in ctor.params() %}{{ p.signature() }}{% if !loop.last %}, {% endif %}{% endfor %}){% if ctor.is_fallible() %} throws{% endif %} {
+{{ self::swift_doc_block(ctor.doc(), "    ") }}    public convenience init{% if ctor.is_optional() %}?{% endif %}({% for p in ctor.params() %}{{ p.signature() }}{% if !loop.last %}, {% endif %}{% endfor %}){% if ctor.is_fallible() %} throws{% endif %} {
 {%- for param in ctor.params() %}
 {%- if let Some(wrapper) = param.wrapper_code() %}
         {{ wrapper }}
 {%- endif %}
 {%- endfor %}
-{%- if ctor.is_fallible() %}
+{%- if ctor.is_optional() %}
+        guard let ptr = {% for w in ctor.annotated_closure_wrappers() %}{{ w }} {% endfor %}{{ ctor.call_expr() }}{% for _ in ctor.closure_wrappers() %} }{% endfor %} else {
+            return nil
+        }
+{%- elif ctor.is_fallible() %}
         guard let ptr = {% for w in ctor.annotated_closure_wrappers() %}{{ w }} {% endfor %}{{ ctor.call_expr() }}{% for _ in ctor.closure_wrappers() %} }{% endfor %} else {
             throw FfiError(message: takeLastErrorMessage())
         }
@@ -59,7 +71,7 @@
     }
 {%- for method in cls.methods %}
 
-{{ self::swift_doc_block(method.doc, "    ") }}    public{% if method.is_static %} static{% endif %} func {{ method.name }}({% for p in method.params %}{{ p.signature() }}{% if !loop.last %}, {% endif %}{% endfor %}){% if method.mode.is_async() %} async throws{% if let Some(result) = method.mode.async_result() %}{% if let Some(ret) = result.swift_type() %} -> {{ ret }}{% endif %}{% endif %}{% else %}{% if method.returns.is_throws() %} throws{% endif %}{% if let Some(ret) = method.returns.swift_type() %} -> {{ ret }}{% endif %}{% endif %} {
+{{ self::swift_doc_block(method.doc, "    ") }}    public{% if method.is_mutating() %} mutating{% elif method.is_static %} static{% endif %} func {{ method.name }}({% for p in method.params %}{{ p.signature() }}{% if !loop.last %}, {% endif %}{% endfor %}){% if method.mode.is_async() %} async throws{% if let Some(result) = method.mode.async_result() %}{% if let Some(ret) = result.swift_type() %} -> {{ ret }}{% endif %}{% endif %}{% else %}{% if method.returns.is_throws() %} throws{% endif %}{% if let Some(ret) = method.returns.swift_type() %} -> {{ ret }}{% endif %}{% endif %} {
 {%- match method.mode %}
 {%- when SwiftCallMode::Async { start, poll, complete, cancel, free, result } %}
 {%- for param in method.params %}
@@ -130,21 +142,18 @@
         {{ wrapper }}
 {%- endif %}
 {%- endfor %}
+{%- if let Some(rs) = method.value_self %}
+{%- if let Some(wrapper) = rs.wrapper_code %}
+        {{ wrapper }}
+{%- endif %}
+{%- endif %}
 {%- for open in method.sync_closure_opens() %}
 {{ open }}
 {%- endfor %}
 {%- if method.returns.is_void() %}
-{%- if method.needs_handle() %}
-{{ method.method_body_indent() }}{{ symbol }}(handle{% for p in method.params %}, {{ p.ffi_arg() }}{% endfor %})
-{%- else %}
-{{ method.method_body_indent() }}{{ symbol }}({% for p in method.params %}{{ p.ffi_arg() }}{% if !loop.last %}, {% endif %}{% endfor %})
-{%- endif %}
+{{ method.method_body_indent() }}{{ method.sync_call_expr() }}
 {%- elif method.returns.is_direct_buffer() %}
-{%- if method.needs_handle() %}
-{{ method.method_body_indent() }}let buf = {{ symbol }}(handle{% for p in method.params %}, {{ p.ffi_arg() }}{% endfor %})
-{%- else %}
-{{ method.method_body_indent() }}let buf = {{ symbol }}({% for p in method.params %}{{ p.ffi_arg() }}{% if !loop.last %}, {% endif %}{% endfor %})
-{%- endif %}
+{{ method.method_body_indent() }}let buf = {{ method.sync_call_expr() }}
 {{ method.method_body_indent() }}defer { {{ prefix }}_free_buf(buf) }
 {%- if method.returns.direct_buffer_is_data() %}
 {{ method.method_body_indent() }}guard buf.len > 0, let ptr = buf.ptr else { return Data() }
@@ -165,55 +174,47 @@
 {%- endif %}
 {%- endif %}
 {%- elif method.returns.is_wire_encoded() %}
-{%- if method.needs_handle() %}
-{{ method.method_body_indent() }}let buf = {{ symbol }}(handle{% for p in method.params %}, {{ p.ffi_arg() }}{% endfor %})
-{%- else %}
-{{ method.method_body_indent() }}let buf = {{ symbol }}({% for p in method.params %}{{ p.ffi_arg() }}{% if !loop.last %}, {% endif %}{% endfor %})
-{%- endif %}
+{{ method.method_body_indent() }}let buf = {{ method.sync_call_expr() }}
 {{ method.method_body_indent() }}defer { {{ prefix }}_free_buf(buf) }
 {%- if let Some(reader_expr) = method.returns.reader_decode_expr() %}
-{%- if method.returns.is_throws() %}
+{%- if method.is_mutating() %}
+{{ method.method_body_indent() }}self = boltffiDecodeOwnedBuf(buf.ptr, Int(buf.len)) { reader in {{ reader_expr }} }
+{%- elif method.returns.is_throws() %}
 {{ method.method_body_indent() }}return try boltffiDecodeOwnedBuf(buf.ptr, Int(buf.len)) { reader in {{ reader_expr }} }
 {%- else %}
 {{ method.method_body_indent() }}return boltffiDecodeOwnedBuf(buf.ptr, Int(buf.len)) { reader in {{ reader_expr }} }
 {%- endif %}
 {%- elif let Some(decode_expr) = method.returns.decode_expr() %}
 {{ method.method_body_indent() }}let wire = WireBuffer(ptr: buf.ptr!, len: Int(buf.len))
+{%- if method.is_mutating() %}
+{{ method.method_body_indent() }}self = {{ decode_expr }}
+{%- else %}
 {{ method.method_body_indent() }}return {{ decode_expr }}
+{%- endif %}
 {%- endif %}
 {%- elif method.returns.is_throws() %}
 {{ method.method_body_indent() }}fatalError("throwing methods not yet implemented in IR backend")
 {%- elif let Some((class_name, nullable)) = method.returns.handle_info() %}
 {%- if nullable %}
-{%- if method.needs_handle() %}
-{{ method.method_body_indent() }}guard let ptr = {{ symbol }}(handle{% for p in method.params %}, {{ p.ffi_arg() }}{% endfor %}) else { return nil }
-{%- else %}
-{{ method.method_body_indent() }}guard let ptr = {{ symbol }}({% for p in method.params %}{{ p.ffi_arg() }}{% if !loop.last %}, {% endif %}{% endfor %}) else { return nil }
-{%- endif %}
+{{ method.method_body_indent() }}guard let ptr = {{ method.sync_call_expr() }} else { return nil }
 {{ method.method_body_indent() }}return {{ class_name }}(handle: ptr)
 {%- else %}
-{%- if method.needs_handle() %}
-{{ method.method_body_indent() }}let ptr = {{ symbol }}(handle{% for p in method.params %}, {{ p.ffi_arg() }}{% endfor %})!
-{%- else %}
-{{ method.method_body_indent() }}let ptr = {{ symbol }}({% for p in method.params %}{{ p.ffi_arg() }}{% if !loop.last %}, {% endif %}{% endfor %})!
-{%- endif %}
+{{ method.method_body_indent() }}let ptr = {{ method.sync_call_expr() }}!
 {{ method.method_body_indent() }}return {{ class_name }}(handle: ptr)
 {%- endif %}
 {%- elif method.returns.is_composite() %}
 {%- if let Some(convert_expr) = method.returns.composite_convert_expr("_raw") %}
-{%- if method.needs_handle() %}
-{{ method.method_body_indent() }}let _raw = {{ symbol }}(handle{% for p in method.params %}, {{ p.ffi_arg() }}{% endfor %})
+{{ method.method_body_indent() }}let _raw = {{ method.sync_call_expr() }}
+{%- if method.is_mutating() %}
+{{ method.method_body_indent() }}self = {{ convert_expr }}
 {%- else %}
-{{ method.method_body_indent() }}let _raw = {{ symbol }}({% for p in method.params %}{{ p.ffi_arg() }}{% if !loop.last %}, {% endif %}{% endfor %})
-{%- endif %}
 {{ method.method_body_indent() }}return {{ convert_expr }}
 {%- endif %}
-{%- else %}
-{%- if method.needs_handle() %}
-{{ method.method_body_indent() }}return {{ symbol }}(handle{% for p in method.params %}, {{ p.ffi_arg() }}{% endfor %})
-{%- else %}
-{{ method.method_body_indent() }}return {{ symbol }}({% for p in method.params %}{{ p.ffi_arg() }}{% if !loop.last %}, {% endif %}{% endfor %})
 {%- endif %}
+{%- elif method.returns.is_c_style_enum() %}
+{{ method.method_body_indent() }}return {{ method.returns.c_style_enum_type().unwrap() }}(rawValue: {{ method.sync_call_expr() }})!
+{%- else %}
+{{ method.method_body_indent() }}return {{ method.sync_call_expr() }}
 {%- endif %}
 {%- for close in method.sync_closure_closes() %}
 {{ close }}

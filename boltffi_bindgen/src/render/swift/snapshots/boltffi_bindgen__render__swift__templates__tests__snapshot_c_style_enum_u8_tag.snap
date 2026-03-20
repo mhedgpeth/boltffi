@@ -1,7 +1,7 @@
 ---
 source: boltffi_bindgen/src/render/swift/templates.rs
 assertion_line: 767
-expression: render_enum(&e)
+expression: render_enum(&e, "")
 ---
 public enum ByteStatus: UInt8, Hashable, Sendable, CaseIterable {
     case idle = 0

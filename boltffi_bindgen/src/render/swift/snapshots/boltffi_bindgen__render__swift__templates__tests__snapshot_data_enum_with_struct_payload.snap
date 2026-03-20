@@ -1,6 +1,6 @@
 ---
 source: boltffi_bindgen/src/render/swift/templates.rs
-expression: render_enum(&e)
+expression: render_enum(&e, "")
 ---
 public enum Event: Hashable, Equatable, Sendable {
     case click(x: Int32, y: Int32)

@@ -12,3 +12,110 @@ extension {{ class_name }}: WireCodable {
     @inlinable static func decode(from reader: inout WireReader) -> {{ class_name }} { {{ class_name }}(rawValue: {{ self::swift_c_style_enum_decode_expr(tag_type) }})! }
     @inlinable func encode(to writer: inout WireWriter) { {{ self::swift_c_style_enum_encode_stmt(tag_type) }} }
 }
+{%- if !constructors.is_empty() || !methods.is_empty() %}
+
+extension {{ class_name }} {
+{%- for ctor in constructors %}
+{%- if ctor.is_factory() %}
+
+{{ self::swift_doc_block(ctor.doc(), "    ") }}    public static func {{ ctor.name().unwrap() }}(){% if ctor.is_fallible() %} throws{% endif %} -> {{ class_name }}{% if ctor.is_optional() %}?{% endif %} {
+{%- if ctor.is_optional() %}
+        let buf = {{ ctor.ffi_symbol() }}()
+        defer { {{ prefix }}_free_buf(buf) }
+        return boltffiDecodeOwnedBuf(buf.ptr, Int(buf.len)) { reader in reader.readOptional { reader in {{ class_name }}.decode(from: &reader) } }
+{%- elif ctor.is_fallible() %}
+        let buf = {{ ctor.ffi_symbol() }}()
+        defer { {{ prefix }}_free_buf(buf) }
+        return try boltffiDecodeOwnedBuf(buf.ptr, Int(buf.len)) { reader in
+            try {{ class_name }}.decodeResultOrThrow(from: &reader)
+        }
+{%- else %}
+        return {{ class_name }}(rawValue: {{ ctor.ffi_symbol() }}())!
+{%- endif %}
+    }
+{%- else %}
+
+{{ self::swift_doc_block(ctor.doc(), "    ") }}    public init{% if ctor.is_optional() %}?{% endif %}({% for p in ctor.params() %}{{ p.signature() }}{% if !loop.last %}, {% endif %}{% endfor %}){% if ctor.is_fallible() %} throws{% endif %} {
+{%- for param in ctor.params() %}
+{%- if let Some(wrapper) = param.wrapper_code() %}
+        {{ wrapper }}
+{%- endif %}
+{%- endfor %}
+{%- if ctor.is_optional() %}
+        let buf = {% for w in ctor.annotated_closure_wrappers() %}{{ w }} {% endfor %}{{ ctor.call_expr() }}{% for _ in ctor.closure_wrappers() %} }{% endfor %}
+
+        defer { {{ prefix }}_free_buf(buf) }
+        guard let value: {{ class_name }} = boltffiDecodeOwnedBuf(buf.ptr, Int(buf.len), { reader in reader.readOptional { reader in {{ class_name }}.decode(from: &reader) } }) else { return nil }
+        self = value
+{%- elif ctor.is_fallible() %}
+        let buf = {% for w in ctor.annotated_closure_wrappers() %}{{ w }} {% endfor %}{{ ctor.call_expr() }}{% for _ in ctor.closure_wrappers() %} }{% endfor %}
+
+        defer { {{ prefix }}_free_buf(buf) }
+        self = try boltffiDecodeOwnedBuf(buf.ptr, Int(buf.len)) { reader in
+            try {{ class_name }}.decodeResultOrThrow(from: &reader)
+        }
+{%- else %}
+        self = {{ class_name }}(rawValue: {% for w in ctor.annotated_closure_wrappers() %}{{ w }} {% endfor %}{{ ctor.call_expr() }}{% for _ in ctor.closure_wrappers() %} }{% endfor %})!
+{%- endif %}
+    }
+{%- endif %}
+{%- endfor %}
+{%- for method in methods %}
+
+{{ self::swift_doc_block(method.doc, "    ") }}    public{% if method.is_mutating() %} mutating{% elif method.is_static %} static{% endif %} func {{ method.name }}({% for p in method.params %}{{ p.signature() }}{% if !loop.last %}, {% endif %}{% endfor %}){% if method.returns.is_throws() %} throws{% endif %}{% if !method.mutating_void %}{% if let Some(ret) = method.returns.swift_type() %} -> {{ ret }}{% endif %}{% endif %} {
+{%- match method.mode %}
+{%- when SwiftCallMode::Sync { symbol } %}
+{%- for param in method.params %}
+{%- if let Some(wrapper) = param.wrapper_code() %}
+        {{ wrapper }}
+{%- endif %}
+{%- endfor %}
+{%- if let Some(rs) = method.value_self %}
+{%- if let Some(wrapper) = rs.wrapper_code %}
+        {{ wrapper }}
+{%- endif %}
+{%- endif %}
+{%- for open in method.sync_closure_opens() %}
+{{ open }}
+{%- endfor %}
+{%- if method.returns.is_void() %}
+{{ method.method_body_indent() }}{{ method.sync_call_expr() }}
+{%- elif method.returns.is_wire_encoded() %}
+{{ method.method_body_indent() }}let buf = {{ method.sync_call_expr() }}
+{{ method.method_body_indent() }}defer { {{ prefix }}_free_buf(buf) }
+{%- if let Some(reader_expr) = method.returns.reader_decode_expr() %}
+{%- if method.is_mutating() %}
+{{ method.method_body_indent() }}self = boltffiDecodeOwnedBuf(buf.ptr, Int(buf.len)) { reader in {{ reader_expr }} }
+{%- elif method.returns.is_throws() %}
+{{ method.method_body_indent() }}return try boltffiDecodeOwnedBuf(buf.ptr, Int(buf.len)) { reader in {{ reader_expr }} }
+{%- else %}
+{{ method.method_body_indent() }}return boltffiDecodeOwnedBuf(buf.ptr, Int(buf.len)) { reader in {{ reader_expr }} }
+{%- endif %}
+{%- endif %}
+{%- elif method.returns.is_composite() %}
+{%- if let Some(convert_expr) = method.returns.composite_convert_expr("_raw") %}
+{{ method.method_body_indent() }}let _raw = {{ method.sync_call_expr() }}
+{%- if method.is_mutating() %}
+{{ method.method_body_indent() }}self = {{ convert_expr }}
+{%- else %}
+{{ method.method_body_indent() }}return {{ convert_expr }}
+{%- endif %}
+{%- endif %}
+{%- elif method.returns.is_c_style_enum() %}
+{%- if method.is_mutating() %}
+{{ method.method_body_indent() }}self = {{ method.returns.c_style_enum_type().unwrap() }}(rawValue: {{ method.sync_call_expr() }})!
+{%- else %}
+{{ method.method_body_indent() }}return {{ method.returns.c_style_enum_type().unwrap() }}(rawValue: {{ method.sync_call_expr() }})!
+{%- endif %}
+{%- else %}
+{{ method.method_body_indent() }}return {{ method.sync_call_expr() }}
+{%- endif %}
+{%- for close in method.sync_closure_closes() %}
+{{ close }}
+{%- endfor %}
+{%- when SwiftCallMode::Async { start, poll, complete, cancel, free, result } %}
+{%- endmatch %}
+    }
+{%- endfor %}
+}
+{%- endif %}

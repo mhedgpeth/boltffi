@@ -1,8 +1,8 @@
 use askama::Template;
 
 use super::plan::{
-    SwiftCallMode, SwiftCallback, SwiftClass, SwiftEnum, SwiftField, SwiftFunction, SwiftRecord,
-    SwiftStreamMode, SwiftVariant,
+    SwiftCallMode, SwiftCallback, SwiftClass, SwiftConstructor, SwiftEnum, SwiftField,
+    SwiftFunction, SwiftMethod, SwiftRecord, SwiftStreamMode, SwiftVariant,
 };
 use crate::ir::types::PrimitiveType;
 use crate::render::swift::emit;
@@ -101,16 +101,22 @@ pub struct RecordTemplate<'a> {
     pub fields: &'a [SwiftField],
     pub is_blittable: bool,
     pub blittable_size: Option<usize>,
+    pub constructors: &'a [SwiftConstructor],
+    pub methods: &'a [SwiftMethod],
+    pub prefix: &'a str,
     pub doc: &'a Option<String>,
 }
 
 impl<'a> RecordTemplate<'a> {
-    pub fn from_record(record: &'a SwiftRecord) -> Self {
+    pub fn from_record(record: &'a SwiftRecord, prefix: &'a str) -> Self {
         Self {
             class_name: &record.class_name,
             fields: &record.fields,
             is_blittable: record.is_blittable,
             blittable_size: record.blittable_size,
+            constructors: &record.constructors,
+            methods: &record.methods,
+            prefix,
             doc: &record.doc,
         }
     }
@@ -123,16 +129,22 @@ pub struct EnumCStyleTemplate<'a> {
     pub variants: &'a [SwiftVariant],
     pub tag_type: PrimitiveType,
     pub is_error: bool,
+    pub constructors: &'a [SwiftConstructor],
+    pub methods: &'a [SwiftMethod],
+    pub prefix: &'a str,
     pub doc: &'a Option<String>,
 }
 
 impl<'a> EnumCStyleTemplate<'a> {
-    pub fn from_enum(e: &'a SwiftEnum) -> Self {
+    pub fn from_enum(e: &'a SwiftEnum, prefix: &'a str) -> Self {
         Self {
             class_name: &e.name,
             variants: &e.variants,
             tag_type: e.c_style_tag_type.unwrap_or(PrimitiveType::I32),
             is_error: e.is_error,
+            constructors: &e.constructors,
+            methods: &e.methods,
+            prefix,
             doc: &e.doc,
         }
     }
@@ -144,29 +156,37 @@ pub struct EnumDataTemplate<'a> {
     pub class_name: &'a str,
     pub variants: &'a [SwiftVariant],
     pub is_error: bool,
+    pub constructors: &'a [SwiftConstructor],
+    pub methods: &'a [SwiftMethod],
+    pub prefix: &'a str,
     pub doc: &'a Option<String>,
 }
 
 impl<'a> EnumDataTemplate<'a> {
-    pub fn from_enum(e: &'a SwiftEnum) -> Self {
+    pub fn from_enum(e: &'a SwiftEnum, prefix: &'a str) -> Self {
         Self {
             class_name: &e.name,
             variants: &e.variants,
             is_error: e.is_error,
+            constructors: &e.constructors,
+            methods: &e.methods,
+            prefix,
             doc: &e.doc,
         }
     }
 }
 
-pub fn render_record(record: &SwiftRecord) -> String {
-    RecordTemplate::from_record(record).render().unwrap()
+pub fn render_record(record: &SwiftRecord, prefix: &str) -> String {
+    RecordTemplate::from_record(record, prefix)
+        .render()
+        .unwrap()
 }
 
-pub fn render_enum(e: &SwiftEnum) -> String {
+pub fn render_enum(e: &SwiftEnum, prefix: &str) -> String {
     if e.is_c_style() {
-        EnumCStyleTemplate::from_enum(e).render().unwrap()
+        EnumCStyleTemplate::from_enum(e, prefix).render().unwrap()
     } else {
-        EnumDataTemplate::from_enum(e).render().unwrap()
+        EnumDataTemplate::from_enum(e, prefix).render().unwrap()
     }
 }
 
@@ -270,12 +290,12 @@ impl SwiftEmitter {
         }
 
         module.records.iter().for_each(|record| {
-            output.push_str(&render_record(record));
+            output.push_str(&render_record(record, &self.prefix));
             output.push_str("\n\n");
         });
 
         module.enums.iter().for_each(|enumeration| {
-            output.push_str(&render_enum(enumeration));
+            output.push_str(&render_enum(enumeration, &self.prefix));
             output.push_str("\n\n");
         });
 
@@ -546,9 +566,11 @@ mod tests {
             ],
             is_blittable: true,
             blittable_size: Some(16),
+            constructors: vec![],
+            methods: vec![],
             doc: None,
         };
-        insta::assert_snapshot!(render_record(&record));
+        insta::assert_snapshot!(render_record(&record, ""));
     }
 
     #[test]
@@ -583,9 +605,11 @@ mod tests {
             ],
             is_blittable: true,
             blittable_size: Some(12),
+            constructors: vec![],
+            methods: vec![],
             doc: None,
         };
-        insta::assert_snapshot!(render_record(&record));
+        insta::assert_snapshot!(render_record(&record, ""));
     }
 
     #[test]
@@ -612,9 +636,11 @@ mod tests {
             ],
             is_blittable: false,
             blittable_size: None,
+            constructors: vec![],
+            methods: vec![],
             doc: None,
         };
-        insta::assert_snapshot!(render_record(&record));
+        insta::assert_snapshot!(render_record(&record, ""));
     }
 
     #[test]
@@ -641,9 +667,11 @@ mod tests {
             ],
             is_blittable: true,
             blittable_size: Some(12),
+            constructors: vec![],
+            methods: vec![],
             doc: None,
         };
-        insta::assert_snapshot!(render_record(&record));
+        insta::assert_snapshot!(render_record(&record, ""));
     }
 
     #[test]
@@ -678,9 +706,11 @@ mod tests {
             ],
             is_blittable: true,
             blittable_size: Some(16),
+            constructors: vec![],
+            methods: vec![],
             doc: Some("A physical location with coordinates.".to_string()),
         };
-        insta::assert_snapshot!(render_record(&record));
+        insta::assert_snapshot!(render_record(&record, ""));
     }
 
     #[test]
@@ -704,9 +734,11 @@ mod tests {
                     doc: None,
                 },
             ],
+            constructors: vec![],
+            methods: vec![],
             doc: Some("A cardinal compass direction.".to_string()),
         };
-        insta::assert_snapshot!(render_enum(&e));
+        insta::assert_snapshot!(render_enum(&e, ""));
     }
 
     #[test]
@@ -736,9 +768,11 @@ mod tests {
                     doc: None,
                 },
             ],
+            constructors: vec![],
+            methods: vec![],
             doc: None,
         };
-        insta::assert_snapshot!(render_enum(&e));
+        insta::assert_snapshot!(render_enum(&e, ""));
     }
 
     #[test]
@@ -762,9 +796,11 @@ mod tests {
                     doc: None,
                 },
             ],
+            constructors: vec![],
+            methods: vec![],
             doc: None,
         };
-        insta::assert_snapshot!(render_enum(&e));
+        insta::assert_snapshot!(render_enum(&e, ""));
     }
 
     #[test]
@@ -794,9 +830,11 @@ mod tests {
                     doc: None,
                 },
             ],
+            constructors: vec![],
+            methods: vec![],
             doc: None,
         };
-        insta::assert_snapshot!(render_enum(&e));
+        insta::assert_snapshot!(render_enum(&e, ""));
     }
 
     #[test]
@@ -840,9 +878,11 @@ mod tests {
                     doc: None,
                 },
             ],
+            constructors: vec![],
+            methods: vec![],
             doc: None,
         };
-        insta::assert_snapshot!(render_enum(&e));
+        insta::assert_snapshot!(render_enum(&e, ""));
     }
 
     #[test]
@@ -890,9 +930,11 @@ mod tests {
                     doc: None,
                 },
             ],
+            constructors: vec![],
+            methods: vec![],
             doc: None,
         };
-        insta::assert_snapshot!(render_enum(&e));
+        insta::assert_snapshot!(render_enum(&e, ""));
     }
 
     #[test]
@@ -1084,12 +1126,14 @@ mod tests {
                         conversion: SwiftConversion::Direct,
                     }],
                     is_fallible: false,
+                    is_optional: false,
                     doc: Some("Creates a new data store with the given capacity.".to_string()),
                 },
                 SwiftConstructor::Factory {
                     name: "withDefaults".to_string(),
                     ffi_symbol: "boltffi_data_store_with_defaults".to_string(),
                     is_fallible: false,
+                    is_optional: false,
                     doc: Some("Creates a data store with sensible default settings.".to_string()),
                 },
             ],
@@ -1106,6 +1150,8 @@ mod tests {
                 }],
                 returns: SwiftReturn::Void,
                 is_static: false,
+                value_self: None,
+                mutating_void: false,
                 doc: Some("Inserts a value into the store by key.".to_string()),
             }],
             streams: vec![],
@@ -1128,6 +1174,7 @@ mod tests {
                     conversion: SwiftConversion::ToString,
                 }],
                 is_fallible: false,
+                is_optional: false,
                 doc: None,
             }],
             methods: vec![SwiftMethod {
@@ -1147,6 +1194,8 @@ mod tests {
                     encode: write_string("value"),
                 },
                 is_static: false,
+                value_self: None,
+                mutating_void: false,
                 doc: None,
             }],
             streams: vec![],
@@ -1212,6 +1261,8 @@ mod tests {
                 }],
                 returns: SwiftReturn::Void,
                 is_static: false,
+                value_self: None,
+                mutating_void: false,
                 doc: None,
             }],
             streams: vec![],
@@ -1234,6 +1285,7 @@ mod tests {
                     conversion: SwiftConversion::ToString,
                 }],
                 is_fallible: true,
+                is_optional: false,
                 doc: None,
             }],
             methods: vec![],
@@ -1291,6 +1343,8 @@ mod tests {
                     nullable: false,
                 },
                 is_static: true,
+                value_self: None,
+                mutating_void: false,
                 doc: None,
             }],
             streams: vec![],
@@ -1355,9 +1409,11 @@ mod tests {
             ],
             is_blittable: false,
             blittable_size: None,
+            constructors: vec![],
+            methods: vec![],
             doc: None,
         };
-        insta::assert_snapshot!(render_record(&record));
+        insta::assert_snapshot!(render_record(&record, ""));
     }
 
     #[test]
@@ -1394,9 +1450,11 @@ mod tests {
             ],
             is_blittable: false,
             blittable_size: None,
+            constructors: vec![],
+            methods: vec![],
             doc: None,
         };
-        insta::assert_snapshot!(render_record(&record));
+        insta::assert_snapshot!(render_record(&record, ""));
     }
 
     #[test]
@@ -1444,6 +1502,8 @@ mod tests {
                     nullable: true,
                 },
                 is_static: false,
+                value_self: None,
+                mutating_void: false,
                 doc: None,
             }],
             streams: vec![],
@@ -1480,9 +1540,11 @@ mod tests {
             style: SwiftEnumStyle::Data,
             c_style_tag_type: None,
             is_error: false,
+            constructors: vec![],
+            methods: vec![],
             doc: None,
         };
-        insta::assert_snapshot!(render_enum(&e));
+        insta::assert_snapshot!(render_enum(&e, ""));
     }
 
     #[test]

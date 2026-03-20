@@ -12,7 +12,7 @@ use super::plan::{
     SwiftClosureTrampoline, SwiftClosureTrampolineParam, SwiftConstructor, SwiftConversion,
     SwiftCustomType, SwiftEnum, SwiftEnumStyle, SwiftField, SwiftFunction, SwiftMethod,
     SwiftModule, SwiftNativeConversion, SwiftNativeMapping, SwiftParam, SwiftRecord, SwiftReturn,
-    SwiftStream, SwiftStreamMode, SwiftVariant, SwiftVariantPayload,
+    SwiftStream, SwiftStreamMode, SwiftVariant, SwiftVariantPayload, ValueSelfParam,
 };
 use crate::ir::abi::{
     AbiCall, AbiCallbackInvocation, AbiContract, AbiEnum, AbiEnumField, AbiEnumPayload,
@@ -22,8 +22,8 @@ use crate::ir::abi::{
 use crate::ir::codec::CodecPlan;
 use crate::ir::contract::FfiContract;
 use crate::ir::definitions::{
-    CallbackKind, ConstructorDef, DefaultValue, EnumRepr, ParamDef, Receiver, ReturnDef, StreamDef,
-    StreamMode,
+    CallbackKind, ConstructorDef, DefaultValue, EnumRepr, MethodDef, ParamDef, Receiver, ReturnDef,
+    StreamDef, StreamMode,
 };
 use crate::ir::ids::{CallbackId, ClassId, EnumId, FieldName, ParamName, RecordId};
 use crate::ir::ops::{
@@ -298,15 +298,208 @@ impl<'a> SwiftLowerer<'a> {
                         })
                         .collect();
 
+                let constructors = def
+                    .constructors
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(idx, ctor)| {
+                        let call_id = CallId::RecordConstructor {
+                            record_id: def.id.clone(),
+                            index: idx,
+                        };
+                        let call = self
+                            .abi_index
+                            .calls
+                            .get(&call_id)
+                            .map(|i| &self.abi.calls[*i])?;
+                        Some(self.lower_value_type_constructor(ctor, call))
+                    })
+                    .collect();
+
+                let methods = def
+                    .methods
+                    .iter()
+                    .filter(|m| !m.is_async)
+                    .filter_map(|method| {
+                        let call_id = CallId::RecordMethod {
+                            record_id: def.id.clone(),
+                            method_id: method.id.clone(),
+                        };
+                        let call = self
+                            .abi_index
+                            .calls
+                            .get(&call_id)
+                            .map(|i| &self.abi.calls[*i])?;
+                        Some(self.lower_value_type_method(method, call, &abi_record.encode_ops))
+                    })
+                    .collect();
+
                 SwiftRecord {
                     class_name: self.swift_name_for_record(&def.id),
                     fields,
                     is_blittable: abi_record.is_blittable,
                     blittable_size: abi_record.size,
+                    constructors,
+                    methods,
                     doc: def.doc.clone(),
                 }
             })
             .collect()
+    }
+
+    fn lower_value_type_constructor(
+        &self,
+        ctor: &ConstructorDef,
+        call: &AbiCall,
+    ) -> SwiftConstructor {
+        match ctor {
+            ConstructorDef::Default {
+                is_fallible,
+                is_optional,
+                doc,
+                ..
+            } => SwiftConstructor::Designated {
+                ffi_symbol: call.symbol.as_str().to_string(),
+                params: ctor
+                    .params()
+                    .into_iter()
+                    .map(|p| self.lower_param(p, call))
+                    .collect(),
+                is_fallible: *is_fallible,
+                is_optional: *is_optional,
+                doc: doc.clone(),
+            },
+            ConstructorDef::NamedFactory {
+                name,
+                is_fallible,
+                is_optional,
+                doc,
+                ..
+            } => SwiftConstructor::Factory {
+                name: camel_case(name.as_str()),
+                ffi_symbol: call.symbol.as_str().to_string(),
+                is_fallible: *is_fallible,
+                is_optional: *is_optional,
+                doc: doc.clone(),
+            },
+            ConstructorDef::NamedInit {
+                name,
+                first_param,
+                rest_params,
+                is_fallible,
+                is_optional,
+                doc,
+                ..
+            } => {
+                let label = camel_case(name.as_str());
+                let mut first = self.lower_param(first_param, call);
+                first.label = Some(label.clone());
+                let rest = rest_params.iter().map(|p| self.lower_param(p, call));
+                SwiftConstructor::Convenience {
+                    name: label,
+                    ffi_symbol: call.symbol.as_str().to_string(),
+                    params: std::iter::once(first).chain(rest).collect(),
+                    is_fallible: *is_fallible,
+                    is_optional: *is_optional,
+                    doc: doc.clone(),
+                }
+            }
+        }
+    }
+
+    fn lower_value_type_method(
+        &self,
+        method: &MethodDef,
+        call: &AbiCall,
+        encode_ops: &WriteSeq,
+    ) -> SwiftMethod {
+        let value_self = if method.receiver != Receiver::Static {
+            Some(Self::build_value_self_param(
+                call,
+                encode_ops,
+                method.receiver == Receiver::RefMutSelf,
+            ))
+        } else {
+            None
+        };
+
+        let mut returns = self.swift_return_from_abi(&call.returns, &call.error, &method.returns);
+
+        let mutating_void = method.receiver == Receiver::RefMutSelf
+            && matches!(method.returns, ReturnDef::Void);
+
+        if mutating_void
+            && let Some(Transport::Composite(layout)) = &call.returns.transport
+        {
+            returns.set_composite_swift_type(self.swift_name_for_record(&layout.record_id));
+        }
+
+        SwiftMethod {
+            name: camel_case(method.id.as_str()),
+            mode: SwiftCallMode::Sync {
+                symbol: call.symbol.as_str().to_string(),
+            },
+            params: method
+                .params
+                .iter()
+                .map(|p| self.lower_param(p, call))
+                .collect(),
+            returns,
+            is_static: method.receiver == Receiver::Static,
+            value_self,
+            mutating_void,
+            doc: method.doc.clone(),
+        }
+    }
+
+    fn build_value_self_param(
+        call: &AbiCall,
+        encode_ops: &WriteSeq,
+        is_mutating: bool,
+    ) -> ValueSelfParam {
+        let self_abi_param = call
+            .params
+            .iter()
+            .find(|p| p.name.as_str() == "self")
+            .expect("value type instance method must have self param");
+
+        match &self_abi_param.role {
+            ParamRole::Input {
+                transport: Transport::Composite(layout),
+                ..
+            } => {
+                let c_type = format!("___{}", layout.record_id.as_str());
+                let field_inits: Vec<String> = layout
+                    .fields
+                    .iter()
+                    .map(|f| format!("{}: self.{}", f.name.as_str(), camel_case(f.name.as_str())))
+                    .collect();
+                ValueSelfParam {
+                    ffi_args: vec![format!("{}({})", c_type, field_inits.join(", "))],
+                    wrapper_code: None,
+                    is_mutating,
+                }
+            }
+            ParamRole::Input {
+                transport: Transport::Scalar(ScalarOrigin::CStyleEnum { .. }),
+                ..
+            } => ValueSelfParam {
+                ffi_args: vec!["self.rawValue".to_string()],
+                wrapper_code: None,
+                is_mutating,
+            },
+            _ => {
+                let writer_body = emit::emit_writer_write(encode_ops);
+                ValueSelfParam {
+                    ffi_args: vec!["selfBytes".to_string(), "UInt(selfBytes.count)".to_string()],
+                    wrapper_code: Some(format!(
+                        "let selfBytes = boltffiEncode {{ writer in {} }}",
+                        writer_body
+                    )),
+                    is_mutating,
+                }
+            }
+        }
     }
 }
 
@@ -341,6 +534,42 @@ impl<'a> SwiftLowerer<'a> {
                 } else {
                     SwiftEnumStyle::Data
                 };
+                let constructors = def
+                    .constructors
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(idx, ctor)| {
+                        let call_id = CallId::EnumConstructor {
+                            enum_id: def.id.clone(),
+                            index: idx,
+                        };
+                        let call = self
+                            .abi_index
+                            .calls
+                            .get(&call_id)
+                            .map(|i| &self.abi.calls[*i])?;
+                        Some(self.lower_value_type_constructor(ctor, call))
+                    })
+                    .collect();
+
+                let methods = def
+                    .methods
+                    .iter()
+                    .filter(|m| !m.is_async)
+                    .filter_map(|method| {
+                        let call_id = CallId::EnumMethod {
+                            enum_id: def.id.clone(),
+                            method_id: method.id.clone(),
+                        };
+                        let call = self
+                            .abi_index
+                            .calls
+                            .get(&call_id)
+                            .map(|i| &self.abi.calls[*i])?;
+                        Some(self.lower_value_type_method(method, call, &abi_enum.encode_ops))
+                    })
+                    .collect();
+
                 SwiftEnum {
                     name: self.swift_name_for_enum(&def.id),
                     variants,
@@ -350,6 +579,8 @@ impl<'a> SwiftLowerer<'a> {
                         _ => None,
                     },
                     is_error: def.is_error,
+                    constructors,
+                    methods,
                     doc: def.doc.clone(),
                 }
             })
@@ -435,7 +666,10 @@ impl<'a> SwiftLowerer<'a> {
 
                         match ctor {
                             ConstructorDef::Default {
-                                is_fallible, doc, ..
+                                is_fallible,
+                                is_optional,
+                                doc,
+                                ..
                             } => SwiftConstructor::Designated {
                                 ffi_symbol: call.symbol.as_str().to_string(),
                                 params: ctor
@@ -444,17 +678,20 @@ impl<'a> SwiftLowerer<'a> {
                                     .map(|p| self.lower_param(p, call))
                                     .collect(),
                                 is_fallible: *is_fallible,
+                                is_optional: *is_optional,
                                 doc: doc.clone(),
                             },
                             ConstructorDef::NamedFactory {
                                 name,
                                 is_fallible,
+                                is_optional,
                                 doc,
                                 ..
                             } => SwiftConstructor::Factory {
                                 name: camel_case(name.as_str()),
                                 ffi_symbol: call.symbol.as_str().to_string(),
                                 is_fallible: *is_fallible,
+                                is_optional: *is_optional,
                                 doc: doc.clone(),
                             },
                             ConstructorDef::NamedInit {
@@ -462,6 +699,7 @@ impl<'a> SwiftLowerer<'a> {
                                 first_param,
                                 rest_params,
                                 is_fallible,
+                                is_optional,
                                 doc,
                                 ..
                             } => {
@@ -474,6 +712,7 @@ impl<'a> SwiftLowerer<'a> {
                                     ffi_symbol: call.symbol.as_str().to_string(),
                                     params: std::iter::once(first).chain(rest).collect(),
                                     is_fallible: *is_fallible,
+                                    is_optional: *is_optional,
                                     doc: doc.clone(),
                                 }
                             }
@@ -512,6 +751,8 @@ impl<'a> SwiftLowerer<'a> {
                                     .collect(),
                                 returns,
                                 is_static: method.receiver == Receiver::Static,
+                                value_self: None,
+                                mutating_void: false,
                                 doc: method.doc.clone(),
                             }
                         })
@@ -1748,10 +1989,11 @@ mod tests {
     use crate::ir::Lowerer as IrLowerer;
     use crate::ir::contract::{FfiContract, PackageInfo};
     use crate::ir::definitions::{
-        CStyleVariant, CallbackKind, CallbackMethodDef, CallbackTraitDef, DataVariant, EnumDef,
-        EnumRepr, FieldDef, ParamDef, ParamPassing, RecordDef, ReturnDef, VariantPayload,
+        CStyleVariant, CallbackKind, CallbackMethodDef, CallbackTraitDef, ConstructorDef,
+        DataVariant, EnumDef, EnumRepr, FieldDef, MethodDef, ParamDef, ParamPassing, Receiver,
+        RecordDef, ReturnDef, VariantPayload,
     };
-    use crate::ir::ids::{CallbackId, FieldName, MethodId, ParamName, VariantName};
+    use crate::ir::ids::{CallbackId, EnumId, FieldName, MethodId, ParamName, VariantName};
     use crate::ir::types::{PrimitiveType, TypeExpr};
 
     fn empty_contract() -> FfiContract {
@@ -2027,6 +2269,8 @@ mod tests {
                 ],
             },
             is_error: false,
+            constructors: vec![],
+            methods: vec![],
             doc: None,
             deprecated: None,
         });
@@ -2068,6 +2312,8 @@ mod tests {
                 ],
             },
             is_error: false,
+            constructors: vec![],
+            methods: vec![],
             doc: None,
             deprecated: None,
         });
@@ -2424,6 +2670,289 @@ mod tests {
                 && convert.contains("y: _raw.y"),
             "convert expr should construct Point from C fields, got: {}",
             convert
+        );
+    }
+
+    fn blittable_point_with_methods() -> RecordDef {
+        RecordDef {
+            is_repr_c: true,
+            id: RecordId::new("Point"),
+            fields: vec![
+                FieldDef {
+                    name: FieldName::new("x"),
+                    type_expr: TypeExpr::Primitive(PrimitiveType::F64),
+                    doc: None,
+                    default: None,
+                },
+                FieldDef {
+                    name: FieldName::new("y"),
+                    type_expr: TypeExpr::Primitive(PrimitiveType::F64),
+                    doc: None,
+                    default: None,
+                },
+            ],
+            constructors: vec![ConstructorDef::Default {
+                params: vec![
+                    ParamDef {
+                        name: ParamName::new("x"),
+                        type_expr: TypeExpr::Primitive(PrimitiveType::F64),
+                        passing: ParamPassing::Value,
+                        doc: None,
+                    },
+                    ParamDef {
+                        name: ParamName::new("y"),
+                        type_expr: TypeExpr::Primitive(PrimitiveType::F64),
+                        passing: ParamPassing::Value,
+                        doc: None,
+                    },
+                ],
+                is_fallible: false,
+                is_optional: false,
+                doc: None,
+                deprecated: None,
+            }],
+            methods: vec![
+                MethodDef {
+                    id: MethodId::new("magnitude"),
+                    receiver: Receiver::RefSelf,
+                    params: vec![],
+                    returns: ReturnDef::Value(TypeExpr::Primitive(PrimitiveType::F64)),
+                    is_async: false,
+                    doc: None,
+                    deprecated: None,
+                },
+                MethodDef {
+                    id: MethodId::new("normalize"),
+                    receiver: Receiver::RefMutSelf,
+                    params: vec![],
+                    returns: ReturnDef::Void,
+                    is_async: false,
+                    doc: None,
+                    deprecated: None,
+                },
+                MethodDef {
+                    id: MethodId::new("origin"),
+                    receiver: Receiver::Static,
+                    params: vec![],
+                    returns: ReturnDef::Value(TypeExpr::Primitive(PrimitiveType::F64)),
+                    is_async: false,
+                    doc: None,
+                    deprecated: None,
+                },
+            ],
+            doc: None,
+            deprecated: None,
+        }
+    }
+
+    #[test]
+    fn record_with_methods_lowers_constructors_and_methods() {
+        let mut contract = empty_contract();
+        contract
+            .catalog
+            .insert_record(blittable_point_with_methods());
+
+        let module = lower_contract(&contract);
+        let record = &module.records[0];
+
+        assert_eq!(record.constructors.len(), 1);
+        assert_eq!(record.methods.len(), 3);
+    }
+
+    #[test]
+    fn record_instance_method_has_value_self() {
+        let mut contract = empty_contract();
+        contract
+            .catalog
+            .insert_record(blittable_point_with_methods());
+
+        let module = lower_contract(&contract);
+        let record = &module.records[0];
+
+        let magnitude = record
+            .methods
+            .iter()
+            .find(|m| m.name == "magnitude")
+            .unwrap();
+        assert!(!magnitude.is_static);
+        assert!(magnitude.value_self.is_some());
+        assert!(!magnitude.is_mutating());
+
+        let rs = magnitude.value_self.as_ref().unwrap();
+        assert_eq!(rs.ffi_args.len(), 1);
+        assert!(rs.ffi_args[0].contains("___Point("));
+        assert!(rs.wrapper_code.is_none());
+    }
+
+    #[test]
+    fn record_mutating_method_is_marked() {
+        let mut contract = empty_contract();
+        contract
+            .catalog
+            .insert_record(blittable_point_with_methods());
+
+        let module = lower_contract(&contract);
+        let record = &module.records[0];
+
+        let normalize = record
+            .methods
+            .iter()
+            .find(|m| m.name == "normalize")
+            .unwrap();
+        assert!(normalize.is_mutating());
+        assert!(normalize.value_self.as_ref().unwrap().is_mutating);
+    }
+
+    #[test]
+    fn record_static_method_has_no_value_self() {
+        let mut contract = empty_contract();
+        contract
+            .catalog
+            .insert_record(blittable_point_with_methods());
+
+        let module = lower_contract(&contract);
+        let record = &module.records[0];
+
+        let origin = record.methods.iter().find(|m| m.name == "origin").unwrap();
+        assert!(origin.is_static);
+        assert!(origin.value_self.is_none());
+    }
+
+    #[test]
+    fn record_method_sync_call_expr_includes_self() {
+        let mut contract = empty_contract();
+        contract
+            .catalog
+            .insert_record(blittable_point_with_methods());
+
+        let module = lower_contract(&contract);
+        let record = &module.records[0];
+
+        let magnitude = record
+            .methods
+            .iter()
+            .find(|m| m.name == "magnitude")
+            .unwrap();
+        let call = magnitude.sync_call_expr();
+        assert!(
+            call.contains("___Point("),
+            "sync_call_expr should include self conversion: {}",
+            call
+        );
+    }
+
+    fn c_style_enum_with_method() -> EnumDef {
+        EnumDef {
+            id: EnumId::new("Direction"),
+            repr: EnumRepr::CStyle {
+                tag_type: PrimitiveType::I32,
+                variants: vec![
+                    CStyleVariant {
+                        name: VariantName::new("North"),
+                        discriminant: 0,
+                        doc: None,
+                    },
+                    CStyleVariant {
+                        name: VariantName::new("South"),
+                        discriminant: 1,
+                        doc: None,
+                    },
+                ],
+            },
+            is_error: false,
+            constructors: vec![],
+            methods: vec![MethodDef {
+                id: MethodId::new("opposite"),
+                receiver: Receiver::RefSelf,
+                params: vec![],
+                returns: ReturnDef::Value(TypeExpr::Primitive(PrimitiveType::I32)),
+                is_async: false,
+                doc: None,
+                deprecated: None,
+            }],
+            doc: None,
+            deprecated: None,
+        }
+    }
+
+    #[test]
+    fn c_style_enum_method_lowers_with_raw_value_self() {
+        let mut contract = empty_contract();
+        contract.catalog.insert_enum(c_style_enum_with_method());
+
+        let module = lower_contract(&contract);
+        let e = &module.enums[0];
+
+        assert_eq!(e.methods.len(), 1);
+        let method = &e.methods[0];
+        assert_eq!(method.name, "opposite");
+        assert!(!method.is_static);
+        assert!(method.value_self.is_some());
+
+        let vs = method.value_self.as_ref().unwrap();
+        assert_eq!(vs.ffi_args, vec!["self.rawValue"]);
+        assert!(vs.wrapper_code.is_none());
+    }
+
+    #[test]
+    fn c_style_enum_method_sync_call_includes_raw_value() {
+        let mut contract = empty_contract();
+        contract.catalog.insert_enum(c_style_enum_with_method());
+
+        let module = lower_contract(&contract);
+        let method = &module.enums[0].methods[0];
+        let call = method.sync_call_expr();
+        assert!(
+            call.contains("self.rawValue"),
+            "sync_call_expr should pass self.rawValue: {}",
+            call
+        );
+    }
+
+    #[test]
+    fn static_method_returning_optional_record_is_wire_encoded() {
+        let mut record = blittable_point_with_methods();
+        record.methods.push(MethodDef {
+            id: MethodId::new("checked_unit"),
+            receiver: Receiver::Static,
+            params: vec![
+                ParamDef {
+                    name: ParamName::new("x"),
+                    type_expr: TypeExpr::Primitive(PrimitiveType::F64),
+                    passing: ParamPassing::Value,
+                    doc: None,
+                },
+                ParamDef {
+                    name: ParamName::new("y"),
+                    type_expr: TypeExpr::Primitive(PrimitiveType::F64),
+                    passing: ParamPassing::Value,
+                    doc: None,
+                },
+            ],
+            returns: ReturnDef::Value(TypeExpr::Option(Box::new(TypeExpr::Record(
+                RecordId::new("Point"),
+            )))),
+            is_async: false,
+            doc: None,
+            deprecated: None,
+        });
+
+        let mut contract = empty_contract();
+        contract.catalog.insert_record(record);
+        let module = lower_contract(&contract);
+        let swift_record = &module.records[0];
+
+        let method = swift_record
+            .methods
+            .iter()
+            .find(|m| m.name == "checkedUnit")
+            .expect("checkedUnit not found in lowered methods");
+
+        assert!(method.is_static);
+        assert!(
+            method.returns.is_wire_encoded(),
+            "Option<Record> return should be wire-encoded, got: {:?}",
+            method.returns
         );
     }
 }
