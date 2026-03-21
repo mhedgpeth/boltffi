@@ -35,6 +35,13 @@ pub struct CStyleEnumTemplate<'a> {
 }
 
 #[derive(Template)]
+#[template(path = "render_java/enum_error.txt", escape = "none")]
+pub struct ErrorEnumTemplate<'a> {
+    pub enumeration: &'a JavaEnum,
+    pub package_name: &'a str,
+}
+
+#[derive(Template)]
 #[template(path = "render_java/enum_sealed.txt", escape = "none")]
 pub struct DataEnumSealedTemplate<'a> {
     pub enumeration: &'a JavaEnum,

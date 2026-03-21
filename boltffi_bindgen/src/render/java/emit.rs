@@ -11,7 +11,7 @@ use super::names::NamingConvention;
 use super::plan::JavaEnumKind;
 use super::templates::{
     CStyleEnumTemplate, ClassTemplate, DataEnumAbstractTemplate, DataEnumSealedTemplate,
-    FunctionsTemplate, NativeTemplate, PreambleTemplate, RecordTemplate,
+    ErrorEnumTemplate, FunctionsTemplate, NativeTemplate, PreambleTemplate, RecordTemplate,
 };
 use askama::Template;
 
@@ -51,6 +51,13 @@ impl JavaEmitter {
                         package_name: &module.package_name,
                     };
                     template.render().expect("c-style enum template failed")
+                }
+                JavaEnumKind::Error => {
+                    let template = ErrorEnumTemplate {
+                        enumeration,
+                        package_name: &module.package_name,
+                    };
+                    template.render().expect("error enum template failed")
                 }
                 JavaEnumKind::SealedInterface => {
                     let template = DataEnumSealedTemplate {
@@ -214,11 +221,20 @@ fn emit_reader_read_with_context(seq: &ReadSeq, context: &mut JavaEmitContext) -
             )
         }
         ReadOp::Enum { id, layout, .. } => match layout {
-            EnumLayout::CStyle { tag_type, .. } => {
+            EnumLayout::CStyle {
+                tag_type,
+                is_error: false,
+            } => {
                 format!(
                     "{}.fromValue(reader.{}())",
                     NamingConvention::class_name(id.as_str()),
                     primitive_read_method(*tag_type),
+                )
+            }
+            EnumLayout::CStyle { is_error: true, .. } => {
+                format!(
+                    "{}.fromTag(reader.readI32())",
+                    NamingConvention::class_name(id.as_str()),
                 )
             }
             EnumLayout::Data { .. } | EnumLayout::Recursive => {
@@ -241,6 +257,11 @@ fn emit_reader_read_with_context(seq: &ReadSeq, context: &mut JavaEmitContext) -
             layout,
             ..
         } => emit_reader_vec_with_context(element_type, element, layout, context),
+        ReadOp::Result { .. } => {
+            panic!(
+                "ReadOp::Result should be handled via ResultDecode strategy, not emit_reader_read"
+            )
+        }
         other => panic!("unsupported Java read op: {:?}", other),
     }
 }
@@ -335,11 +356,21 @@ fn emit_write_expr_with_context(
             format!("{}.wireEncodeTo({})", render_value(value), writer_name)
         }
         WriteOp::Enum { value, layout, .. } => match layout {
-            EnumLayout::CStyle { tag_type, .. } => {
+            EnumLayout::CStyle {
+                tag_type,
+                is_error: false,
+            } => {
                 format!(
                     "{}.{}({}.value)",
                     writer_name,
                     primitive_write_method(*tag_type),
+                    render_value(value),
+                )
+            }
+            EnumLayout::CStyle { is_error: true, .. } => {
+                format!(
+                    "{}.writeI32({}.ordinal())",
+                    writer_name,
                     render_value(value),
                 )
             }

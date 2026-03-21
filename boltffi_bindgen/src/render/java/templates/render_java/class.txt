@@ -113,6 +113,23 @@ public final class {{ class.class_name }} implements AutoCloseable {
 {%- elif method.strategy.is_buffer() %}
         byte[] _buf = Native.{{ method.ffi_name }}({% for param in method.params %}{{ param.native_expr }}{% if !loop.last %}, {% endif %}{% endfor %});
         return {{ method.strategy.decode_expr() }};
+{%- elif method.strategy.is_result() %}
+        byte[] _buf = Native.{{ method.ffi_name }}({% for param in method.params %}{{ param.native_expr }}{% if !loop.last %}, {% endif %}{% endfor %});
+        if (_buf == null) throw new RuntimeException("FFI call returned null buffer");
+        WireReader reader = new WireReader(_buf);
+        if (reader.readI8() != 0) {
+{%- if method.strategy.result_has_typed_exception() %}
+            throw new {{ method.strategy.result_err_exception_class() }}({{ method.strategy.result_err_decode() }});
+{%- elif method.strategy.result_err_is_string() %}
+            throw new RuntimeException({{ method.strategy.result_err_decode() }});
+{%- else %}
+            throw new RuntimeException(String.valueOf({{ method.strategy.result_err_decode() }}));
+{%- endif %}
+        }
+{%- if method.return_type == "void" %}
+{%- else %}
+        return {{ method.strategy.result_ok_decode() }};
+{%- endif %}
 {%- endif %}
 {%- else %}
         try (
@@ -143,6 +160,23 @@ public final class {{ class.class_name }} implements AutoCloseable {
 {%- elif method.strategy.is_buffer() %}
             byte[] _buf = Native.{{ method.ffi_name }}({% for param in method.params %}{{ param.native_expr }}{% if !loop.last %}, {% endif %}{% endfor %});
             return {{ method.strategy.decode_expr() }};
+{%- elif method.strategy.is_result() %}
+            byte[] _buf = Native.{{ method.ffi_name }}({% for param in method.params %}{{ param.native_expr }}{% if !loop.last %}, {% endif %}{% endfor %});
+            if (_buf == null) throw new RuntimeException("FFI call returned null buffer");
+            WireReader reader = new WireReader(_buf);
+            if (reader.readI8() != 0) {
+{%- if method.strategy.result_has_typed_exception() %}
+                throw new {{ method.strategy.result_err_exception_class() }}({{ method.strategy.result_err_decode() }});
+{%- elif method.strategy.result_err_is_string() %}
+                throw new RuntimeException({{ method.strategy.result_err_decode() }});
+{%- else %}
+                throw new RuntimeException(String.valueOf({{ method.strategy.result_err_decode() }}));
+{%- endif %}
+            }
+{%- if method.return_type == "void" %}
+{%- else %}
+            return {{ method.strategy.result_ok_decode() }};
+{%- endif %}
 {%- endif %}
         }
 {%- endif %}
@@ -208,6 +242,26 @@ public final class {{ class.class_name }} implements AutoCloseable {
 {%- endif %}
                     return new {{ ac.complete_strategy.handle_class() }}(_handle);
                 },
+{%- elif ac.complete_strategy.is_result() %}
+                future -> {
+                    byte[] _buf = Native.{{ ac.complete }}({% if !method.is_static %}handle, {% endif %}future);
+                    if (_buf == null) throw new RuntimeException("FFI call returned null buffer");
+                    WireReader reader = new WireReader(_buf);
+                    if (reader.readI8() != 0) {
+{%- if ac.complete_strategy.result_has_typed_exception() %}
+                        throw new {{ ac.complete_strategy.result_err_exception_class() }}({{ ac.complete_strategy.result_err_decode() }});
+{%- elif ac.complete_strategy.result_err_is_string() %}
+                        throw new RuntimeException({{ ac.complete_strategy.result_err_decode() }});
+{%- else %}
+                        throw new RuntimeException(String.valueOf({{ ac.complete_strategy.result_err_decode() }}));
+{%- endif %}
+                    }
+{%- if method.return_type == "void" %}
+                    return null;
+{%- else %}
+                    return {{ ac.complete_strategy.result_ok_decode() }};
+{%- endif %}
+                },
 {%- endif %}
                 future -> Native.{{ ac.free }}({% if !method.is_static %}handle, {% endif %}future),
                 future -> Native.{{ ac.cancel }}({% if !method.is_static %}handle, {% endif %}future)
@@ -239,6 +293,23 @@ public final class {{ class.class_name }} implements AutoCloseable {
 {%- elif method.strategy.is_buffer() %}
         byte[] _buf = Native.{{ method.ffi_name }}(handle{% if !method.params.is_empty() %}, {% endif %}{% for param in method.params %}{{ param.native_expr }}{% if !loop.last %}, {% endif %}{% endfor %});
         return {{ method.strategy.decode_expr() }};
+{%- elif method.strategy.is_result() %}
+        byte[] _buf = Native.{{ method.ffi_name }}(handle{% if !method.params.is_empty() %}, {% endif %}{% for param in method.params %}{{ param.native_expr }}{% if !loop.last %}, {% endif %}{% endfor %});
+        if (_buf == null) throw new RuntimeException("FFI call returned null buffer");
+        WireReader reader = new WireReader(_buf);
+        if (reader.readI8() != 0) {
+{%- if method.strategy.result_has_typed_exception() %}
+            throw new {{ method.strategy.result_err_exception_class() }}({{ method.strategy.result_err_decode() }});
+{%- elif method.strategy.result_err_is_string() %}
+            throw new RuntimeException({{ method.strategy.result_err_decode() }});
+{%- else %}
+            throw new RuntimeException(String.valueOf({{ method.strategy.result_err_decode() }}));
+{%- endif %}
+        }
+{%- if method.return_type == "void" %}
+{%- else %}
+        return {{ method.strategy.result_ok_decode() }};
+{%- endif %}
 {%- endif %}
 {%- else %}
         try (
@@ -269,6 +340,23 @@ public final class {{ class.class_name }} implements AutoCloseable {
 {%- elif method.strategy.is_buffer() %}
             byte[] _buf = Native.{{ method.ffi_name }}(handle{% if !method.params.is_empty() %}, {% endif %}{% for param in method.params %}{{ param.native_expr }}{% if !loop.last %}, {% endif %}{% endfor %});
             return {{ method.strategy.decode_expr() }};
+{%- elif method.strategy.is_result() %}
+            byte[] _buf = Native.{{ method.ffi_name }}(handle{% if !method.params.is_empty() %}, {% endif %}{% for param in method.params %}{{ param.native_expr }}{% if !loop.last %}, {% endif %}{% endfor %});
+            if (_buf == null) throw new RuntimeException("FFI call returned null buffer");
+            WireReader reader = new WireReader(_buf);
+            if (reader.readI8() != 0) {
+{%- if method.strategy.result_has_typed_exception() %}
+                throw new {{ method.strategy.result_err_exception_class() }}({{ method.strategy.result_err_decode() }});
+{%- elif method.strategy.result_err_is_string() %}
+                throw new RuntimeException({{ method.strategy.result_err_decode() }});
+{%- else %}
+                throw new RuntimeException(String.valueOf({{ method.strategy.result_err_decode() }}));
+{%- endif %}
+            }
+{%- if method.return_type == "void" %}
+{%- else %}
+            return {{ method.strategy.result_ok_decode() }};
+{%- endif %}
 {%- endif %}
         }
 {%- endif %}

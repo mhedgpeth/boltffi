@@ -70,7 +70,7 @@ impl JavaModule {
     }
 
     pub fn has_data_enums(&self) -> bool {
-        self.enums.iter().any(|e| !e.is_c_style())
+        self.enums.iter().any(|e| !e.is_c_style() && !e.is_error())
     }
 }
 
@@ -96,6 +96,10 @@ impl JavaEnum {
         matches!(self.kind, JavaEnumKind::CStyle)
     }
 
+    pub fn is_error(&self) -> bool {
+        matches!(self.kind, JavaEnumKind::Error)
+    }
+
     pub fn is_sealed(&self) -> bool {
         matches!(self.kind, JavaEnumKind::SealedInterface)
     }
@@ -108,6 +112,7 @@ impl JavaEnum {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum JavaEnumKind {
     CStyle,
+    Error,
     SealedInterface,
     AbstractClass,
 }
@@ -208,6 +213,12 @@ pub enum JavaReturnStrategy {
         class_name: String,
         nullable: bool,
     },
+    ResultDecode {
+        ok_decode_expr: String,
+        err_decode_expr: String,
+        err_is_string: bool,
+        err_exception_class: Option<String>,
+    },
 }
 
 impl JavaReturnStrategy {
@@ -233,6 +244,56 @@ impl JavaReturnStrategy {
 
     pub fn is_handle(&self) -> bool {
         matches!(self, Self::HandleReturn { .. })
+    }
+
+    pub fn is_result(&self) -> bool {
+        matches!(self, Self::ResultDecode { .. })
+    }
+
+    pub fn result_ok_decode(&self) -> &str {
+        match self {
+            Self::ResultDecode { ok_decode_expr, .. } => ok_decode_expr,
+            _ => "",
+        }
+    }
+
+    pub fn result_err_decode(&self) -> &str {
+        match self {
+            Self::ResultDecode {
+                err_decode_expr, ..
+            } => err_decode_expr,
+            _ => "",
+        }
+    }
+
+    pub fn result_err_is_string(&self) -> bool {
+        matches!(
+            self,
+            Self::ResultDecode {
+                err_is_string: true,
+                ..
+            }
+        )
+    }
+
+    pub fn result_err_exception_class(&self) -> &str {
+        match self {
+            Self::ResultDecode {
+                err_exception_class: Some(class),
+                ..
+            } => class,
+            _ => "",
+        }
+    }
+
+    pub fn result_has_typed_exception(&self) -> bool {
+        matches!(
+            self,
+            Self::ResultDecode {
+                err_exception_class: Some(_),
+                ..
+            }
+        )
     }
 
     pub fn decode_expr(&self) -> &str {
@@ -266,7 +327,9 @@ impl JavaReturnStrategy {
             Self::Direct => return_type,
             Self::CStyleEnumDecode { native_type, .. } => native_type,
             Self::HandleReturn { .. } => "long",
-            Self::WireDecode { .. } | Self::BufferDecode { .. } => "byte[]",
+            Self::WireDecode { .. } | Self::BufferDecode { .. } | Self::ResultDecode { .. } => {
+                "byte[]"
+            }
         }
     }
 }

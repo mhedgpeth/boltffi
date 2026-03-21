@@ -186,9 +186,19 @@ impl<'a> JavaLowerer<'a> {
         let return_ok = match &func.returns {
             ReturnDef::Void => true,
             ReturnDef::Value(ty) => self.is_supported_type(ty),
-            ReturnDef::Result { .. } => false,
+            ReturnDef::Result { ok, err } => {
+                self.is_supported_result_type(ok) && self.is_supported_result_type(err)
+            }
         };
         params_ok && return_ok
+    }
+
+    fn is_supported_result_type(&self, ty: &TypeExpr) -> bool {
+        match ty {
+            TypeExpr::Void => true,
+            TypeExpr::Handle(_) => false,
+            _ => self.is_supported_type(ty),
+        }
     }
 
     fn is_supported_type(&self, ty: &TypeExpr) -> bool {
@@ -630,13 +640,51 @@ impl<'a> JavaLowerer<'a> {
             ReturnDef::Void => "void".to_string(),
             ReturnDef::Value(TypeExpr::Void) => "void".to_string(),
             ReturnDef::Value(ty) => self.java_type(ty),
-            ReturnDef::Result { .. } => "void".to_string(),
+            ReturnDef::Result {
+                ok: TypeExpr::Void, ..
+            } => "void".to_string(),
+            ReturnDef::Result { ok, .. } => self.java_type(ok),
+        }
+    }
+
+    fn result_decode_strategy(&self, returns: &ReturnDef, call: &AbiCall) -> JavaReturnStrategy {
+        let decode_ops = call
+            .returns
+            .decode_ops
+            .as_ref()
+            .expect("Result return should have decode ops");
+        let (ok_seq, err_seq) = match decode_ops.ops.first() {
+            Some(ReadOp::Result { ok, err, .. }) => (ok.as_ref(), err.as_ref()),
+            _ => panic!("expected ReadOp::Result in decode ops"),
+        };
+        let ok_decode_expr = super::emit::emit_reader_read(ok_seq);
+        let err_decode_expr = super::emit::emit_reader_read(err_seq);
+        let err_is_string =
+            matches!(returns, ReturnDef::Result { err, .. } if matches!(err, TypeExpr::String));
+        let err_exception_class = match returns {
+            ReturnDef::Result {
+                err: TypeExpr::Enum(id),
+                ..
+            } => self
+                .ffi
+                .catalog
+                .resolve_enum(id)
+                .filter(|e| e.is_error)
+                .map(|_| format!("{}.Exception", NamingConvention::class_name(id.as_str()))),
+            _ => None,
+        };
+        JavaReturnStrategy::ResultDecode {
+            ok_decode_expr,
+            err_decode_expr,
+            err_is_string,
+            err_exception_class,
         }
     }
 
     fn return_strategy(&self, returns: &ReturnDef, call: &AbiCall) -> JavaReturnStrategy {
         match returns {
-            ReturnDef::Void | ReturnDef::Result { .. } => JavaReturnStrategy::Void,
+            ReturnDef::Void => JavaReturnStrategy::Void,
+            ReturnDef::Result { .. } => self.result_decode_strategy(returns, call),
             ReturnDef::Value(ty) => match ty {
                 TypeExpr::Void => JavaReturnStrategy::Void,
                 TypeExpr::Primitive(_) => JavaReturnStrategy::Direct,
@@ -812,7 +860,9 @@ impl<'a> JavaLowerer<'a> {
         let return_ok = match &method.returns {
             ReturnDef::Void => true,
             ReturnDef::Value(ty) => self.is_supported_method_return_type(ty),
-            ReturnDef::Result { .. } => false,
+            ReturnDef::Result { ok, err } => {
+                self.is_supported_result_type(ok) && self.is_supported_result_type(err)
+            }
         };
         params_ok && return_ok
     }
@@ -985,7 +1035,9 @@ impl<'a> JavaLowerer<'a> {
     fn lower_enum(&self, enumeration: &EnumDef) -> JavaEnum {
         let abi_enum = self.abi_enum_for(enumeration);
         let class_name = NamingConvention::class_name(enumeration.id.as_str());
-        let kind = if abi_enum.is_c_style {
+        let kind = if enumeration.is_error {
+            JavaEnumKind::Error
+        } else if abi_enum.is_c_style {
             JavaEnumKind::CStyle
         } else if self.options.min_java_version.supports_sealed()
             && !Self::requires_manual_enum_value_semantics(abi_enum)
@@ -1036,7 +1088,9 @@ impl<'a> JavaLowerer<'a> {
         sibling_names: &HashSet<String>,
     ) -> JavaEnumVariant {
         let name = match kind {
-            JavaEnumKind::CStyle => NamingConvention::enum_constant_name(variant.name.as_str()),
+            JavaEnumKind::CStyle | JavaEnumKind::Error => {
+                NamingConvention::enum_constant_name(variant.name.as_str())
+            }
             _ => NamingConvention::class_name(variant.name.as_str()),
         };
         let fields = match &variant.payload {
@@ -2705,7 +2759,7 @@ mod tests {
     }
 
     #[test]
-    fn class_filters_result_methods() {
+    fn class_includes_result_methods() {
         let mut contract = empty_contract();
         contract.catalog.insert_class(class_def(
             "processor",
@@ -2722,7 +2776,10 @@ mod tests {
 
         let module = lower(&contract);
         let class = &module.classes[0];
-        assert!(class.methods.is_empty());
+        assert_eq!(class.methods.len(), 1);
+        assert_eq!(class.methods[0].return_type, "int");
+        assert!(class.methods[0].strategy.is_result());
+        assert!(class.methods[0].strategy.result_err_is_string());
     }
 
     #[test]

@@ -62,6 +62,26 @@ public final class {{ module.class_name }} {
 {%- endif %}
                     return new {{ ac.complete_strategy.handle_class() }}(_handle);
                 },
+{%- elif ac.complete_strategy.is_result() %}
+                future -> {
+                    byte[] _buf = Native.{{ ac.complete }}(future);
+                    if (_buf == null) throw new RuntimeException("FFI call returned null buffer");
+                    WireReader reader = new WireReader(_buf);
+                    if (reader.readI8() != 0) {
+{%- if ac.complete_strategy.result_has_typed_exception() %}
+                        throw new {{ ac.complete_strategy.result_err_exception_class() }}({{ ac.complete_strategy.result_err_decode() }});
+{%- elif ac.complete_strategy.result_err_is_string() %}
+                        throw new RuntimeException({{ ac.complete_strategy.result_err_decode() }});
+{%- else %}
+                        throw new RuntimeException(String.valueOf({{ ac.complete_strategy.result_err_decode() }}));
+{%- endif %}
+                    }
+{%- if func.return_type == "void" %}
+                    return null;
+{%- else %}
+                    return {{ ac.complete_strategy.result_ok_decode() }};
+{%- endif %}
+                },
 {%- endif %}
                 future -> Native.{{ ac.free }}(future),
                 future -> Native.{{ ac.cancel }}(future)
@@ -87,6 +107,23 @@ public final class {{ module.class_name }} {
 {%- elif func.strategy.is_buffer() %}
         byte[] _buf = Native.{{ func.ffi_name }}({% for param in func.params %}{{ param.native_expr }}{% if !loop.last %}, {% endif %}{% endfor %});
         return {{ func.strategy.decode_expr() }};
+{%- elif func.strategy.is_result() %}
+        byte[] _buf = Native.{{ func.ffi_name }}({% for param in func.params %}{{ param.native_expr }}{% if !loop.last %}, {% endif %}{% endfor %});
+        if (_buf == null) throw new RuntimeException("FFI call returned null buffer");
+        WireReader reader = new WireReader(_buf);
+        if (reader.readI8() != 0) {
+{%- if func.strategy.result_has_typed_exception() %}
+            throw new {{ func.strategy.result_err_exception_class() }}({{ func.strategy.result_err_decode() }});
+{%- elif func.strategy.result_err_is_string() %}
+            throw new RuntimeException({{ func.strategy.result_err_decode() }});
+{%- else %}
+            throw new RuntimeException(String.valueOf({{ func.strategy.result_err_decode() }}));
+{%- endif %}
+        }
+{%- if func.return_type == "void" %}
+{%- else %}
+        return {{ func.strategy.result_ok_decode() }};
+{%- endif %}
 {%- endif %}
 {%- else %}
         try (
@@ -111,6 +148,23 @@ public final class {{ module.class_name }} {
 {%- elif func.strategy.is_buffer() %}
             byte[] _buf = Native.{{ func.ffi_name }}({% for param in func.params %}{{ param.native_expr }}{% if !loop.last %}, {% endif %}{% endfor %});
             return {{ func.strategy.decode_expr() }};
+{%- elif func.strategy.is_result() %}
+            byte[] _buf = Native.{{ func.ffi_name }}({% for param in func.params %}{{ param.native_expr }}{% if !loop.last %}, {% endif %}{% endfor %});
+            if (_buf == null) throw new RuntimeException("FFI call returned null buffer");
+            WireReader reader = new WireReader(_buf);
+            if (reader.readI8() != 0) {
+{%- if func.strategy.result_has_typed_exception() %}
+                throw new {{ func.strategy.result_err_exception_class() }}({{ func.strategy.result_err_decode() }});
+{%- elif func.strategy.result_err_is_string() %}
+                throw new RuntimeException({{ func.strategy.result_err_decode() }});
+{%- else %}
+                throw new RuntimeException(String.valueOf({{ func.strategy.result_err_decode() }}));
+{%- endif %}
+            }
+{%- if func.return_type == "void" %}
+{%- else %}
+            return {{ func.strategy.result_ok_decode() }};
+{%- endif %}
 {%- endif %}
         }
 {%- endif %}
