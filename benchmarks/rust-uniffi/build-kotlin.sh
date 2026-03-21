@@ -13,7 +13,18 @@ cargo build --lib --release
 rm -rf "$DIST_DIR"
 mkdir -p "$DIST_DIR"
 
+if [ "$(uname)" == "Darwin" ]; then
+    # Mac
+    LIBRARY_FILE="lib${PACKAGE}.dylib"
+elif [ "$(expr substr $(uname -s) 1 5)" == "Linux" ]; then
+    # Linux
+    LIBRARY_FILE="lib${PACKAGE}.so"
+else
+    echo "Unknown platform: $(uname)"
+    exit 1
+fi
+
 cargo run --bin uniffi-bindgen generate \
-  --library "${TARGET_DIR}/release/lib${PACKAGE}.dylib" \
+  --library "${TARGET_DIR}/release/$LIBRARY_FILE" \
   --language kotlin \
   --out-dir "$DIST_DIR"

@@ -22,21 +22,36 @@ if [ ! -f "$JNI_SRC" ]; then
     exit 1
 fi
 
+if [ "$(uname)" == "Darwin" ]; then
+    # Mac
+    PLATFORM_INCLUDE="$JAVA_HOME/include/darwin"
+    LIBRARY_FILE=libbench_boltffi_jni.dylib
+    RPATH=-Wl,-rpath,@loader_path
+elif [ "$(expr substr $(uname -s) 1 5)" == "Linux" ]; then
+    # Linux
+    PLATFORM_INCLUDE="$JAVA_HOME/include/linux"
+    LIBRARY_FILE=libbench_boltffi_jni.so
+    RPATH=-Wl,-rpath,'$ORIGIN'
+else 
+    echo "Can't determine system platform"
+    exit 1
+fi
+
 echo "Compiling JNI glue..."
 cd "$OUTPUT_DIR"
 cc -c -fPIC \
     -I"$HEADER_DIR" \
     -I"$JAVA_HOME/include" \
-    -I"$JAVA_HOME/include/darwin" \
+    -I"$PLATFORM_INCLUDE" \
     -o jni_glue.o \
     "$JNI_SRC"
 
 echo "Linking final library..."
 cc -shared \
-    -o libbench_boltffi_jni.dylib \
+    -o "$LIBRARY_FILE" \
     jni_glue.o \
     -L. -lbench_boltffi \
-    -Wl,-rpath,@loader_path
+    $RPATH
 
 rm -f jni_glue.o
-echo "Built: $OUTPUT_DIR/libbench_boltffi_jni.dylib"
+echo "Built: $OUTPUT_DIR/$LIBRARY_FILE"

@@ -7,7 +7,6 @@ rust-uniffi/UniffiPackage/
 swift-macos-bench/.build/
 swift-macos-bench/.swiftpm/
 kotlin-jvm-bench/.gradle/
-kotlin-jvm-bench/gradle/
 kotlin-jvm-bench/app/
 android-app/app/src/main/jniLibs/
 android-app/gradle/
