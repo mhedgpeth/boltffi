@@ -799,6 +799,71 @@ pub mod transport {
         }
     }
 
+    /// Describes which side of the ABI surface is making the return-shape
+    /// decision.
+    ///
+    /// The returned value may mean the same thing in all cases, while the
+    /// surrounding call boundary still changes how that value is delivered.
+    ///
+    /// # Examples
+    ///
+    /// - exported Rust functions use [`Self::HostCall`]
+    /// - sync Rust exports use [`Self::SyncExport`]
+    /// - inline closure trampolines use [`Self::InlineClosure`]
+    /// - callback vtable methods use [`Self::CallbackVtable`]
+    /// - exported async completions use [`Self::AsyncCompletion`]
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+    pub enum ReturnInvocationContext {
+        /// A host binding is reading the result of a normal exported call.
+        ///
+        /// Example: Kotlin calling `boltffi_echo_string(...)`
+        HostCall,
+        /// Rust is exposing a synchronous export function.
+        ///
+        /// Example: `#[boltffi::export] fn greeting() -> String`
+        SyncExport,
+        /// Rust is crossing an inline closure trampoline boundary.
+        ///
+        /// Example: invoking an inline closure parameter from exported Rust
+        InlineClosure,
+        /// Rust is reading or writing through a callback vtable method.
+        ///
+        /// Example: a generated sync callback trait vtable method
+        CallbackVtable,
+        /// The value arrives later through an async completion surface.
+        ///
+        /// Example: an exported future completion callback
+        AsyncCompletion,
+    }
+
+    /// Describes the platform family whose ABI return rules are in play.
+    ///
+    /// # Examples
+    ///
+    /// - `wasm32-unknown-unknown` uses [`Self::Wasm`]
+    /// - `aarch64-apple-darwin` uses [`Self::Native`]
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+    pub enum ReturnPlatform {
+        /// WebAssembly targets.
+        ///
+        /// Example: `wasm32-unknown-unknown`
+        Wasm,
+        /// Native targets outside the wasm calling convention.
+        ///
+        /// Example: `aarch64-apple-darwin`
+        Native,
+    }
+
+    impl ReturnPlatform {
+        pub fn inferred() -> Self {
+            if cfg!(target_arch = "wasm32") {
+                Self::Wasm
+            } else {
+                Self::Native
+            }
+        }
+    }
+
     /// Describes the encoded shape used when a return value is already crossing
     /// the boundary as bytes.
     ///
@@ -1040,90 +1105,58 @@ pub mod transport {
         AsyncCallback,
     }
 
-    /// Describes how an encoded value is returned from a wasm sync export.
-    ///
-    /// This is narrower than [`ValueReturnMethod`]. It only answers the wasm
-    /// calling convention for encoded sync export results after the value has
-    /// already been classified as encoded.
-    /// # Examples
-    ///
-    /// - `fn message() -> String` uses [`Self::PackedBuffer`]
-    /// - `fn maybe_count() -> Option<u32>` can use [`Self::OptionalScalarF64`]
-    /// - `fn counts() -> Vec<u32>` can use [`Self::ReturnSlot`]
-    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-    pub enum WasmEncodedValueReturnMethod {
-        /// Packs the encoded buffer into the wasm integer return value.
-        ///
-        /// The callee returns the packed buffer descriptor directly.
-        ///
-        /// Example: `fn message() -> String`
-        PackedBuffer,
-        /// Uses the scalar `f64` optional encoding reserved for wasm exports.
-        ///
-        /// This is the compact path for optional primitive scalars.
-        ///
-        /// Example: `fn maybe_count() -> Option<u32>`
-        OptionalScalarF64,
-        /// Writes the encoded buffer descriptor into the shared return slot.
-        ///
-        /// The function itself returns `()`, and the caller reads the buffer
-        /// descriptor from reserved scratch space.
-        ///
-        /// Example: `fn counts() -> Vec<u32>`
-        ReturnSlot,
-    }
-
-    /// Describes the sync export result strategy after Rust lowering has
-    /// decided how the value must cross the ABI.
-    ///
-    /// This is the export-side counterpart to [`ValueReturnStrategy`]. It tells
-    /// macro-generated exports whether the sync export returns a status, a
-    /// scalar value, an encoded wasm-specific result, or a passable output.
-    /// # Examples
-    ///
-    /// - `fn ping()` uses [`Self::Unit`]
-    /// - `fn count() -> u32` uses [`Self::Scalar`]
-    /// - `fn message() -> String` uses [`Self::Encoded`]
-    /// - `fn point() -> Point` can use [`Self::Passable`]
-    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-    pub enum SyncExportValueReturnStrategy {
-        /// Returns only a status result.
-        ///
-        /// Example: `fn ping()`
-        Unit,
-        /// Returns a scalar value directly.
-        ///
-        /// Example: `fn count() -> u32`
-        Scalar,
-        /// Returns an encoded value using a wasm-specific encoded method.
-        ///
-        /// Example: `fn message() -> String`
-        Encoded(WasmEncodedValueReturnMethod),
-        /// Returns a passable value through its `Passable::Out` representation.
-        ///
-        /// Example: `fn point() -> Point`
-        Passable,
-    }
-
-    /// Describes how Rust reconstructs the return value from a foreign callable
-    /// such as a closure trampoline or callback bridge.
-    ///
-    /// This is about the bridge implementation, not the semantic meaning of the
-    /// returned value.
-    /// # Examples
-    ///
-    /// - a primitive callback result can use [`Self::PassableValue`]
-    /// - a complex callback result can use [`Self::WireBufferValue`]
-    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-    pub enum ForeignCallableReturnMethod {
-        /// Uses the `Passable` bridge for the return value.
-        ///
-        /// Example: a callback returning `u32`
-        PassableValue,
-        /// Uses a wire buffer and decodes the returned bytes afterward.
-        ///
-        /// Example: a callback returning `Shape`
-        WireBufferValue,
+    impl ValueReturnStrategy {
+        pub fn return_method(
+            self,
+            error_strategy: ErrorReturnStrategy,
+            context: ReturnInvocationContext,
+            platform: ReturnPlatform,
+        ) -> ValueReturnMethod {
+            match context {
+                ReturnInvocationContext::AsyncCompletion => ValueReturnMethod::AsyncCallback,
+                ReturnInvocationContext::HostCall => match self {
+                    Self::Void
+                    | Self::Scalar(_)
+                    | Self::CompositeValue
+                    | Self::ObjectHandle
+                    | Self::CallbackHandle => ValueReturnMethod::DirectReturn,
+                    Self::DirectBuffer | Self::EncodedBuffer => {
+                        if matches!(error_strategy, ErrorReturnStrategy::Encoded) {
+                            ValueReturnMethod::WriteToOutBufferParts
+                        } else {
+                            ValueReturnMethod::DirectReturn
+                        }
+                    }
+                },
+                ReturnInvocationContext::SyncExport => match self {
+                    Self::DirectBuffer if matches!(platform, ReturnPlatform::Wasm) => {
+                        ValueReturnMethod::WriteToReturnSlot
+                    }
+                    _ => ValueReturnMethod::DirectReturn,
+                },
+                ReturnInvocationContext::InlineClosure => match (self, platform) {
+                    (Self::Void, _)
+                    | (Self::Scalar(_), _)
+                    | (Self::CompositeValue, ReturnPlatform::Native)
+                    | (Self::DirectBuffer, ReturnPlatform::Native)
+                    | (Self::EncodedBuffer, ReturnPlatform::Native)
+                    | (Self::ObjectHandle, ReturnPlatform::Native)
+                    | (Self::CallbackHandle, ReturnPlatform::Native) => {
+                        ValueReturnMethod::DirectReturn
+                    }
+                    _ => ValueReturnMethod::WriteToReturnSlot,
+                },
+                ReturnInvocationContext::CallbackVtable => match self {
+                    Self::Void => ValueReturnMethod::DirectReturn,
+                    Self::Scalar(_) => ValueReturnMethod::WriteToOutParameter,
+                    Self::CompositeValue
+                    | Self::DirectBuffer
+                    | Self::EncodedBuffer
+                    | Self::ObjectHandle
+                    | Self::CallbackHandle => ValueReturnMethod::WriteToOutBufferParts,
+                },
+            }
+        }
     }
 
     #[cfg(test)]
@@ -1179,18 +1212,50 @@ pub mod transport {
         }
 
         #[test]
-        fn sync_export_value_return_strategy_distinguishes_encoded_paths() {
-            assert_ne!(
-                SyncExportValueReturnStrategy::Encoded(WasmEncodedValueReturnMethod::PackedBuffer),
-                SyncExportValueReturnStrategy::Encoded(WasmEncodedValueReturnMethod::ReturnSlot)
+        fn sync_export_direct_buffer_uses_wasm_return_slot() {
+            assert_eq!(
+                ValueReturnStrategy::DirectBuffer.return_method(
+                    ErrorReturnStrategy::None,
+                    ReturnInvocationContext::SyncExport,
+                    ReturnPlatform::Wasm,
+                ),
+                ValueReturnMethod::WriteToReturnSlot
             );
         }
 
         #[test]
-        fn foreign_callable_return_method_distinguishes_passable_and_wire() {
-            assert_ne!(
-                ForeignCallableReturnMethod::PassableValue,
-                ForeignCallableReturnMethod::WireBufferValue
+        fn inline_closure_composite_uses_native_direct_return() {
+            assert_eq!(
+                ValueReturnStrategy::CompositeValue.return_method(
+                    ErrorReturnStrategy::None,
+                    ReturnInvocationContext::InlineClosure,
+                    ReturnPlatform::Native,
+                ),
+                ValueReturnMethod::DirectReturn
+            );
+        }
+
+        #[test]
+        fn inline_closure_composite_uses_wasm_return_slot() {
+            assert_eq!(
+                ValueReturnStrategy::CompositeValue.return_method(
+                    ErrorReturnStrategy::None,
+                    ReturnInvocationContext::InlineClosure,
+                    ReturnPlatform::Wasm,
+                ),
+                ValueReturnMethod::WriteToReturnSlot
+            );
+        }
+
+        #[test]
+        fn callback_vtable_scalar_uses_out_parameter() {
+            assert_eq!(
+                ValueReturnStrategy::Scalar(ScalarReturnStrategy::PrimitiveValue).return_method(
+                    ErrorReturnStrategy::None,
+                    ReturnInvocationContext::CallbackVtable,
+                    ReturnPlatform::Native,
+                ),
+                ValueReturnMethod::WriteToOutParameter
             );
         }
     }

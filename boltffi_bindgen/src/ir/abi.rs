@@ -2,7 +2,8 @@ use boltffi_ffi_rules::naming::{
     CreateFn, GlobalSymbol, Name, RegisterFn, VtableField, VtableType,
 };
 use boltffi_ffi_rules::transport::{
-    ErrorReturnStrategy, ScalarReturnStrategy, ValueReturnMethod, ValueReturnStrategy,
+    ErrorReturnStrategy, ReturnInvocationContext, ReturnPlatform, ScalarReturnStrategy,
+    ValueReturnMethod, ValueReturnStrategy,
 };
 
 use crate::ir::contract::PackageInfo;
@@ -258,21 +259,14 @@ impl ReturnShape {
     /// - `Point` by value stays [`ValueReturnMethod::DirectReturn`]
     /// - an encoded buffer with encoded errors becomes
     ///   [`ValueReturnMethod::WriteToOutBufferParts`]
-    pub fn value_return_method(&self, error: &ErrorTransport) -> ValueReturnMethod {
-        match self.value_return_strategy() {
-            ValueReturnStrategy::Void
-            | ValueReturnStrategy::Scalar(_)
-            | ValueReturnStrategy::CompositeValue
-            | ValueReturnStrategy::ObjectHandle
-            | ValueReturnStrategy::CallbackHandle => ValueReturnMethod::DirectReturn,
-            ValueReturnStrategy::DirectBuffer | ValueReturnStrategy::EncodedBuffer => {
-                if matches!(error, ErrorTransport::Encoded { .. }) {
-                    ValueReturnMethod::WriteToOutBufferParts
-                } else {
-                    ValueReturnMethod::DirectReturn
-                }
-            }
-        }
+    pub fn value_return_method(
+        &self,
+        error: &ErrorTransport,
+        context: ReturnInvocationContext,
+        platform: ReturnPlatform,
+    ) -> ValueReturnMethod {
+        self.value_return_strategy()
+            .return_method(error.return_strategy(), context, platform)
     }
 }
 

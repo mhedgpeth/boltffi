@@ -1,10 +1,20 @@
 use boltffi_ffi_rules::naming;
+use boltffi_ffi_rules::transport::{
+    ReturnInvocationContext, ReturnPlatform, ValueReturnMethod,
+};
 use proc_macro::TokenStream;
 use quote::{format_ident, quote};
 use syn::{FnArg, Pat, ReturnType, Type};
 
+mod lowered_return;
+mod wasm;
+
+use self::lowered_return::LoweredCallbackReturn;
+use self::wasm::{WasmMethodExpansion, expand_method_wasm};
+
 use crate::custom_types;
 use crate::data_types;
+use crate::returns::ReturnLoweringContext;
 
 pub fn ffi_trait_impl(item: TokenStream) -> TokenStream {
     let item_trait = syn::parse_macro_input!(item as syn::ItemTrait);
@@ -15,9 +25,8 @@ pub fn ffi_trait_impl(item: TokenStream) -> TokenStream {
 
 fn expand_ffi_trait(item_trait: syn::ItemTrait) -> Result<proc_macro2::TokenStream, syn::Error> {
     let custom_types = custom_types::registry_for_current_crate()?;
-    let data_types = data_types::registry_for_current_crate()
-        .ok()
-        .unwrap_or_default();
+    let data_types = data_types::registry_for_current_crate()?;
+    let return_lowering = ReturnLoweringContext::new(&custom_types, &data_types);
     let trait_name = &item_trait.ident;
     let trait_name_snake = to_snake_case_ident(&trait_name.to_string());
     let vtable_name = syn::Ident::new(&format!("{}VTable", trait_name), trait_name.span());
@@ -80,7 +89,7 @@ fn expand_ffi_trait(item_trait: syn::ItemTrait) -> Result<proc_macro2::TokenStre
             syn::TraitItem::Fn(method) => Some(method),
             _ => None,
         })
-        .map(|method| expand_method(method, &mut vtable_fields, &custom_types, &data_types))
+        .map(|method| expand_method(method, &mut vtable_fields, &custom_types, &return_lowering))
         .collect::<Result<Vec<_>, _>>()?;
 
     let wasm_expansions: Vec<WasmMethodExpansion> = item_trait
@@ -90,7 +99,7 @@ fn expand_ffi_trait(item_trait: syn::ItemTrait) -> Result<proc_macro2::TokenStre
             syn::TraitItem::Fn(method) => Some(method),
             _ => None,
         })
-        .map(|method| expand_method_wasm(method, &trait_name_snake, &custom_types))
+        .map(|method| expand_method_wasm(method, &trait_name_snake, &custom_types, &return_lowering))
         .collect::<Result<Vec<_>, _>>()?;
 
     let wasm_extern_imports: Vec<_> = wasm_expansions.iter().map(|e| &e.extern_import).collect();
@@ -321,7 +330,7 @@ fn expand_method(
     method: &syn::TraitItemFn,
     vtable_fields: &mut Vec<proc_macro2::TokenStream>,
     custom_types: &custom_types::CustomTypeRegistry,
-    data_types: &data_types::DataTypeRegistry,
+    return_lowering: &ReturnLoweringContext<'_>,
 ) -> Result<proc_macro2::TokenStream, syn::Error> {
     let method_name = &method.sig.ident;
     let method_name_snake = to_snake_case_ident(&method_name.to_string());
@@ -359,12 +368,14 @@ fn expand_method(
         ReturnType::Default => None,
         ReturnType::Type(_, ty) => Some(ty.clone()),
     };
+    let lowered_return = return_type
+        .as_deref()
+        .map(|ty| LoweredCallbackReturn::new(ty, return_lowering));
 
     if is_async {
-        let async_wire_return = return_type
-            .as_deref()
-            .map(|ty| needs_wire_return(ty, data_types))
-            .unwrap_or(false);
+        let async_wire_return = lowered_return
+            .as_ref()
+            .is_some_and(|return_shape| return_shape.uses_wire_payload(return_lowering));
 
         let callback_type = if let Some(ref ret_ty) = return_type {
             if async_wire_return {
@@ -633,10 +644,16 @@ fn expand_method(
             }
         })
     } else {
-        let wire_return = return_type
-            .as_deref()
-            .map(|ty| needs_wire_return(ty, data_types))
-            .unwrap_or(false);
+        let wire_return = lowered_return.as_ref().is_some_and(|return_shape| {
+            matches!(
+                return_shape.value_return_method(
+                    return_lowering,
+                    ReturnInvocationContext::CallbackVtable,
+                    ReturnPlatform::Native,
+                ),
+                ValueReturnMethod::WriteToOutBufferParts
+            )
+        });
 
         let out_params = if let Some(ref ret_ty) = return_type {
             if wire_return {
@@ -826,17 +843,6 @@ fn direct_callback_return_ffi_type(ty: &syn::Type) -> proc_macro2::TokenStream {
     quote!(<#ty as ::boltffi::__private::Passable>::Out)
 }
 
-fn needs_wire_return(ty: &syn::Type, data_types: &data_types::DataTypeRegistry) -> bool {
-    let type_str = quote!(#ty).to_string().replace(' ', "");
-    if is_ffi_primitive(&type_str) {
-        return false;
-    }
-    !matches!(
-        data_types.category_for(ty),
-        Some(data_types::DataTypeCategory::Scalar)
-    )
-}
-
 fn parse_result_type(ty: &Type) -> Option<(Type, Type)> {
     let Type::Path(type_path) = ty else {
         return None;
@@ -855,380 +861,4 @@ fn parse_result_type(ty: &Type) -> Option<(Type, Type)> {
     let ok = types.next()?;
     let err = types.next()?;
     Some((ok, err))
-}
-
-struct WasmMethodExpansion {
-    extern_import: proc_macro2::TokenStream,
-    impl_body: proc_macro2::TokenStream,
-    complete_export: Option<proc_macro2::TokenStream>,
-}
-
-fn expand_method_wasm(
-    method: &syn::TraitItemFn,
-    trait_name_snake: &syn::Ident,
-    custom_types: &custom_types::CustomTypeRegistry,
-) -> Result<WasmMethodExpansion, syn::Error> {
-    let data_types = data_types::registry_for_current_crate()
-        .ok()
-        .unwrap_or_default();
-    let method_name = &method.sig.ident;
-    let method_name_snake = to_snake_case_ident(&method_name.to_string());
-
-    let is_async = method.sig.asyncness.is_some();
-    if is_async {
-        return expand_method_wasm_async(method, trait_name_snake, custom_types);
-    }
-
-    let import_name = format_ident!(
-        "__boltffi_callback_{}_{}",
-        trait_name_snake,
-        method_name_snake
-    );
-
-    let (ffi_param_types, param_names, call_args, prelude_stmts): (Vec<_>, Vec<_>, Vec<_>, Vec<_>) =
-        method
-            .sig
-            .inputs
-            .iter()
-            .filter_map(|input| match input {
-                FnArg::Typed(pat_type) => match pat_type.pat.as_ref() {
-                    Pat::Ident(pat_ident) => Some((pat_ident.ident.clone(), pat_type.ty.clone())),
-                    _ => None,
-                },
-                FnArg::Receiver(_) => None,
-            })
-            .map(|(param_name, param_type)| {
-                lower_callback_param_wasm(&param_name, &param_type, custom_types)
-            })
-            .fold(
-                (Vec::new(), Vec::new(), Vec::new(), Vec::new()),
-                |(mut ffi, mut rust, mut call, mut preludes), lowering| {
-                    for p in lowering.ffi_params {
-                        ffi.push(p);
-                    }
-                    rust.push(lowering.rust_param);
-                    for a in lowering.call_args {
-                        call.push(a);
-                    }
-                    if let Some(stmt) = lowering.prelude {
-                        preludes.push(stmt);
-                    }
-                    (ffi, rust, call, preludes)
-                },
-            );
-
-    let return_type = match &method.sig.output {
-        ReturnType::Default => None,
-        ReturnType::Type(_, ty) => Some(ty.clone()),
-    };
-
-    let wire_return = return_type
-        .as_deref()
-        .map(|ty| needs_wire_return(ty, &data_types))
-        .unwrap_or(false);
-
-    let (extern_import, impl_body) = if let Some(ref ret_ty) = return_type {
-        if wire_return {
-            (
-                quote! {
-                    fn #import_name(
-                        handle: u32,
-                        out_buf_ptr: *mut ::boltffi::__private::WasmCallbackOutBuf,
-                        #(#ffi_param_types),*
-                    );
-                },
-                quote! {
-                    #(#prelude_stmts)*
-                    let mut out_buf = ::boltffi::__private::WasmCallbackOutBuf::empty();
-                    unsafe {
-                        #import_name(
-                            self.handle,
-                            &mut out_buf as *mut _,
-                            #(#call_args),*
-                        );
-                    }
-                    let out_bytes = unsafe { out_buf.as_slice() };
-                    ::boltffi::__private::wire::decode(out_bytes)
-                        .expect("wire decode wasm callback return")
-                },
-            )
-        } else {
-            let ffi_ret = direct_callback_return_ffi_type(ret_ty);
-            (
-                quote! {
-                    fn #import_name(handle: u32, #(#ffi_param_types),*) -> #ffi_ret;
-                },
-                quote! {
-                    #(#prelude_stmts)*
-                    unsafe { <#ret_ty as ::boltffi::__private::Passable>::unpack(#import_name(self.handle, #(#call_args),*)) }
-                },
-            )
-        }
-    } else {
-        (
-            quote! {
-                fn #import_name(handle: u32, #(#ffi_param_types),*);
-            },
-            quote! {
-                #(#prelude_stmts)*
-                unsafe { #import_name(self.handle, #(#call_args),*) }
-            },
-        )
-    };
-
-    let output_type = return_type
-        .as_ref()
-        .map(|t| quote! { -> #t })
-        .unwrap_or_default();
-
-    Ok(WasmMethodExpansion {
-        extern_import,
-        impl_body: quote! {
-            fn #method_name(&self, #(#param_names,)*) #output_type {
-                #impl_body
-            }
-        },
-        complete_export: None,
-    })
-}
-
-fn expand_method_wasm_async(
-    method: &syn::TraitItemFn,
-    trait_name_snake: &syn::Ident,
-    custom_types: &custom_types::CustomTypeRegistry,
-) -> Result<WasmMethodExpansion, syn::Error> {
-    let method_name = &method.sig.ident;
-    let method_name_snake = to_snake_case_ident(&method_name.to_string());
-
-    let start_import_name = format_ident!(
-        "__boltffi_callback_{}_{}_start",
-        trait_name_snake,
-        method_name_snake
-    );
-    let complete_export_name = format_ident!(
-        "boltffi_callback_{}_{}_complete",
-        trait_name_snake,
-        method_name_snake
-    );
-
-    let (ffi_param_types, param_names, call_args, prelude_stmts): (Vec<_>, Vec<_>, Vec<_>, Vec<_>) =
-        method
-            .sig
-            .inputs
-            .iter()
-            .filter_map(|input| match input {
-                FnArg::Typed(pat_type) => match pat_type.pat.as_ref() {
-                    Pat::Ident(pat_ident) => Some((pat_ident.ident.clone(), pat_type.ty.clone())),
-                    _ => None,
-                },
-                FnArg::Receiver(_) => None,
-            })
-            .map(|(param_name, param_type)| {
-                lower_callback_param_wasm(&param_name, &param_type, custom_types)
-            })
-            .fold(
-                (Vec::new(), Vec::new(), Vec::new(), Vec::new()),
-                |(mut ffi, mut rust, mut call, mut preludes), lowering| {
-                    for p in lowering.ffi_params {
-                        ffi.push(p);
-                    }
-                    rust.push(lowering.rust_param);
-                    for a in lowering.call_args {
-                        call.push(a);
-                    }
-                    if let Some(stmt) = lowering.prelude {
-                        preludes.push(stmt);
-                    }
-                    (ffi, rust, call, preludes)
-                },
-            );
-
-    let return_type = match &method.sig.output {
-        ReturnType::Default => None,
-        ReturnType::Type(_, ty) => Some(ty.clone()),
-    };
-
-    let extern_import = quote! {
-        fn #start_import_name(handle: u32, request_id: u32, #(#ffi_param_types),*);
-    };
-
-    let complete_export = quote! {
-        #[cfg(target_arch = "wasm32")]
-        #[unsafe(no_mangle)]
-        pub unsafe extern "C" fn #complete_export_name(
-            request_id: u32,
-            completion_code: i32,
-            data_ptr: u32,
-            data_len: u32,
-            data_cap: u32,
-        ) -> i32 {
-            ::boltffi::__private::complete_request_from_ffi(
-                request_id,
-                completion_code,
-                data_ptr,
-                data_len,
-                data_cap,
-            )
-        }
-    };
-
-    let output_type = return_type
-        .as_ref()
-        .map(|t| quote! { -> #t })
-        .unwrap_or_default();
-
-    let poll_body = match return_type.as_deref() {
-        Some(ret_ty) => {
-            if let Some((ok_ty, err_ty)) = parse_result_type(ret_ty) {
-                quote! {
-                    std::future::poll_fn(move |cx| {
-                        ::boltffi::__private::set_request_waker(request_id, cx.waker().clone());
-                        match ::boltffi::__private::take_request_result(request_id) {
-                            Some(result) => {
-                                if !result.code.is_success() {
-                                    let error_msg = if result.data.is_empty() {
-                                        "async callback failed".to_string()
-                                    } else {
-                                        ::boltffi::__private::wire::decode::<String>(&result.data)
-                                            .unwrap_or_else(|_| "async callback failed".to_string())
-                                    };
-                                    return std::task::Poll::Ready(Err(
-                                        <#err_ty as ::core::convert::From<::boltffi::UnexpectedFfiCallbackError>>::from(
-                                            ::boltffi::UnexpectedFfiCallbackError::new(error_msg)
-                                        )
-                                    ));
-                                }
-                                let ok_value: #ok_ty = ::boltffi::__private::wire::decode(&result.data)
-                                    .expect("wire decode async callback return");
-                                std::task::Poll::Ready(Ok(ok_value))
-                            }
-                            None => std::task::Poll::Pending,
-                        }
-                    }).await
-                }
-            } else {
-                quote! {
-                    std::future::poll_fn(move |cx| {
-                        ::boltffi::__private::set_request_waker(request_id, cx.waker().clone());
-                        match ::boltffi::__private::take_request_result(request_id) {
-                            Some(result) => {
-                                if !result.code.is_success() {
-                                    let error_msg = if result.data.is_empty() {
-                                        "async callback failed".to_string()
-                                    } else {
-                                        ::boltffi::__private::wire::decode::<String>(&result.data)
-                                            .unwrap_or_else(|_| "async callback failed".to_string())
-                                    };
-                                    panic!("async callback failed: {}", error_msg);
-                                }
-                                let value: #ret_ty = ::boltffi::__private::wire::decode(&result.data)
-                                    .expect("wire decode async callback return");
-                                std::task::Poll::Ready(value)
-                            }
-                            None => std::task::Poll::Pending,
-                        }
-                    }).await
-                }
-            }
-        }
-        None => {
-            quote! {
-                std::future::poll_fn(move |cx| {
-                    ::boltffi::__private::set_request_waker(request_id, cx.waker().clone());
-                    match ::boltffi::__private::take_request_result(request_id) {
-                        Some(result) => {
-                            if !result.code.is_success() {
-                                let error_msg = if result.data.is_empty() {
-                                    "async callback failed".to_string()
-                                } else {
-                                    ::boltffi::__private::wire::decode::<String>(&result.data)
-                                        .unwrap_or_else(|_| "async callback failed".to_string())
-                                };
-                                panic!("async callback failed: {}", error_msg);
-                            }
-                            std::task::Poll::Ready(())
-                        }
-                        None => std::task::Poll::Pending,
-                    }
-                }).await
-            }
-        }
-    };
-
-    let impl_body = quote! {
-        let request_id = ::boltffi::__private::allocate_request();
-        let _guard = ::boltffi::__private::RequestGuard(request_id);
-        {
-            #(#prelude_stmts)*
-            unsafe {
-                #start_import_name(
-                    self.handle,
-                    request_id.as_u32(),
-                    #(#call_args),*
-                );
-            }
-        }
-        #poll_body
-    };
-
-    Ok(WasmMethodExpansion {
-        extern_import,
-        impl_body: quote! {
-            async fn #method_name(&self, #(#param_names,)*) #output_type {
-                #impl_body
-            }
-        },
-        complete_export: Some(complete_export),
-    })
-}
-
-struct WasmCallbackParamLowering {
-    ffi_params: Vec<proc_macro2::TokenStream>,
-    rust_param: proc_macro2::TokenStream,
-    call_args: Vec<proc_macro2::TokenStream>,
-    prelude: Option<proc_macro2::TokenStream>,
-}
-
-fn lower_callback_param_wasm(
-    param_name: &syn::Ident,
-    param_type: &syn::Type,
-    custom_types: &custom_types::CustomTypeRegistry,
-) -> WasmCallbackParamLowering {
-    let rust_param = quote! { #param_name: #param_type };
-    let type_str = quote!(#param_type).to_string().replace(' ', "");
-
-    if is_ffi_primitive(&type_str) {
-        return WasmCallbackParamLowering {
-            ffi_params: vec![quote! { #param_name: #param_type }],
-            rust_param,
-            call_args: vec![quote! { #param_name }],
-            prelude: None,
-        };
-    }
-
-    let ptr_name = format_ident!("{}_ptr", param_name);
-    let len_name = format_ident!("{}_len", param_name);
-    let wire_name = format_ident!("{}_wire", param_name);
-
-    let prelude = if custom_types::contains_custom_types(param_type, custom_types) {
-        let wire_ty = custom_types::wire_type_for(param_type, custom_types);
-        let wire_value_name = format_ident!("{}_wire_value", param_name);
-        let to_wire = custom_types::to_wire_expr_owned(param_type, custom_types, param_name);
-        quote! {
-            let #wire_value_name: #wire_ty = { #to_wire };
-            let #wire_name = ::boltffi::__private::wire::encode(&#wire_value_name);
-        }
-    } else {
-        quote! { let #wire_name = ::boltffi::__private::wire::encode(&#param_name); }
-    };
-
-    WasmCallbackParamLowering {
-        ffi_params: vec![quote! { #ptr_name: *const u8 }, quote! { #len_name: u32 }],
-        rust_param,
-        call_args: vec![
-            quote! { #wire_name.as_ptr() },
-            quote! { #wire_name.len() as u32 },
-        ],
-        prelude: Some(prelude),
-    }
 }
