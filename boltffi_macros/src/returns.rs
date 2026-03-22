@@ -8,7 +8,7 @@ use quote::quote;
 use syn::{ReturnType, Type};
 
 use crate::custom_types::{self, CustomTypeRegistry};
-use crate::data_types;
+use crate::data_types::{DataTypeCategory, DataTypeRegistry};
 use crate::type_classification::{
     NamedTypeTransport, classify_named_type_transport, supports_direct_vec_transport,
 };
@@ -44,6 +44,33 @@ pub enum ReturnAbi {
     Passable {
         rust_type: syn::Type,
     },
+}
+
+#[derive(Clone, Copy)]
+pub struct ReturnLoweringContext<'a> {
+    custom_types: &'a CustomTypeRegistry,
+    data_types: &'a DataTypeRegistry,
+}
+
+impl<'a> ReturnLoweringContext<'a> {
+    pub fn new(custom_types: &'a CustomTypeRegistry, data_types: &'a DataTypeRegistry) -> Self {
+        Self {
+            custom_types,
+            data_types,
+        }
+    }
+
+    pub fn custom_types(&self) -> &'a CustomTypeRegistry {
+        self.custom_types
+    }
+
+    pub fn lower_output(&self, output: &ReturnType) -> ReturnAbi {
+        ReturnAbi::lower(classify_return(output), self)
+    }
+
+    pub fn lower_type(&self, ty: &Type) -> ReturnAbi {
+        ReturnAbi::lower(classify_return_type(ty), self)
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -183,17 +210,15 @@ pub fn type_is_primitive(ty: &Type) -> bool {
     is_primitive_type(&type_str)
 }
 
-fn passable_data_type_category(ty: &Type) -> Option<data_types::DataTypeCategory> {
-    data_types::registry_for_current_crate()
-        .ok()
-        .and_then(|registry| registry.category_for(ty))
+fn passable_data_type_category(
+    ty: &Type,
+    data_types: &DataTypeRegistry,
+) -> Option<DataTypeCategory> {
+    data_types.category_for(ty)
 }
 
 impl ReturnAbi {
-    pub fn lower(kind: ReturnKind, custom_types: &CustomTypeRegistry) -> Self {
-        let data_types = data_types::registry_for_current_crate()
-            .ok()
-            .unwrap_or_default();
+    pub fn lower(kind: ReturnKind, lowering: &ReturnLoweringContext<'_>) -> Self {
         match kind {
             ReturnKind::Unit => Self::Unit,
             ReturnKind::Primitive(rust_type) => Self::Scalar { rust_type },
@@ -202,7 +227,11 @@ impl ReturnAbi {
                 strategy: EncodedReturnStrategy::Utf8String,
             },
             ReturnKind::Vec(inner) => {
-                let strategy = if supports_direct_vec_transport(&inner, custom_types, &data_types) {
+                let strategy = if supports_direct_vec_transport(
+                    &inner,
+                    lowering.custom_types,
+                    lowering.data_types,
+                ) {
                     EncodedReturnStrategy::DirectVec
                 } else {
                     EncodedReturnStrategy::WireEncoded
@@ -246,7 +275,11 @@ impl ReturnAbi {
                 strategy: EncodedReturnStrategy::WireEncoded,
             },
             ReturnKind::WireEncoded(rust_type) => {
-                match classify_named_type_transport(&rust_type, custom_types, &data_types) {
+                match classify_named_type_transport(
+                    &rust_type,
+                    lowering.custom_types,
+                    lowering.data_types,
+                ) {
                     NamedTypeTransport::Passable => Self::Passable { rust_type },
                     NamedTypeTransport::WireEncoded => Self::Encoded {
                         rust_type,
@@ -257,7 +290,7 @@ impl ReturnAbi {
         }
     }
 
-    pub fn value_return_strategy(&self) -> ValueReturnStrategy {
+    pub fn value_return_strategy(&self, lowering: &ReturnLoweringContext<'_>) -> ValueReturnStrategy {
         match self {
             Self::Unit => ValueReturnStrategy::Void,
             Self::Scalar { .. } => {
@@ -270,14 +303,14 @@ impl ReturnAbi {
                 | EncodedReturnStrategy::ResultScalar
                 | EncodedReturnStrategy::WireEncoded => ValueReturnStrategy::EncodedBuffer,
             },
-            Self::Passable { rust_type } => match passable_data_type_category(rust_type) {
-                Some(data_types::DataTypeCategory::Scalar) => {
+            Self::Passable { rust_type } => match passable_data_type_category(rust_type, lowering.data_types) {
+                Some(DataTypeCategory::Scalar) => {
                     ValueReturnStrategy::Scalar(ScalarReturnStrategy::CStyleEnumTag)
                 }
-                Some(data_types::DataTypeCategory::Blittable) => {
+                Some(DataTypeCategory::Blittable) => {
                     ValueReturnStrategy::CompositeValue
                 }
-                Some(data_types::DataTypeCategory::WireEncoded) | None => {
+                Some(DataTypeCategory::WireEncoded) | None => {
                     unreachable!("passable return abi requires a scalar or blittable data type")
                 }
             },
@@ -286,10 +319,11 @@ impl ReturnAbi {
 
     pub fn value_return_method(
         &self,
+        lowering: &ReturnLoweringContext<'_>,
         context: ReturnInvocationContext,
         platform: ReturnPlatform,
     ) -> ValueReturnMethod {
-        self.value_return_strategy()
+        self.value_return_strategy(lowering)
             .return_method(ErrorReturnStrategy::None, context, platform)
     }
 
@@ -311,15 +345,10 @@ impl ReturnAbi {
                     return f64::NAN;
                 }
             }
-            Self::Encoded { .. }
-                if matches!(
-                    self.value_return_method(
-                        ReturnInvocationContext::SyncExport,
-                        ReturnPlatform::Wasm,
-                    ),
-                    ValueReturnMethod::WriteToReturnSlot
-                ) =>
-            {
+            Self::Encoded {
+                strategy: EncodedReturnStrategy::DirectVec,
+                ..
+            } => {
                 quote! {
                     return;
                 }
@@ -364,7 +393,10 @@ impl ReturnAbi {
         }
     }
 
-    pub fn async_complete_conversion(&self) -> proc_macro2::TokenStream {
+    pub fn async_complete_conversion(
+        &self,
+        lowering: &ReturnLoweringContext<'_>,
+    ) -> proc_macro2::TokenStream {
         match self {
             Self::Unit => quote! {
                 if !out_status.is_null() { *out_status = ::boltffi::__private::FfiStatus::OK; }
@@ -378,13 +410,12 @@ impl ReturnAbi {
                 rust_type,
                 strategy,
             } => {
-                let registry = custom_types::registry_for_current_crate().ok();
                 let result_ident = syn::Ident::new("result", Span::call_site());
                 let encode_expression = encoded_return_buffer_expression(
                     rust_type,
                     *strategy,
                     &result_ident,
-                    registry.as_ref(),
+                    Some(lowering.custom_types()),
                 );
                 quote! {
                     if !out_status.is_null() { *out_status = ::boltffi::__private::FfiStatus::OK; }
@@ -512,12 +543,20 @@ fn wire_encode_expression(
 
 #[cfg(test)]
 mod tests {
-    use super::{ReturnAbi, WasmOptionScalarEncoding};
+    use super::{ReturnAbi, ReturnLoweringContext, WasmOptionScalarEncoding};
     use boltffi_ffi_rules::transport::{
         EncodedReturnStrategy, ReturnInvocationContext, ReturnPlatform, ValueReturnMethod,
         ValueReturnStrategy,
     };
+    use crate::custom_types::CustomTypeRegistry;
+    use crate::data_types::DataTypeRegistry;
     use syn::parse_quote;
+
+    fn lowering() -> ReturnLoweringContext<'static> {
+        let custom_types = Box::leak(Box::new(CustomTypeRegistry::default()));
+        let data_types = Box::leak(Box::new(DataTypeRegistry::default()));
+        ReturnLoweringContext::new(custom_types, data_types)
+    }
 
     #[test]
     fn wasm_option_bool_uses_numeric_bool_encoding() {
@@ -537,15 +576,17 @@ mod tests {
             rust_type: parse_quote!(std::time::Duration),
             strategy: EncodedReturnStrategy::WireEncoded,
         };
+        let lowering = lowering();
 
         let statement = return_abi.invalid_arg_early_return_statement().to_string();
 
         assert!(matches!(
-            return_abi.value_return_strategy(),
+            return_abi.value_return_strategy(&lowering),
             ValueReturnStrategy::EncodedBuffer
         ));
         assert!(matches!(
             return_abi.value_return_method(
+                &lowering,
                 ReturnInvocationContext::SyncExport,
                 ReturnPlatform::Wasm,
             ),
@@ -561,9 +602,11 @@ mod tests {
             rust_type: parse_quote!(Vec<i32>),
             strategy: EncodedReturnStrategy::DirectVec,
         };
+        let lowering = lowering();
 
         assert!(matches!(
             return_abi.value_return_method(
+                &lowering,
                 ReturnInvocationContext::SyncExport,
                 ReturnPlatform::Wasm,
             ),

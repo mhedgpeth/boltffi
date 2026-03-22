@@ -5,11 +5,12 @@ use syn::{FnArg, ReturnType, Type};
 
 use crate::callback_registry;
 use crate::custom_types;
+use crate::data_types;
 use crate::method_common::{
     exported_methods, impl_type_name, is_factory_constructor, is_result_of_self_type_path,
 };
 use crate::params::{FfiParams, transform_method_params};
-use crate::returns::{ReturnAbi, classify_return, encoded_return_body};
+use crate::returns::{ReturnAbi, ReturnLoweringContext, encoded_return_body};
 
 enum RecordMethodKind {
     Constructor,
@@ -86,9 +87,10 @@ fn generate_record_constructor_export(
     type_name: &syn::Ident,
     record_name: &str,
     method: &syn::ImplItemFn,
-    custom_types: &custom_types::CustomTypeRegistry,
+    return_lowering: &ReturnLoweringContext<'_>,
     callback_registry: &callback_registry::CallbackTraitRegistry,
 ) -> Option<proc_macro2::TokenStream> {
+    let custom_types = return_lowering.custom_types();
     let method_name = &method.sig.ident;
     let export_name = if method_name == "new" {
         naming::class_ffi_new(record_name)
@@ -98,7 +100,7 @@ fn generate_record_constructor_export(
     let export_name = syn::Ident::new(export_name.as_str(), method_name.span());
 
     let resolved_output = resolve_self_in_return_type(&method.sig.output, type_name);
-    let return_abi = ReturnAbi::lower(classify_return(&resolved_output), custom_types);
+    let return_abi = return_lowering.lower_output(&resolved_output);
     let on_error = return_abi.invalid_arg_early_return_statement();
 
     let inputs = method.sig.inputs.iter().cloned();
@@ -106,7 +108,7 @@ fn generate_record_constructor_export(
         ffi_params,
         conversions,
         call_args,
-    } = transform_method_params(inputs, custom_types, callback_registry, &on_error);
+    } = transform_method_params(inputs, return_lowering, callback_registry, &on_error);
 
     let call_expr = quote! { #type_name::#method_name(#(#call_args),*) };
 
@@ -132,15 +134,16 @@ fn generate_record_instance_export(
     record_name: &str,
     method: &syn::ImplItemFn,
     is_mut: bool,
-    custom_types: &custom_types::CustomTypeRegistry,
+    return_lowering: &ReturnLoweringContext<'_>,
     callback_registry: &callback_registry::CallbackTraitRegistry,
 ) -> Option<proc_macro2::TokenStream> {
+    let custom_types = return_lowering.custom_types();
     let method_name = &method.sig.ident;
     let export_name = naming::method_ffi_name(record_name, &method_name.to_string());
     let export_name = syn::Ident::new(export_name.as_str(), method_name.span());
 
     let resolved_output = resolve_self_in_return_type(&method.sig.output, type_name);
-    let return_abi = ReturnAbi::lower(classify_return(&resolved_output), custom_types);
+    let return_abi = return_lowering.lower_output(&resolved_output);
     let on_error = return_abi.invalid_arg_early_return_statement();
 
     let other_inputs = method.sig.inputs.iter().skip(1).cloned();
@@ -148,7 +151,7 @@ fn generate_record_instance_export(
         ffi_params: param_ffi,
         conversions: param_conversions,
         call_args,
-    } = transform_method_params(other_inputs, custom_types, callback_registry, &on_error);
+    } = transform_method_params(other_inputs, return_lowering, callback_registry, &on_error);
 
     let self_param = quote! { self_value: <#type_name as ::boltffi::__private::Passable>::In };
     let self_unpack = if is_mut {
@@ -234,15 +237,16 @@ fn generate_record_static_export(
     type_name: &syn::Ident,
     record_name: &str,
     method: &syn::ImplItemFn,
-    custom_types: &custom_types::CustomTypeRegistry,
+    return_lowering: &ReturnLoweringContext<'_>,
     callback_registry: &callback_registry::CallbackTraitRegistry,
 ) -> Option<proc_macro2::TokenStream> {
+    let custom_types = return_lowering.custom_types();
     let method_name = &method.sig.ident;
     let export_name = naming::method_ffi_name(record_name, &method_name.to_string());
     let export_name = syn::Ident::new(export_name.as_str(), method_name.span());
 
     let resolved_output = resolve_self_in_return_type(&method.sig.output, type_name);
-    let return_abi = ReturnAbi::lower(classify_return(&resolved_output), custom_types);
+    let return_abi = return_lowering.lower_output(&resolved_output);
     let on_error = return_abi.invalid_arg_early_return_statement();
 
     let all_inputs = method.sig.inputs.iter().cloned();
@@ -250,7 +254,7 @@ fn generate_record_static_export(
         ffi_params,
         conversions,
         call_args,
-    } = transform_method_params(all_inputs, custom_types, callback_registry, &on_error);
+    } = transform_method_params(all_inputs, return_lowering, callback_registry, &on_error);
 
     let call_expr = quote! { #type_name::#method_name(#(#call_args),*) };
 
@@ -521,6 +525,11 @@ pub fn data_impl_block(item: TokenStream) -> TokenStream {
         Ok(registry) => registry,
         Err(error) => return error.to_compile_error().into(),
     };
+    let data_types = match data_types::registry_for_current_crate() {
+        Ok(registry) => registry,
+        Err(error) => return error.to_compile_error().into(),
+    };
+    let return_lowering = ReturnLoweringContext::new(&custom_types, &data_types);
 
     let record_name = type_name.to_string();
     let original_impl: proc_macro2::TokenStream = item.into();
@@ -531,7 +540,7 @@ pub fn data_impl_block(item: TokenStream) -> TokenStream {
                 &type_name,
                 &record_name,
                 method,
-                &custom_types,
+                &return_lowering,
                 &callback_registry,
             ),
             RecordMethodKind::InstanceRef => generate_record_instance_export(
@@ -539,7 +548,7 @@ pub fn data_impl_block(item: TokenStream) -> TokenStream {
                 &record_name,
                 method,
                 false,
-                &custom_types,
+                &return_lowering,
                 &callback_registry,
             ),
             RecordMethodKind::InstanceMut => generate_record_instance_export(
@@ -547,14 +556,14 @@ pub fn data_impl_block(item: TokenStream) -> TokenStream {
                 &record_name,
                 method,
                 true,
-                &custom_types,
+                &return_lowering,
                 &callback_registry,
             ),
             RecordMethodKind::Static => generate_record_static_export(
                 &type_name,
                 &record_name,
                 method,
-                &custom_types,
+                &return_lowering,
                 &callback_registry,
             ),
         })

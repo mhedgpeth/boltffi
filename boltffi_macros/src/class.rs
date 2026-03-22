@@ -5,10 +5,11 @@ use syn::{FnArg, ReturnType, Type};
 
 use crate::callback_registry;
 use crate::custom_types;
+use crate::data_types;
 use crate::method_common::{impl_type_name, is_factory_constructor, is_result_of_self_type_path};
 use crate::params::{FfiParams, transform_method_params, transform_method_params_async};
 use crate::returns::{
-    ReturnAbi, WasmOptionScalarEncoding, classify_return, encoded_return_body,
+    ReturnAbi, ReturnLoweringContext, WasmOptionScalarEncoding, encoded_return_body,
     encoded_return_buffer_expression,
 };
 use boltffi_ffi_rules::transport::EncodedReturnStrategy;
@@ -64,6 +65,11 @@ pub fn ffi_class_impl(attr: TokenStream, item: TokenStream) -> TokenStream {
         Ok(registry) => registry,
         Err(error) => return error.to_compile_error().into(),
     };
+    let data_types = match data_types::registry_for_current_crate() {
+        Ok(registry) => registry,
+        Err(error) => return error.to_compile_error().into(),
+    };
+    let return_lowering = ReturnLoweringContext::new(&custom_types, &data_types);
 
     let type_name = match impl_type_name(&input) {
         Some(name) => name,
@@ -102,7 +108,7 @@ pub fn ffi_class_impl(attr: TokenStream, item: TokenStream) -> TokenStream {
                             &type_name,
                             &type_name_str,
                             method,
-                            &custom_types,
+                            &return_lowering,
                             &callback_registry,
                         );
                     }
@@ -110,7 +116,7 @@ pub fn ffi_class_impl(attr: TokenStream, item: TokenStream) -> TokenStream {
                         &type_name,
                         &type_name_str,
                         method,
-                        &custom_types,
+                        &return_lowering,
                         &callback_registry,
                     );
                 }
@@ -424,7 +430,7 @@ fn generate_factory_constructor_export(
     type_name: &syn::Ident,
     class_name: &str,
     method: &syn::ImplItemFn,
-    custom_types: &custom_types::CustomTypeRegistry,
+    return_lowering: &ReturnLoweringContext<'_>,
     callback_registry: &callback_registry::CallbackTraitRegistry,
 ) -> Option<proc_macro2::TokenStream> {
     let method_name = &method.sig.ident;
@@ -443,7 +449,7 @@ fn generate_factory_constructor_export(
         call_args,
     } = transform_method_params(
         inputs,
-        custom_types,
+        return_lowering,
         callback_registry,
         &on_wire_record_error,
     );
@@ -512,9 +518,10 @@ fn generate_method_export(
     type_name: &syn::Ident,
     class_name: &str,
     method: &syn::ImplItemFn,
-    custom_types: &custom_types::CustomTypeRegistry,
+    return_lowering: &ReturnLoweringContext<'_>,
     callback_registry: &callback_registry::CallbackTraitRegistry,
 ) -> Option<proc_macro2::TokenStream> {
+    let custom_types = return_lowering.custom_types();
     let method_name = &method.sig.ident;
     let export_name = syn::Ident::new(
         naming::method_ffi_name(class_name, &method_name.to_string()).as_str(),
@@ -534,7 +541,7 @@ fn generate_method_export(
                 type_name,
                 class_name,
                 method,
-                custom_types,
+                return_lowering,
                 callback_registry,
             );
         }
@@ -542,12 +549,12 @@ fn generate_method_export(
             type_name,
             class_name,
             method,
-            custom_types,
+            return_lowering,
             callback_registry,
         );
     }
 
-    let return_abi = ReturnAbi::lower(classify_return(&method.sig.output), custom_types);
+    let return_abi = return_lowering.lower_output(&method.sig.output);
     let on_wire_record_error = return_abi.invalid_arg_early_return_statement();
     let other_inputs = method.sig.inputs.iter().skip(1).cloned();
     let FfiParams {
@@ -556,7 +563,7 @@ fn generate_method_export(
         call_args,
     } = transform_method_params(
         other_inputs,
-        custom_types,
+        return_lowering,
         callback_registry,
         &on_wire_record_error,
     );
@@ -732,16 +739,17 @@ fn generate_static_method_export(
     type_name: &syn::Ident,
     class_name: &str,
     method: &syn::ImplItemFn,
-    custom_types: &custom_types::CustomTypeRegistry,
+    return_lowering: &ReturnLoweringContext<'_>,
     callback_registry: &callback_registry::CallbackTraitRegistry,
 ) -> Option<proc_macro2::TokenStream> {
+    let custom_types = return_lowering.custom_types();
     let method_name = &method.sig.ident;
     let export_name = syn::Ident::new(
         naming::method_ffi_name(class_name, &method_name.to_string()).as_str(),
         method_name.span(),
     );
 
-    let return_abi = ReturnAbi::lower(classify_return(&method.sig.output), custom_types);
+    let return_abi = return_lowering.lower_output(&method.sig.output);
     let on_wire_record_error = return_abi.invalid_arg_early_return_statement();
     let all_inputs = method.sig.inputs.iter().cloned();
     let FfiParams {
@@ -750,7 +758,7 @@ fn generate_static_method_export(
         call_args,
     } = transform_method_params(
         all_inputs,
-        custom_types,
+        return_lowering,
         callback_registry,
         &on_wire_record_error,
     );
@@ -917,7 +925,7 @@ fn generate_async_method_export(
     type_name: &syn::Ident,
     class_name: &str,
     method: &syn::ImplItemFn,
-    custom_types: &custom_types::CustomTypeRegistry,
+    return_lowering: &ReturnLoweringContext<'_>,
     callback_registry: &callback_registry::CallbackTraitRegistry,
 ) -> Option<proc_macro2::TokenStream> {
     let method_name = &method.sig.ident;
@@ -944,7 +952,7 @@ fn generate_async_method_export(
     let on_wire_record_error = quote! { ::core::ptr::null() };
     let params = match transform_method_params_async(
         other_inputs,
-        custom_types,
+        return_lowering,
         callback_registry,
         &on_wire_record_error,
     ) {
@@ -953,11 +961,11 @@ fn generate_async_method_export(
     };
 
     let fn_output = &method.sig.output;
-    let return_abi = ReturnAbi::lower(classify_return(fn_output), custom_types);
+    let return_abi = return_lowering.lower_output(fn_output);
 
     let ffi_return_type = return_abi.async_ffi_return_type();
     let rust_return_type = return_abi.async_rust_return_type();
-    let complete_conversion = return_abi.async_complete_conversion();
+    let complete_conversion = return_abi.async_complete_conversion(return_lowering);
     let default_value = return_abi.async_default_ffi_value();
 
     let ffi_params = &params.ffi_params;

@@ -6,9 +6,10 @@ use syn::ItemFn;
 
 use crate::callback_registry;
 use crate::custom_types;
+use crate::data_types;
 use crate::params::{FfiParams, transform_params, transform_params_async};
 use crate::returns::{
-    ReturnAbi, WasmOptionScalarEncoding, classify_return, encoded_return_body,
+    ReturnAbi, ReturnLoweringContext, WasmOptionScalarEncoding, encoded_return_body,
     encoded_return_buffer_expression,
 };
 use crate::safety;
@@ -190,6 +191,11 @@ fn ffi_export_item_impl(input: ItemFn) -> proc_macro2::TokenStream {
         Ok(registry) => registry,
         Err(error) => return error.to_compile_error(),
     };
+    let data_types = match data_types::registry_for_current_crate() {
+        Ok(registry) => registry,
+        Err(error) => return error.to_compile_error(),
+    };
+    let return_lowering = ReturnLoweringContext::new(&custom_types, &data_types);
 
     let fn_name = &input.sig.ident;
     let fn_inputs = &input.sig.inputs;
@@ -204,7 +210,7 @@ fn ffi_export_item_impl(input: ItemFn) -> proc_macro2::TokenStream {
     let export_name = format!("{}_{}", naming::ffi_prefix(), fn_name);
     let export_ident = syn::Ident::new(&export_name, fn_name.span());
 
-    let return_abi = ReturnAbi::lower(classify_return(fn_output), &custom_types);
+    let return_abi = return_lowering.lower_output(fn_output);
     let on_wire_record_error = return_abi.invalid_arg_early_return_statement();
     let FfiParams {
         ffi_params,
@@ -212,7 +218,7 @@ fn ffi_export_item_impl(input: ItemFn) -> proc_macro2::TokenStream {
         call_args,
     } = transform_params(
         fn_inputs,
-        &custom_types,
+        &return_lowering,
         &callback_registry,
         &on_wire_record_error,
     );
@@ -432,22 +438,27 @@ fn generate_async_export(
         syn::Ident::new(&format!("{}_panic_message", base_name), fn_name.span());
     let cancel_ident = syn::Ident::new(&format!("{}_cancel", base_name), fn_name.span());
     let free_ident = syn::Ident::new(&format!("{}_free", base_name), fn_name.span());
+    let data_types = match data_types::registry_for_current_crate() {
+        Ok(registry) => registry,
+        Err(error) => return error.to_compile_error().into(),
+    };
+    let return_lowering = ReturnLoweringContext::new(custom_types, &data_types);
 
     let on_wire_record_error = quote! { ::core::ptr::null() };
     let params = match transform_params_async(
         fn_inputs,
-        custom_types,
+        &return_lowering,
         callback_registry,
         &on_wire_record_error,
     ) {
         Ok(params) => params,
         Err(error) => return error.to_compile_error().into(),
     };
-    let return_abi = ReturnAbi::lower(classify_return(fn_output), custom_types);
+    let return_abi = return_lowering.lower_output(fn_output);
 
     let ffi_return_type = return_abi.async_ffi_return_type();
     let rust_return_type = return_abi.async_rust_return_type();
-    let complete_conversion = return_abi.async_complete_conversion();
+    let complete_conversion = return_abi.async_complete_conversion(&return_lowering);
     let default_value = return_abi.async_default_ffi_value();
 
     let ffi_params = &params.ffi_params;

@@ -351,25 +351,44 @@ impl AliasResolver {
     }
 
     fn resolve_segments(&self, segments: Vec<String>) -> Vec<String> {
-        let expanded = std::iter::successors(Some(segments), |current| {
-            let first = current.first()?;
-            let replacement = self.use_aliases.get(first)?;
-            let next = replacement
-                .iter()
-                .cloned()
-                .chain(current.iter().skip(1).cloned())
-                .collect::<Vec<_>>();
-            (next != *current).then_some(next)
-        })
-        .take(16)
-        .last()
-        .unwrap_or_default();
+        let expanded = self.expand_use_aliases(segments);
 
         expanded
             .last()
             .and_then(|last| self.type_aliases.get(last))
             .cloned()
             .unwrap_or(expanded)
+    }
+
+    fn expand_use_aliases(&self, segments: Vec<String>) -> Vec<String> {
+        self.expand_use_aliases_with_visited(segments, &mut HashSet::new())
+    }
+
+    fn expand_use_aliases_with_visited(
+        &self,
+        segments: Vec<String>,
+        visited: &mut HashSet<Vec<String>>,
+    ) -> Vec<String> {
+        if !visited.insert(segments.clone()) {
+            return segments;
+        }
+
+        match self.next_use_alias_segments(&segments) {
+            Some(next_segments) if visited.contains(&next_segments) => segments,
+            Some(next_segments) => self.expand_use_aliases_with_visited(next_segments, visited),
+            None => segments,
+        }
+    }
+
+    fn next_use_alias_segments(&self, segments: &[String]) -> Option<Vec<String>> {
+        let first = segments.first()?;
+        let replacement = self.use_aliases.get(first)?;
+        let next_segments = replacement
+            .iter()
+            .cloned()
+            .chain(segments.iter().skip(1).cloned())
+            .collect::<Vec<_>>();
+        (next_segments != segments).then_some(next_segments)
     }
 
     fn segments_from_path(type_path: &syn::TypePath) -> Vec<String> {
@@ -2806,6 +2825,19 @@ mod tests {
         };
         let doc = extract_doc_string(attrs).unwrap();
         assert_eq!(doc, "Actual content.");
+    }
+
+    #[test]
+    fn alias_resolution_stops_at_cycle_without_falling_back() {
+        let resolver = AliasResolver {
+            use_aliases: HashMap::from([
+                ("Foo".to_string(), vec!["Bar".to_string()]),
+                ("Bar".to_string(), vec!["Foo".to_string()]),
+            ]),
+            type_aliases: HashMap::new(),
+        };
+
+        assert_eq!(resolver.resolve_segments(vec!["Foo".to_string()]), vec!["Bar".to_string()]);
     }
 
     fn pending(kind: PendingKind) -> TypeMeta {
