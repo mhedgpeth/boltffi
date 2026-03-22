@@ -127,7 +127,7 @@ bench-kotlin:
     cd ../kotlin-jvm-bench && ./build-jni.sh
     
     echo "=== Running JMH benchmarks ==="
-    ./gradlew jmh
+    ./gradlew jmh --rerun
     
     echo "=== Generating report ==="
     python3 jmh_report.py --format both
