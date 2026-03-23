@@ -15,7 +15,7 @@ pub enum DataTypeCategory {
 
 impl DataTypeCategory {
     pub fn supports_direct_vec(self) -> bool {
-        matches!(self, Self::Scalar | Self::Blittable)
+        matches!(self, Self::Blittable)
     }
 }
 

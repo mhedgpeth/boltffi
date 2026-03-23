@@ -1108,6 +1108,17 @@ impl<'a> SwiftLowerer<'a> {
                 ..
             } => ("String".to_string(), SwiftConversion::ToString),
             ParamRole::Input {
+                transport: Transport::Span(SpanContent::Composite(layout)),
+                ..
+            } => {
+                let c_type = format!("___{}", layout.record_id.as_str());
+                let fields = self.composite_field_mappings(layout);
+                (
+                    format!("[{}]", self.swift_name_for_record(&layout.record_id)),
+                    SwiftConversion::ToCompositeBuffer { c_type, fields },
+                )
+            }
+            ParamRole::Input {
                 transport: Transport::Span(SpanContent::Encoded(codec)),
                 encode_ops: Some(encode_ops),
                 ..

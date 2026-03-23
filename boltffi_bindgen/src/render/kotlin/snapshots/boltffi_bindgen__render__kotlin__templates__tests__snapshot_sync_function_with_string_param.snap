@@ -1,20 +1,21 @@
 ---
 source: boltffi_bindgen/src/render/kotlin/templates.rs
+assertion_line: 853
 expression: template.render().unwrap()
 ---
 
 fun greet(name: String): String {
     val nameWire = WireWriterPool.acquire(BoltFFIWire.sizeString(name))
-    try {
         run {
             val wire = nameWire.writer
             BoltFFIWire.writeString(name)
         }
+    try {
         val buf = Native.boltffi_greet(nameWire.ptr, nameWire.len)
             ?: throw FfiException(-1, "Null buffer returned")
         val reader = WireReader(buf)
         return reader.readString()
     } finally {
-        nameWire.close().close()
+        nameWire.close()
     }
 }

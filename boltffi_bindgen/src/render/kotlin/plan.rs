@@ -520,10 +520,56 @@ pub struct KotlinSignatureParam {
 }
 
 #[derive(Clone)]
-pub struct KotlinWireWriter {
-    pub binding_name: String,
-    pub size_expr: String,
-    pub encode_expr: String,
+pub enum KotlinWireWriter {
+    WireBuffer {
+        binding_name: String,
+        size_expr: String,
+        encode_expr: String,
+    },
+    PackedBuffer {
+        binding_name: String,
+        pack_expr: String,
+    },
+}
+
+impl KotlinWireWriter {
+    pub fn binding_name(&self) -> &str {
+        match self {
+            Self::WireBuffer { binding_name, .. } | Self::PackedBuffer { binding_name, .. } => {
+                binding_name
+            }
+        }
+    }
+
+    pub fn setup_code(&self) -> String {
+        match self {
+            Self::WireBuffer {
+                binding_name,
+                size_expr,
+                encode_expr,
+            } => format!(
+                "val {binding_name} = WireWriterPool.acquire({size_expr})\n        run {{\n            val wire = {binding_name}.writer\n            {encode_expr}\n        }}"
+            ),
+            Self::PackedBuffer {
+                binding_name,
+                pack_expr,
+            } => format!("val {binding_name} = {pack_expr}"),
+        }
+    }
+
+    pub fn cleanup_code(&self) -> Option<String> {
+        match self {
+            Self::WireBuffer { binding_name, .. } => Some(format!("{binding_name}.close()")),
+            Self::PackedBuffer { .. } => None,
+        }
+    }
+
+    pub fn native_buffer_expr(&self) -> String {
+        match self {
+            Self::WireBuffer { binding_name, .. } => format!("{binding_name}.buffer"),
+            Self::PackedBuffer { binding_name, .. } => binding_name.clone(),
+        }
+    }
 }
 
 #[derive(Clone)]

@@ -1823,6 +1823,10 @@ impl<'c> Lowerer<'c> {
                 TypeExpr::Enum(_) => {
                     Transport::Span(SpanContent::Encoded(self.build_codec(type_expr)))
                 }
+                TypeExpr::Record(record_id) => match self.classify_record(record_id) {
+                    Transport::Composite(layout) => Transport::Span(SpanContent::Composite(layout)),
+                    _ => Transport::Span(SpanContent::Encoded(self.build_codec(type_expr))),
+                },
                 _ => Transport::Span(SpanContent::Encoded(self.build_codec(type_expr))),
             },
 
@@ -3108,6 +3112,50 @@ mod tests {
                 assert!(matches!(*element, CodecPlan::Record { .. }));
             }
             _ => panic!("expected Vec"),
+        }
+    }
+
+    #[test]
+    fn vec_blittable_record_uses_composite_span_transport() {
+        let mut contract = test_contract();
+        let record_id = RecordId::new("Vec2");
+        contract.catalog.insert_record(RecordDef {
+            is_repr_c: true,
+            id: record_id.clone(),
+            fields: vec![
+                FieldDef {
+                    name: FieldName::new("x"),
+                    type_expr: TypeExpr::Primitive(PrimitiveType::F64),
+                    doc: None,
+                    default: None,
+                },
+                FieldDef {
+                    name: FieldName::new("y"),
+                    type_expr: TypeExpr::Primitive(PrimitiveType::F64),
+                    doc: None,
+                    default: None,
+                },
+            ],
+            constructors: vec![],
+            methods: vec![],
+            doc: None,
+            deprecated: None,
+        });
+
+        let lowerer = lowerer_for_contract(&contract);
+        let transport = lowerer.classify_type(&TypeExpr::Vec(Box::new(TypeExpr::Record(
+            record_id.clone(),
+        ))));
+
+        match transport {
+            Transport::Span(SpanContent::Composite(layout)) => {
+                assert_eq!(layout.record_id, record_id);
+                assert_eq!(layout.total_size, 16);
+            }
+            other => panic!(
+                "expected composite span transport for Vec<blittable record>, got {:?}",
+                other
+            ),
         }
     }
 

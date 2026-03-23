@@ -4,7 +4,6 @@ use quote::quote;
 use syn::Type;
 
 use crate::lowering::transport::{NamedTypeTransport, NamedTypeTransportClassifier, TypeShapeExt};
-use crate::registries::data_types::{DataTypeCategory, DataTypeRegistry};
 
 pub(super) fn ptr_ident(base: &syn::Ident) -> syn::Ident {
     syn::Ident::new(
@@ -55,17 +54,12 @@ pub(super) enum WireEncodedParamKind {
 
 #[derive(Clone, Copy)]
 pub(super) struct ParamTransformClassifier<'a> {
-    data_types: &'a DataTypeRegistry,
     named_type_transport_classifier: NamedTypeTransportClassifier<'a>,
 }
 
 impl<'a> ParamTransformClassifier<'a> {
-    pub(super) fn new(
-        named_type_transport_classifier: NamedTypeTransportClassifier<'a>,
-        data_types: &'a DataTypeRegistry,
-    ) -> Self {
+    pub(super) fn new(named_type_transport_classifier: NamedTypeTransportClassifier<'a>) -> Self {
         Self {
-            data_types,
             named_type_transport_classifier,
         }
     }
@@ -110,7 +104,10 @@ impl<'a> ParamTransformClassifier<'a> {
             if is_primitive_vec_inner(&inner_str) {
                 return ParamTransform::VecPrimitive(inner_ty);
             }
-            if self.is_scalar_data_type_for_call_site(&inner_ty) {
+            if self
+                .named_type_transport_classifier
+                .supports_direct_vec_transport(&inner_ty)
+            {
                 return ParamTransform::VecPassable(inner_ty);
             }
             return ParamTransform::WireEncoded(WireEncodedParam {
@@ -158,12 +155,6 @@ impl<'a> ParamTransformClassifier<'a> {
         }
 
         ParamTransform::PassThrough
-    }
-
-    fn is_scalar_data_type_for_call_site(&self, ty: &Type) -> bool {
-        self.data_types
-            .category_for(ty)
-            .is_some_and(|category| matches!(category, DataTypeCategory::Scalar))
     }
 }
 

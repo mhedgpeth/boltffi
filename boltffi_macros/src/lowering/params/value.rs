@@ -427,17 +427,30 @@ impl<'a> ValueParamDecoder<'a> {
     ) {
         let ptr_name = ptr_ident(name);
         let len_name = len_ident(name);
-        let repr_type = quote! { <#inner_type as ::boltffi::__private::Passable>::In };
-        acc.ffi_params.push(quote! { #ptr_name: *const #repr_type });
+        let on_wire_record_error = self.on_wire_record_error;
+        acc.ffi_params.push(quote! { #ptr_name: *const u8 });
         acc.ffi_params.push(quote! { #len_name: usize });
         acc.setup.push(quote! {
             let #name: Vec<#inner_type> = if #ptr_name.is_null() {
                 Vec::new()
             } else {
-                ::core::slice::from_raw_parts(#ptr_name, #len_name)
-                    .iter()
-                    .map(|raw| unsafe { <#inner_type as ::boltffi::__private::Passable>::unpack(*raw) })
-                    .collect()
+                let raw_byte_len = #len_name;
+                let element_size = ::core::mem::size_of::<<#inner_type as ::boltffi::__private::Passable>::In>();
+                if raw_byte_len % element_size != 0 {
+                    ::boltffi::__private::set_last_error(format!(
+                        "invalid byte length {} for Vec<{}>: not divisible by element size {}",
+                        raw_byte_len,
+                        ::core::any::type_name::<#inner_type>(),
+                        element_size
+                    ));
+                    #on_wire_record_error
+                }
+                unsafe {
+                    <::boltffi::__private::Seal as ::boltffi::__private::VecTransport<#inner_type>>::unpack(
+                        #ptr_name,
+                        raw_byte_len
+                    )
+                }
             };
         });
         acc.call_args.push(quote! { #name });
@@ -451,17 +464,30 @@ impl<'a> ValueParamDecoder<'a> {
     ) {
         let ptr_name = ptr_ident(name);
         let len_name = len_ident(name);
-        let repr_type = quote! { <#inner_type as ::boltffi::__private::Passable>::In };
-        acc.ffi_params.push(quote! { #ptr_name: *const #repr_type });
+        let on_wire_record_error = self.on_wire_record_error;
+        acc.ffi_params.push(quote! { #ptr_name: *const u8 });
         acc.ffi_params.push(quote! { #len_name: usize });
         acc.setup.push(quote! {
             let #name: Vec<#inner_type> = if #ptr_name.is_null() {
                 Vec::new()
             } else {
-                unsafe { ::core::slice::from_raw_parts(#ptr_name, #len_name) }
-                    .iter()
-                    .map(|raw| unsafe { <#inner_type as ::boltffi::__private::Passable>::unpack(*raw) })
-                    .collect()
+                let raw_byte_len = #len_name;
+                let element_size = ::core::mem::size_of::<<#inner_type as ::boltffi::__private::Passable>::In>();
+                if raw_byte_len % element_size != 0 {
+                    ::boltffi::__private::set_last_error(format!(
+                        "invalid byte length {} for Vec<{}>: not divisible by element size {}",
+                        raw_byte_len,
+                        ::core::any::type_name::<#inner_type>(),
+                        element_size
+                    ));
+                    #on_wire_record_error
+                }
+                unsafe {
+                    <::boltffi::__private::Seal as ::boltffi::__private::VecTransport<#inner_type>>::unpack(
+                        #ptr_name,
+                        raw_byte_len
+                    )
+                }
             };
         });
         acc.move_vars.push(name.clone());

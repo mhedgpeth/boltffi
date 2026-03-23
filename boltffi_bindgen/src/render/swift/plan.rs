@@ -1062,6 +1062,12 @@ impl SwiftParam {
                     .collect();
                 format!("{}({})", c_type, field_inits.join(", "))
             }
+            SwiftConversion::ToCompositeBuffer { c_type, .. } => {
+                format!(
+                    "{}Ptr.baseAddress, UInt({}Raw.count * MemoryLayout<{}>.stride)",
+                    self.name, self.name, c_type
+                )
+            }
             SwiftConversion::ToString => format!(
                 "{}Buf.baseAddress!, UInt({}Buf.count)",
                 self.name, self.name
@@ -1113,6 +1119,17 @@ impl SwiftParam {
     pub fn wrapper_code(&self) -> Option<String> {
         match &self.conversion {
             SwiftConversion::ToString => Some(format!("var {n} = {n}", n = self.name)),
+            SwiftConversion::ToCompositeBuffer { c_type, fields } => {
+                let field_inits = fields
+                    .iter()
+                    .map(|field| format!("{}: item.{}", field.c_name, field.swift_name))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                Some(format!(
+                    "let {name}Raw = {name}.map {{ item in {c_type}({field_inits}) }}",
+                    name = self.name
+                ))
+            }
             SwiftConversion::InlineClosure { closure } => Some(closure.render()),
             SwiftConversion::ToWireBuffer { encode } => {
                 let writer_body = emit::emit_writer_write(encode);
@@ -1130,6 +1147,7 @@ impl SwiftParam {
         matches!(
             &self.conversion,
             SwiftConversion::ToString
+                | SwiftConversion::ToCompositeBuffer { .. }
                 | SwiftConversion::ToData
                 | SwiftConversion::PrimitiveBuffer { .. }
                 | SwiftConversion::MutableBuffer { .. }
@@ -1139,6 +1157,10 @@ impl SwiftParam {
     pub fn closure_wrap_open(&self) -> Option<String> {
         match &self.conversion {
             SwiftConversion::ToString => Some(format!("{n}.withUTF8 {{ {n}Buf in", n = self.name)),
+            SwiftConversion::ToCompositeBuffer { .. } => Some(format!(
+                "{}Raw.withUnsafeBufferPointer {{ {}Ptr in",
+                self.name, self.name
+            )),
             SwiftConversion::ToData => Some(format!(
                 "{}.withUnsafeBytes {{ {}Ptr in",
                 self.name, self.name
@@ -1157,7 +1179,9 @@ impl SwiftParam {
 
     pub fn closure_wrap_close(&self) -> Option<&'static str> {
         match &self.conversion {
-            SwiftConversion::ToString | SwiftConversion::ToData => Some("}"),
+            SwiftConversion::ToString
+            | SwiftConversion::ToCompositeBuffer { .. }
+            | SwiftConversion::ToData => Some("}"),
             SwiftConversion::PrimitiveBuffer { .. } | SwiftConversion::MutableBuffer { .. } => {
                 Some("}")
             }
@@ -1275,6 +1299,10 @@ pub enum SwiftConversion {
         encode: WriteSeq,
     },
     ToComposite {
+        c_type: String,
+        fields: Vec<CompositeFieldMapping>,
+    },
+    ToCompositeBuffer {
         c_type: String,
         fields: Vec<CompositeFieldMapping>,
     },

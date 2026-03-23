@@ -833,7 +833,7 @@ mod tests {
                 kotlin_type: "String".to_string(),
             }],
             return_type: Some("String"),
-            wire_writers: &[KotlinWireWriter {
+            wire_writers: &[KotlinWireWriter::WireBuffer {
                 binding_name: "nameWire".to_string(),
                 size_expr: "BoltFFIWire.sizeString(name)".to_string(),
                 encode_expr: "BoltFFIWire.writeString(name)".to_string(),
@@ -862,7 +862,7 @@ mod tests {
                 kotlin_type: "String".to_string(),
             }],
             return_type: Some("String"),
-            wire_writers: &[KotlinWireWriter {
+            wire_writers: &[KotlinWireWriter::WireBuffer {
                 binding_name: "urlWire".to_string(),
                 size_expr: "BoltFFIWire.sizeString(url)".to_string(),
                 encode_expr: "BoltFFIWire.writeString(url)".to_string(),
@@ -981,7 +981,7 @@ mod tests {
                     name: "url".to_string(),
                     kotlin_type: "String".to_string(),
                 }],
-                wire_writers: vec![KotlinWireWriter {
+                wire_writers: vec![KotlinWireWriter::WireBuffer {
                     binding_name: "urlWire".to_string(),
                     size_expr: "BoltFFIWire.sizeString(url)".to_string(),
                     encode_expr: "BoltFFIWire.writeString(url)".to_string(),
@@ -1345,7 +1345,7 @@ mod tests {
                     name: "path".to_string(),
                     kotlin_type: "String".to_string(),
                 }],
-                wire_writers: vec![KotlinWireWriter {
+                wire_writers: vec![KotlinWireWriter::WireBuffer {
                     binding_name: "pathWire".to_string(),
                     size_expr: "BoltFFIWire.sizeString(path)".to_string(),
                     encode_expr: "BoltFFIWire.writeString(path)".to_string(),
@@ -1492,7 +1492,7 @@ mod tests {
                 kotlin_type: "Point".to_string(),
             }],
             return_type: Some("Point"),
-            wire_writers: &[KotlinWireWriter {
+            wire_writers: &[KotlinWireWriter::WireBuffer {
                 binding_name: "pointWire".to_string(),
                 size_expr: "Point.WIRE_SIZE".to_string(),
                 encode_expr: "PointWriter.write(point)".to_string(),
@@ -1528,12 +1528,12 @@ mod tests {
             ],
             return_type: Some("String"),
             wire_writers: &[
-                KotlinWireWriter {
+                KotlinWireWriter::WireBuffer {
                     binding_name: "aWire".to_string(),
                     size_expr: "BoltFFIWire.sizeString(a)".to_string(),
                     encode_expr: "BoltFFIWire.writeString(a)".to_string(),
                 },
-                KotlinWireWriter {
+                KotlinWireWriter::WireBuffer {
                     binding_name: "bWire".to_string(),
                     size_expr: "BoltFFIWire.sizeString(b)".to_string(),
                     encode_expr: "BoltFFIWire.writeString(b)".to_string(),
@@ -1604,12 +1604,12 @@ mod tests {
             ],
             return_type: Some("ByteArray"),
             wire_writers: &[
-                KotlinWireWriter {
+                KotlinWireWriter::WireBuffer {
                     binding_name: "urlWire".to_string(),
                     size_expr: "BoltFFIWire.sizeString(url)".to_string(),
                     encode_expr: "BoltFFIWire.writeString(url)".to_string(),
                 },
-                KotlinWireWriter {
+                KotlinWireWriter::WireBuffer {
                     binding_name: "bodyWire".to_string(),
                     size_expr: "BoltFFIWire.sizeBytes(body)".to_string(),
                     encode_expr: "BoltFFIWire.writeBytes(body)".to_string(),

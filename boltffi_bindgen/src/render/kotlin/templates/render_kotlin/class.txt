@@ -16,15 +16,9 @@
 {%- else %}
         kotlin.run {
 {%- for binding in ctor.wire_writers %}
-            val {{ binding.binding_name }} = WireWriterPool.acquire({{ binding.size_expr }})
+            {{ binding.setup_code() }}
 {%- endfor %}
             try {
-{%- for binding in ctor.wire_writers %}
-                kotlin.run {
-                    val wire = {{ binding.binding_name }}.writer
-                    {{ binding.encode_expr }}
-                }
-{%- endfor %}
 {%- if ctor.is_fallible %}
                 val handle = Native.{{ ctor.ffi_name }}({% for arg in ctor.native_args %}{{ arg }}{% if !loop.last %}, {% endif %}{% endfor %})
                 if (handle == 0L) throw FfiException(1, takeLastErrorMessage())
@@ -33,8 +27,8 @@
                 Native.{{ ctor.ffi_name }}({% for arg in ctor.native_args %}{{ arg }}{% if !loop.last %}, {% endif %}{% endfor %})
 {%- endif %}
             } finally {
-{%- for binding_name in ctor.wire_writer_closes %}
-                {{ binding_name }}.close()
+{%- for close_code in ctor.wire_writer_closes %}
+                {{ close_code }}
 {%- endfor %}
             }
         }
@@ -61,15 +55,9 @@
 {%- endif %}
 {%- else %}
 {%- for binding in ctor.wire_writers %}
-            val {{ binding.binding_name }} = WireWriterPool.acquire({{ binding.size_expr }})
+            {{ binding.setup_code() }}
 {%- endfor %}
             try {
-{%- for binding in ctor.wire_writers %}
-                kotlin.run {
-                    val wire = {{ binding.binding_name }}.writer
-                    {{ binding.encode_expr }}
-                }
-{%- endfor %}
 {%- if ctor.is_fallible %}
                 val handle = Native.{{ ctor.ffi_name }}({% for arg in ctor.native_args %}{{ arg }}{% if !loop.last %}, {% endif %}{% endfor %})
                 if (handle == 0L) throw FfiException(1, takeLastErrorMessage())
@@ -78,8 +66,8 @@
                 return {{ class_name }}(Native.{{ ctor.ffi_name }}({% for arg in ctor.native_args %}{{ arg }}{% if !loop.last %}, {% endif %}{% endfor %}))
 {%- endif %}
             } finally {
-{%- for binding_name in ctor.wire_writer_closes %}
-                {{ binding_name }}.close()
+{%- for close_code in ctor.wire_writer_closes %}
+                {{ close_code }}
 {%- endfor %}
             }
 {%- endif %}

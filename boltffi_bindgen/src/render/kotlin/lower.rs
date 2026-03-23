@@ -1093,7 +1093,7 @@ impl<'a> KotlinLowerer<'a> {
         let wire_writers = self.wire_writers_for_params(call);
         let wire_writer_closes: Vec<String> = wire_writers
             .iter()
-            .map(|w| w.binding_name.clone())
+            .filter_map(KotlinWireWriter::cleanup_code)
             .collect();
         let native_args = self.native_args_for_params(call, &func.params, &wire_writers);
         let return_type = self.kotlin_return_type_from_def(&func.returns, output_route);
@@ -1186,7 +1186,7 @@ impl<'a> KotlinLowerer<'a> {
         let wire_writers = self.wire_writers_for_params(call);
         let wire_writer_closes: Vec<String> = wire_writers
             .iter()
-            .map(|w| w.binding_name.clone())
+            .filter_map(KotlinWireWriter::cleanup_code)
             .collect();
         let ctor_param_defs: Vec<ParamDef> = ctor.params().into_iter().cloned().collect();
         let native_args = self.native_args_for_params(call, &ctor_param_defs, &wire_writers);
@@ -1318,7 +1318,7 @@ impl<'a> KotlinLowerer<'a> {
         let wire_writers = self.wire_writers_for_params(call);
         let wire_writer_closes: Vec<String> = wire_writers
             .iter()
-            .map(|w| w.binding_name.clone())
+            .filter_map(KotlinWireWriter::cleanup_code)
             .collect();
         let native_args = self.native_args_for_params(call, &method.params, &wire_writers);
         let signature_params = method
@@ -1435,7 +1435,7 @@ impl<'a> KotlinLowerer<'a> {
         let all_wire_writers: Vec<_> = self_wire.into_iter().chain(wire_writers).collect();
         let all_wire_writer_closes: Vec<String> = all_wire_writers
             .iter()
-            .map(|w| w.binding_name.clone())
+            .filter_map(KotlinWireWriter::cleanup_code)
             .collect();
         let all_native_args: Vec<_> = self_native_arg.into_iter().chain(native_args).collect();
 
@@ -1489,7 +1489,7 @@ impl<'a> KotlinLowerer<'a> {
         } = &param.role
         {
             let remapped = remap_root_in_seq(ops, ValueExpr::Var("this".into()));
-            vec![KotlinWireWriter {
+            vec![KotlinWireWriter::WireBuffer {
                 binding_name: "wire_writer_self".to_string(),
                 size_expr: emit::emit_size_expr_for_write_seq(&remapped),
                 encode_expr: emit::emit_write_expr(&remapped),
@@ -2962,14 +2962,16 @@ impl<'a> KotlinLowerer<'a> {
         call.params
             .iter()
             .filter_map(|param| {
-                self.pointer_sized_scalar_span_writer(param).or_else(|| {
-                    self.input_write_ops(param)
-                        .map(|encode_ops| KotlinWireWriter {
-                            binding_name: format!("wire_writer_{}", param.name.as_str()),
-                            size_expr: emit::emit_size_expr_for_write_seq(&encode_ops),
-                            encode_expr: emit::emit_write_expr(&encode_ops),
-                        })
-                })
+                self.pointer_sized_scalar_span_writer(param)
+                    .or_else(|| self.composite_span_buffer_binding(param))
+                    .or_else(|| {
+                        self.input_write_ops(param)
+                            .map(|encode_ops| KotlinWireWriter::WireBuffer {
+                                binding_name: format!("wire_writer_{}", param.name.as_str()),
+                                size_expr: emit::emit_size_expr_for_write_seq(&encode_ops),
+                                encode_expr: emit::emit_write_expr(&encode_ops),
+                            })
+                    })
             })
             .collect()
     }
@@ -2984,7 +2986,7 @@ impl<'a> KotlinLowerer<'a> {
                 ..
             } => {
                 let name = NamingConvention::param_name(param.name.as_str());
-                Some(KotlinWireWriter {
+                Some(KotlinWireWriter::WireBuffer {
                     binding_name: format!("wire_writer_{}", param.name.as_str()),
                     size_expr: format!("4 + {}.size * {}", name, primitive.wire_size_bytes()),
                     encode_expr: format!("wire.writePrimitiveList({})", name),
@@ -2992,6 +2994,27 @@ impl<'a> KotlinLowerer<'a> {
             }
             _ => None,
         }
+    }
+
+    fn composite_span_buffer_binding(&self, param: &AbiParam) -> Option<KotlinWireWriter> {
+        let ParamRole::Input {
+            transport: Transport::Span(SpanContent::Composite(layout)),
+            ..
+        } = &param.role
+        else {
+            return None;
+        };
+
+        let binding_name = format!("wire_writer_{}", param.name.as_str());
+        let param_name = NamingConvention::param_name(param.name.as_str());
+        let writer_name = format!(
+            "{}Writer",
+            NamingConvention::class_name(layout.record_id.as_str())
+        );
+        Some(KotlinWireWriter::PackedBuffer {
+            binding_name,
+            pack_expr: format!("{writer_name}.pack({param_name})"),
+        })
     }
 
     fn native_arg_for_mapping(
@@ -3031,8 +3054,10 @@ impl<'a> KotlinLowerer<'a> {
             },
             JniParamRole::Encoded => writers
                 .iter()
-                .find(|w| w.binding_name == format!("wire_writer_{}", param.name.as_str()))
-                .map(|w| format!("{}.buffer", w.binding_name))
+                .find(|writer| {
+                    writer.binding_name() == format!("wire_writer_{}", param.name.as_str())
+                })
+                .map(KotlinWireWriter::native_buffer_expr)
                 .unwrap_or_else(|| "wire.buffer".to_string()),
             JniParamRole::Handle { nullable } => {
                 if *nullable {

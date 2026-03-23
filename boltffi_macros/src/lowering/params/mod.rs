@@ -81,7 +81,6 @@ impl<'a> SyncParamLowerer<'a> {
             ),
             param_transform_classifier: ParamTransformClassifier::new(
                 return_lowering.named_type_transport_classifier(),
-                return_lowering.data_types(),
             ),
             value_param_lowerer: SyncValueParamLowerer::new(
                 return_lowering.custom_types(),
@@ -174,7 +173,6 @@ impl<'a> AsyncParamLowerer<'a> {
             ),
             param_transform_classifier: ParamTransformClassifier::new(
                 return_lowering.named_type_transport_classifier(),
-                return_lowering.data_types(),
             ),
             value_param_lowerer: AsyncValueParamLowerer::new(
                 return_lowering.custom_types(),

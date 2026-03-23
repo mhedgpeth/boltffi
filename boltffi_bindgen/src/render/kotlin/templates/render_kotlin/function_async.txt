@@ -7,19 +7,13 @@ suspend fun {{ func_name }}({% for param in signature_params %}{{ param.name }}:
 {%- else %}
     createFuture = {
 {%- for binding in wire_writers %}
-        val {{ binding.binding_name }} = WireWriterPool.acquire({{ binding.size_expr }})
+        {{ binding.setup_code() }}
 {%- endfor %}
         try {
-{%- for binding in wire_writers %}
-            run {
-                val wire = {{ binding.binding_name }}.writer
-                {{ binding.encode_expr }}
-            }
-{%- endfor %}
             Native.{{ ffi_name }}({% for arg in native_args %}{{ arg }}{% if !loop.last %}, {% endif %}{% endfor %})
         } finally {
-{%- for binding_name in wire_writer_closes %}
-            {{ binding_name }}.close()
+{%- for close_code in wire_writer_closes %}
+            {{ close_code }}
 {%- endfor %}
         }
     },

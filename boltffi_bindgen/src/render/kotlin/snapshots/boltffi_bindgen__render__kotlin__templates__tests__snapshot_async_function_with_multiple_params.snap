@@ -1,25 +1,26 @@
 ---
 source: boltffi_bindgen/src/render/kotlin/templates.rs
+assertion_line: 1644
 expression: template.render().unwrap()
 ---
 
 suspend fun sendRequest(url: String, body: ByteArray, timeout: Int): ByteArray = boltffiCallAsync(
     createFuture = {
         val urlWire = WireWriterPool.acquire(BoltFFIWire.sizeString(url))
+        run {
+            val wire = urlWire.writer
+            BoltFFIWire.writeString(url)
+        }
         val bodyWire = WireWriterPool.acquire(BoltFFIWire.sizeBytes(body))
+        run {
+            val wire = bodyWire.writer
+            BoltFFIWire.writeBytes(body)
+        }
         try {
-            run {
-                val wire = urlWire.writer
-                BoltFFIWire.writeString(url)
-            }
-            run {
-                val wire = bodyWire.writer
-                BoltFFIWire.writeBytes(body)
-            }
             Native.boltffi_send_request(urlWire.ptr, urlWire.len, bodyWire.ptr, bodyWire.len, timeout)
         } finally {
-            urlWire.close().close()
-            bodyWire.close().close()
+            urlWire.close()
+            bodyWire.close()
         }
     },
     poll = { future, contHandle -> Native.boltffi_send_request_poll(future, contHandle) },
