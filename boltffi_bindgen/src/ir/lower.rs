@@ -3,6 +3,10 @@ use std::collections::{HashMap, HashSet};
 
 use boltffi_ffi_rules::classification::{self, PassableCategory};
 use boltffi_ffi_rules::naming;
+use boltffi_ffi_rules::transport::{
+    EncodedReturnStrategy, ErrorReturnStrategy, ReturnContract, ScalarReturnStrategy,
+    ValueReturnStrategy,
+};
 
 use crate::ir::abi::{
     AbiCall, AbiCallbackInvocation, AbiCallbackMethod, AbiContract, AbiEnum, AbiEnumField,
@@ -51,9 +55,32 @@ fn return_shape_from_transport_with_ops(
     encode_ops: WriteSeq,
 ) -> ReturnShape {
     ReturnShape {
+        contract: ReturnContract::infallible(value_return_strategy_from_transport(Some(
+            &transport,
+        ))),
         transport: Some(transport),
         decode_ops: Some(decode_ops),
         encode_ops: Some(encode_ops),
+    }
+}
+
+fn value_return_strategy_from_transport(transport: Option<&Transport>) -> ValueReturnStrategy {
+    match transport {
+        None => ValueReturnStrategy::Void,
+        Some(Transport::Scalar(ScalarOrigin::Primitive(_))) => {
+            ValueReturnStrategy::Scalar(ScalarReturnStrategy::PrimitiveValue)
+        }
+        Some(Transport::Scalar(ScalarOrigin::CStyleEnum { .. })) => {
+            ValueReturnStrategy::Scalar(ScalarReturnStrategy::CStyleEnumTag)
+        }
+        Some(Transport::Composite(_)) => ValueReturnStrategy::CompositeValue,
+        Some(Transport::Span(SpanContent::Scalar(_)))
+        | Some(Transport::Span(SpanContent::Composite(_))) => {
+            ValueReturnStrategy::Buffer(EncodedReturnStrategy::DirectVec)
+        }
+        Some(Transport::Span(_)) => ValueReturnStrategy::Buffer(EncodedReturnStrategy::WireEncoded),
+        Some(Transport::Handle { .. }) => ValueReturnStrategy::ObjectHandle,
+        Some(Transport::Callback { .. }) => ValueReturnStrategy::CallbackHandle,
     }
 }
 
@@ -612,6 +639,9 @@ impl<'c> Lowerer<'c> {
                 let mode =
                     CallMode::Async(Box::new(self.async_call_for_function(func, async_plan)));
                 let ret = ReturnShape {
+                    contract: ReturnContract::infallible(ValueReturnStrategy::Scalar(
+                        ScalarReturnStrategy::PrimitiveValue,
+                    )),
                     transport: Some(Transport::Scalar(ScalarOrigin::Primitive(
                         PrimitiveType::USize,
                     ))),
@@ -639,6 +669,9 @@ impl<'c> Lowerer<'c> {
                     self.async_call_for_method(class, method, async_plan),
                 ));
                 let ret = ReturnShape {
+                    contract: ReturnContract::infallible(ValueReturnStrategy::Scalar(
+                        ScalarReturnStrategy::PrimitiveValue,
+                    )),
                     transport: Some(Transport::Scalar(ScalarOrigin::Primitive(
                         PrimitiveType::USize,
                     ))),
@@ -657,7 +690,7 @@ impl<'c> Lowerer<'c> {
             complete: naming::function_ffi_complete(func.id.as_str()),
             cancel: naming::function_ffi_cancel(func.id.as_str()),
             free: naming::function_ffi_free(func.id.as_str()),
-            result,
+            result: result.with_error_strategy(ErrorReturnStrategy::StatusCode),
             error: ErrorTransport::StatusCode,
         }
     }
@@ -674,7 +707,7 @@ impl<'c> Lowerer<'c> {
             complete: naming::method_ffi_complete(class.id.as_str(), method.id.as_str()),
             cancel: naming::method_ffi_cancel(class.id.as_str(), method.id.as_str()),
             free: naming::method_ffi_free(class.id.as_str(), method.id.as_str()),
-            result,
+            result: result.with_error_strategy(ErrorReturnStrategy::StatusCode),
             error: ErrorTransport::StatusCode,
         }
     }
@@ -688,6 +721,10 @@ impl<'c> Lowerer<'c> {
                 err_codec,
             } => (
                 ReturnShape {
+                    contract: ReturnContract::new(
+                        ValueReturnStrategy::ObjectHandle,
+                        ErrorReturnStrategy::Encoded,
+                    ),
                     transport: Some(Transport::Handle {
                         class_id: class_id.clone(),
                         nullable: true,
@@ -710,7 +747,8 @@ impl<'c> Lowerer<'c> {
                 let encode_ops = self.expand_encode(&result_codec, ValueExpr::Var("value".into()));
                 let wire_transport = Transport::Span(SpanContent::Encoded(result_codec));
                 (
-                    return_shape_from_transport_with_ops(wire_transport, decode_ops, encode_ops),
+                    return_shape_from_transport_with_ops(wire_transport, decode_ops, encode_ops)
+                        .with_error_strategy(ErrorReturnStrategy::Encoded),
                     ErrorTransport::Encoded {
                         decode_ops: self.expand_decode(err_codec),
                         encode_ops: None,
@@ -723,6 +761,9 @@ impl<'c> Lowerer<'c> {
     fn return_shape_from_transport(&self, value: &Transport) -> ReturnShape {
         match value {
             Transport::Scalar(origin) => ReturnShape {
+                contract: ReturnContract::infallible(value_return_strategy_from_transport(Some(
+                    value,
+                ))),
                 transport: Some(Transport::Scalar(origin.clone())),
                 decode_ops: None,
                 encode_ops: None,
@@ -732,12 +773,18 @@ impl<'c> Lowerer<'c> {
                 let decode_ops = self.expand_decode(&codec);
                 let encode_ops = self.expand_encode(&codec, ValueExpr::Var("value".into()));
                 ReturnShape {
+                    contract: ReturnContract::infallible(value_return_strategy_from_transport(
+                        Some(value),
+                    )),
                     transport: Some(value.clone()),
                     decode_ops: Some(decode_ops),
                     encode_ops: Some(encode_ops),
                 }
             }
             Transport::Span(SpanContent::Composite(_) | SpanContent::Scalar(_)) => ReturnShape {
+                contract: ReturnContract::infallible(value_return_strategy_from_transport(Some(
+                    value,
+                ))),
                 transport: Some(value.clone()),
                 decode_ops: None,
                 encode_ops: None,
@@ -745,6 +792,9 @@ impl<'c> Lowerer<'c> {
             Transport::Span(content) => {
                 if let Some(composite_transport) = self.try_promote_to_composite_span(content) {
                     return ReturnShape {
+                        contract: ReturnContract::infallible(value_return_strategy_from_transport(
+                            Some(&composite_transport),
+                        )),
                         transport: Some(composite_transport),
                         decode_ops: None,
                         encode_ops: None,
@@ -756,6 +806,9 @@ impl<'c> Lowerer<'c> {
                 return_shape_from_transport_with_ops(value.clone(), decode_ops, encode_ops)
             }
             transport @ (Transport::Handle { .. } | Transport::Callback { .. }) => ReturnShape {
+                contract: ReturnContract::infallible(value_return_strategy_from_transport(Some(
+                    transport,
+                ))),
                 transport: Some(transport.clone()),
                 decode_ops: None,
                 encode_ops: None,
@@ -1423,7 +1476,8 @@ impl<'c> Lowerer<'c> {
                 let encode_ops = self.expand_encode(&result_codec, ValueExpr::Var("result".into()));
                 let wire_transport = Transport::Span(SpanContent::Encoded(result_codec));
                 (
-                    return_shape_from_transport_with_ops(wire_transport, decode_ops, encode_ops),
+                    return_shape_from_transport_with_ops(wire_transport, decode_ops, encode_ops)
+                        .with_error_strategy(ErrorReturnStrategy::Encoded),
                     ErrorTransport::Encoded {
                         decode_ops: self.expand_decode(&err_codec),
                         encode_ops: Some(

@@ -703,11 +703,9 @@ impl<'a> JavaLowerer<'a> {
 
     fn java_return_plan_for_value(&self, ty: &TypeExpr, call: &AbiCall) -> JavaReturnPlan {
         let value_return_strategy = call.returns.value_return_strategy();
-        let value_return_method = call.returns.value_return_method(
-            &call.error,
-            ReturnInvocationContext::HostCall,
-            ReturnPlatform::Native,
-        );
+        let value_return_method = call
+            .returns
+            .value_return_method(ReturnInvocationContext::HostCall, ReturnPlatform::Native);
         match ty {
             TypeExpr::Void => JavaReturnPlan {
                 native_return_type: "void".to_string(),
