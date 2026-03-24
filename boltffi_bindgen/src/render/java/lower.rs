@@ -11,16 +11,15 @@ use super::names::NamingConvention;
 use super::plan::{
     JavaAsyncCall, JavaAsyncCallbackInvoker, JavaAsyncCallbackMethod, JavaAsyncMode,
     JavaBlittableField, JavaBlittableLayout, JavaBridgeParam, JavaBridgeReturn,
-    JavaCallbackErrorCapture, JavaCallbackTrait, JavaClass, JavaClassMethod,
-    JavaClosureInterface, JavaConstructor, JavaConstructorKind, JavaEnum, JavaEnumField,
-    JavaEnumKind, JavaEnumVariant, JavaFunction, JavaModule, JavaParam, JavaRecord,
-    JavaRecordField, JavaRecordShape, JavaResultBridgeReturn, JavaReturnPlan, JavaReturnRender,
-    JavaSyncCallbackMethod, JavaValueBridgeRender, JavaValueBridgeReturn, JavaWireWriter,
+    JavaCallbackErrorCapture, JavaCallbackTrait, JavaClass, JavaClassMethod, JavaClosureInterface,
+    JavaConstructor, JavaConstructorKind, JavaEnum, JavaEnumField, JavaEnumKind, JavaEnumVariant,
+    JavaFunction, JavaModule, JavaParam, JavaRecord, JavaRecordField, JavaRecordShape,
+    JavaResultBridgeReturn, JavaReturnPlan, JavaReturnRender, JavaSyncCallbackMethod,
+    JavaValueBridgeRender, JavaValueBridgeReturn, JavaWireWriter,
 };
 use crate::ir::abi::{
     AbiCall, AbiCallbackInvocation, AbiCallbackMethod, AbiContract, AbiEnum, AbiEnumField,
-    AbiEnumPayload, AbiEnumVariant, AbiParam, AbiRecord, CallId, CallMode, ParamRole,
-    ReturnShape,
+    AbiEnumPayload, AbiEnumVariant, AbiParam, AbiRecord, CallId, CallMode, ParamRole, ReturnShape,
 };
 use crate::ir::codec::EnumTagStrategy;
 use crate::ir::contract::FfiContract;
@@ -568,10 +567,8 @@ impl<'a> JavaLowerer<'a> {
                 )
             }
             TypeExpr::Vec(_inner) => {
-                if let (
-                    TypeExpr::Vec(inner),
-                    Some(Transport::Span(SpanContent::Composite(layout))),
-                ) = (ty, abi_transport)
+                if let (TypeExpr::Vec(inner), Some(Transport::Span(SpanContent::Composite(layout)))) =
+                    (ty, abi_transport)
                     && let TypeExpr::Record(record_id) = inner.as_ref()
                     && record_id == &layout.record_id
                 {
@@ -1680,9 +1677,7 @@ impl<'a> JavaLowerer<'a> {
             AbiType::I8 | AbiType::U8 => "byte".to_string(),
             AbiType::I16 | AbiType::U16 => "short".to_string(),
             AbiType::I32 | AbiType::U32 => "int".to_string(),
-            AbiType::I64 | AbiType::U64 | AbiType::ISize | AbiType::USize => {
-                "long".to_string()
-            }
+            AbiType::I64 | AbiType::U64 | AbiType::ISize | AbiType::USize => "long".to_string(),
             AbiType::F32 => "float".to_string(),
             AbiType::F64 => "double".to_string(),
             other => panic!("unsupported Java scalar callback ABI type: {:?}", other),
@@ -1691,7 +1686,10 @@ impl<'a> JavaLowerer<'a> {
 
     fn callback_encoded_param_decode_expr(&self, decode_ops: &ReadSeq, name: &str) -> String {
         let decode_expr = super::emit::emit_reader_read(decode_ops);
-        format!("WireReader.decodeBuffer({}, reader -> {})", name, decode_expr)
+        format!(
+            "WireReader.decodeBuffer({}, reader -> {})",
+            name, decode_expr
+        )
     }
 
     fn lower_bridge_return(
@@ -1723,7 +1721,10 @@ impl<'a> JavaLowerer<'a> {
                 };
                 let primitive = match transport {
                     Transport::Scalar(origin) => origin.primitive(),
-                    other => unreachable!("scalar callback return must use scalar transport: {:?}", other),
+                    other => unreachable!(
+                        "scalar callback return must use scalar transport: {:?}",
+                        other
+                    ),
                 };
                 let suffix = match strategy {
                     ScalarReturnStrategy::PrimitiveValue => String::new(),
@@ -1807,11 +1808,7 @@ impl<'a> JavaLowerer<'a> {
         }
     }
 
-    fn encoded_return_render(
-        &self,
-        encode_ops: &WriteSeq,
-        binding: &str,
-    ) -> JavaValueBridgeRender {
+    fn encoded_return_render(&self, encode_ops: &WriteSeq, binding: &str) -> JavaValueBridgeRender {
         let remapped = remap_root_in_seq(encode_ops, ValueExpr::Var(binding.to_string()));
         JavaValueBridgeRender::Encode {
             size_expr: super::emit::emit_size_expr(&self.write_seq_size_expr(&remapped)),
@@ -2082,9 +2079,9 @@ mod tests {
     use crate::ir::Lowerer as IrLowerer;
     use crate::ir::contract::{FfiContract, PackageInfo};
     use crate::ir::definitions::{
-        CStyleVariant, CallbackKind, CallbackMethodDef, CallbackTraitDef, ClassDef,
-        ConstructorDef, DataVariant, EnumDef, EnumRepr, FieldDef, FunctionDef, MethodDef,
-        ParamDef, ParamPassing, Receiver, RecordDef, ReturnDef, VariantPayload,
+        CStyleVariant, CallbackKind, CallbackMethodDef, CallbackTraitDef, ClassDef, ConstructorDef,
+        DataVariant, EnumDef, EnumRepr, FieldDef, FunctionDef, MethodDef, ParamDef, ParamPassing,
+        Receiver, RecordDef, ReturnDef, VariantPayload,
     };
     use crate::ir::ids::{
         CallbackId, ClassId, EnumId, FieldName, FunctionId, MethodId, ParamName, RecordId,

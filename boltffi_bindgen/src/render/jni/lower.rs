@@ -1747,10 +1747,9 @@ impl<'a> JniLowerer<'a> {
         JniAsyncCallbackMethod {
             ffi_name: ffi_name.clone(),
             jni_method_name: ffi_name,
-            jni_signature: self.build_async_callback_jni_signature(&self.callback_input_abi_params(
-                &method.params,
-                abi_method,
-            )),
+            jni_signature: self.build_async_callback_jni_signature(
+                &self.callback_input_abi_params(&method.params, abi_method),
+            ),
             c_params,
             setup_lines,
             cleanup_lines,
@@ -1770,7 +1769,11 @@ impl<'a> JniLowerer<'a> {
         ret_shape: &ReturnShape,
     ) -> String {
         let params_sig = std::iter::once("J".to_string())
-            .chain(params.iter().map(|param| self.jni_type_signature(&param.abi_type)))
+            .chain(
+                params
+                    .iter()
+                    .map(|param| self.jni_type_signature(&param.abi_type)),
+            )
             .collect::<Vec<_>>()
             .join("");
 
@@ -1795,7 +1798,11 @@ impl<'a> JniLowerer<'a> {
 
     fn build_async_callback_jni_signature(&self, params: &[&AbiParam]) -> String {
         let params_sig = std::iter::once("J".to_string())
-            .chain(params.iter().map(|param| self.jni_type_signature(&param.abi_type)))
+            .chain(
+                params
+                    .iter()
+                    .map(|param| self.jni_type_signature(&param.abi_type)),
+            )
             .chain(["J".to_string(), "J".to_string()])
             .collect::<Vec<_>>()
             .join("");
@@ -2326,7 +2333,11 @@ impl<'a> JniLowerer<'a> {
             ValueReturnStrategy::CompositeValue | ValueReturnStrategy::Buffer(_) => {
                 match &ret_shape.transport {
                     Some(Transport::Composite(layout)) => {
-                        let abi_record = self.abi.records.iter().find(|record| record.id == layout.record_id);
+                        let abi_record = self
+                            .abi
+                            .records
+                            .iter()
+                            .find(|record| record.id == layout.record_id);
                         match abi_record {
                             Some(record) if record.is_blittable => JniClosureTrampolineReturn {
                                 c_type: format!("___{}", layout.record_id.as_str()),
@@ -2607,7 +2618,9 @@ mod tests {
         let lowerer = test_lowerer();
         let ret = lowerer.closure_return_info(&closure_return_shape_from_contract(
             empty_contract(),
-            ReturnDef::Value(TypeExpr::Vec(Box::new(TypeExpr::Primitive(PrimitiveType::I32)))),
+            ReturnDef::Value(TypeExpr::Vec(Box::new(TypeExpr::Primitive(
+                PrimitiveType::I32,
+            )))),
         ));
         assert!(matches!(ret.strategy, TrampolineReturnStrategy::WireBuffer));
         assert_eq!(ret.c_type, "FfiBuf_u8");
@@ -2865,8 +2878,7 @@ mod tests {
             doc: None,
         });
 
-        let lowerer =
-            lowerer_from_contract_with_binding_style(&contract, JvmBindingStyle::Java);
+        let lowerer = lowerer_from_contract_with_binding_style(&contract, JvmBindingStyle::Java);
         let callback = contract
             .catalog
             .resolve_callback(&CallbackId::new("__Closure_I32_I32ToI32"))

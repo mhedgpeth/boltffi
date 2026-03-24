@@ -1291,11 +1291,8 @@ impl<'a> SwiftLowerer<'a> {
         context: ReturnInvocationContext,
     ) -> SwiftReturn {
         let strategy = return_shape.value_return_strategy();
-        let method = strategy.return_method(
-            error.return_strategy(),
-            context,
-            ReturnPlatform::Native,
-        );
+        let method =
+            strategy.return_method(error.return_strategy(), context, ReturnPlatform::Native);
 
         let base = match strategy {
             ValueReturnStrategy::Void => SwiftReturn::Void,
@@ -1461,11 +1458,7 @@ impl<'a> SwiftLowerer<'a> {
         }
     }
 
-    fn wire_buffer_return(
-        &self,
-        return_shape: &ReturnShape,
-        returns: &ReturnDef,
-    ) -> SwiftReturn {
+    fn wire_buffer_return(&self, return_shape: &ReturnShape, returns: &ReturnDef) -> SwiftReturn {
         SwiftReturn::FromWireBuffer {
             swift_type: self.swift_return_value_type(returns),
             decode: return_shape.decode_ops.clone().unwrap_or_else(|| ReadSeq {

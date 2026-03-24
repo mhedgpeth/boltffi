@@ -3238,10 +3238,7 @@ mod tests {
                 element,
                 ..
             } => {
-                assert_eq!(
-                    value,
-                    &ValueExpr::Named("points".to_string())
-                );
+                assert_eq!(value, &ValueExpr::Named("points".to_string()));
                 assert_eq!(element_type, &TypeExpr::Record(record_id));
                 assert!(matches!(element.ops[0], WriteOp::Record { .. }));
             }

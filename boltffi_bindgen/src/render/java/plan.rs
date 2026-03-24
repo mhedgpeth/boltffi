@@ -64,7 +64,9 @@ impl JavaModule {
     }
 
     pub fn has_async_callbacks(&self) -> bool {
-        self.callbacks.iter().any(JavaCallbackTrait::has_async_methods)
+        self.callbacks
+            .iter()
+            .any(JavaCallbackTrait::has_async_methods)
     }
 
     pub fn uses_completable_future(&self) -> bool {
@@ -96,8 +98,13 @@ impl JavaModule {
     }
 
     fn uses_callback_wire_writer(&self) -> bool {
-        self.closures.iter().any(JavaClosureInterface::requires_wire_writer)
-            || self.callbacks.iter().any(JavaCallbackTrait::requires_wire_writer)
+        self.closures
+            .iter()
+            .any(JavaClosureInterface::requires_wire_writer)
+            || self
+                .callbacks
+                .iter()
+                .any(JavaCallbackTrait::requires_wire_writer)
     }
 }
 

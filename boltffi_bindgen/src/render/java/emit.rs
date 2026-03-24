@@ -437,8 +437,7 @@ fn emit_write_expr_with_context(
             let err_inner = emit_write_expr_with_context(err, writer_name, context);
             let ok_value_expr = format!("({}).okValue()", result_expr);
             let err_value_expr = format!("({}).errValue()", result_expr);
-            let remapped_ok =
-                replace_identifier_occurrences(&ok_inner, "okVal", &ok_value_expr);
+            let remapped_ok = replace_identifier_occurrences(&ok_inner, "okVal", &ok_value_expr);
             let remapped_err =
                 replace_identifier_occurrences(&err_inner, "errVal", &err_value_expr);
             format!(
@@ -591,8 +590,7 @@ fn emit_size_expr_with_context(size: &SizeExpr, context: &mut JavaEmitContext) -
             let ok_value_expr = format!("({}).okValue()", result_expr);
             let err_value_expr = format!("({}).errValue()", result_expr);
             let remapped_ok = replace_identifier_occurrences(&ok_expr, "okVal", &ok_value_expr);
-            let remapped_err =
-                replace_identifier_occurrences(&err_expr, "errVal", &err_value_expr);
+            let remapped_err = replace_identifier_occurrences(&err_expr, "errVal", &err_value_expr);
             format!(
                 "(1 + (({}).isOk() ? ({}) : ({})))",
                 result_expr, remapped_ok, remapped_err,
@@ -1127,8 +1125,20 @@ mod tests {
             .find(|file| file.file_name == "ListenerCallbacks.java")
             .expect("callback bridge should be generated");
 
-        assert!(callback_file.source.contains("future.completeExceptionally(throwable);"));
-        assert!(callback_file.source.contains("Throwable callbackThrowable = unwrapAsyncThrowable(throwable);"));
-        assert!(callback_file.source.contains("callbackThrowable instanceof RuntimeException"));
+        assert!(
+            callback_file
+                .source
+                .contains("future.completeExceptionally(throwable);")
+        );
+        assert!(
+            callback_file
+                .source
+                .contains("Throwable callbackThrowable = unwrapAsyncThrowable(throwable);")
+        );
+        assert!(
+            callback_file
+                .source
+                .contains("callbackThrowable instanceof RuntimeException")
+        );
     }
 }
