@@ -105,6 +105,12 @@ public final class {{ class.class_name }} implements AutoCloseable {
         if (_handle == 0L) return null;
 {%- endif %}
         return new {{ method.return_plan.handle_class() }}(_handle);
+{%- elif method.return_plan.is_callback() %}
+        long _handle = Native.{{ method.ffi_name }}({% for param in method.params %}{{ param.native_expr }}{% if !loop.last %}, {% endif %}{% endfor %});
+{%- if method.return_plan.callback_nullable() %}
+        if (_handle == 0L) return null;
+{%- endif %}
+        return {{ method.return_plan.callback_bridge_class() }}.wrap(_handle);
 {%- elif method.return_plan.is_decode() %}
         byte[] _buf = Native.{{ method.ffi_name }}({% for param in method.params %}{{ param.native_expr }}{% if !loop.last %}, {% endif %}{% endfor %});
         if (_buf == null) throw new RuntimeException("FFI call returned null buffer");
@@ -149,6 +155,12 @@ public final class {{ class.class_name }} implements AutoCloseable {
             if (_handle == 0L) return null;
 {%- endif %}
             return new {{ method.return_plan.handle_class() }}(_handle);
+{%- elif method.return_plan.is_callback() %}
+            long _handle = Native.{{ method.ffi_name }}({% for param in method.params %}{{ param.native_expr }}{% if !loop.last %}, {% endif %}{% endfor %});
+{%- if method.return_plan.callback_nullable() %}
+            if (_handle == 0L) return null;
+{%- endif %}
+            return {{ method.return_plan.callback_bridge_class() }}.wrap(_handle);
 {%- elif method.return_plan.is_decode() %}
             byte[] _buf = Native.{{ method.ffi_name }}({% for param in method.params %}{{ param.native_expr }}{% if !loop.last %}, {% endif %}{% endfor %});
             if (_buf == null) throw new RuntimeException("FFI call returned null buffer");
@@ -231,6 +243,14 @@ public final class {{ class.class_name }} implements AutoCloseable {
 {%- endif %}
                     return new {{ ac.complete_return_plan.handle_class() }}(_handle);
                 },
+{%- elif ac.complete_return_plan.is_callback() %}
+                future -> {
+                    long _handle = Native.{{ ac.complete }}({% if !method.is_static %}handle, {% endif %}future);
+{%- if ac.complete_return_plan.callback_nullable() %}
+                    if (_handle == 0L) return null;
+{%- endif %}
+                    return {{ ac.complete_return_plan.callback_bridge_class() }}.wrap(_handle);
+                },
 {%- elif ac.complete_return_plan.is_result() %}
                 future -> {
                     byte[] _buf = Native.{{ ac.complete }}({% if !method.is_static %}handle, {% endif %}future);
@@ -274,6 +294,12 @@ public final class {{ class.class_name }} implements AutoCloseable {
         if (_handle == 0L) return null;
 {%- endif %}
         return new {{ method.return_plan.handle_class() }}(_handle);
+{%- elif method.return_plan.is_callback() %}
+        long _handle = Native.{{ method.ffi_name }}(handle{% if !method.params.is_empty() %}, {% endif %}{% for param in method.params %}{{ param.native_expr }}{% if !loop.last %}, {% endif %}{% endfor %});
+{%- if method.return_plan.callback_nullable() %}
+        if (_handle == 0L) return null;
+{%- endif %}
+        return {{ method.return_plan.callback_bridge_class() }}.wrap(_handle);
 {%- elif method.return_plan.is_decode() %}
         byte[] _buf = Native.{{ method.ffi_name }}(handle{% if !method.params.is_empty() %}, {% endif %}{% for param in method.params %}{{ param.native_expr }}{% if !loop.last %}, {% endif %}{% endfor %});
         if (_buf == null) throw new RuntimeException("FFI call returned null buffer");
@@ -318,6 +344,12 @@ public final class {{ class.class_name }} implements AutoCloseable {
             if (_handle == 0L) return null;
 {%- endif %}
             return new {{ method.return_plan.handle_class() }}(_handle);
+{%- elif method.return_plan.is_callback() %}
+            long _handle = Native.{{ method.ffi_name }}(handle{% if !method.params.is_empty() %}, {% endif %}{% for param in method.params %}{{ param.native_expr }}{% if !loop.last %}, {% endif %}{% endfor %});
+{%- if method.return_plan.callback_nullable() %}
+            if (_handle == 0L) return null;
+{%- endif %}
+            return {{ method.return_plan.callback_bridge_class() }}.wrap(_handle);
 {%- elif method.return_plan.is_decode() %}
             byte[] _buf = Native.{{ method.ffi_name }}(handle{% if !method.params.is_empty() %}, {% endif %}{% for param in method.params %}{{ param.native_expr }}{% if !loop.last %}, {% endif %}{% endfor %});
             if (_buf == null) throw new RuntimeException("FFI call returned null buffer");

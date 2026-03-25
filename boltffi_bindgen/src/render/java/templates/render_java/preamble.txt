@@ -13,9 +13,11 @@ import java.util.function.IntFunction;
 {%- if module.uses_completable_future() %}
 import java.util.concurrent.CompletableFuture;
 {%- endif %}
-{%- if module.has_async() %}
+{%- if module.has_async() || module.has_async_callbacks() %}
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
+{%- endif %}
+{%- if module.has_async() %}
 import java.util.concurrent.atomic.AtomicReference;
 {%- endif %}
 
@@ -786,6 +788,57 @@ final class BoltFFIContinuationMap {
         MAP.remove(handle, signal);
     }
 }
+{%- if module.has_async_callbacks() %}
+
+final class BoltFFICallbackCompletion {
+    private final java.util.function.Consumer<Object> onSuccess;
+    private final java.util.function.Consumer<Throwable> onFailure;
+
+    BoltFFICallbackCompletion(
+            java.util.function.Consumer<Object> onSuccess,
+            java.util.function.Consumer<Throwable> onFailure
+    ) {
+        this.onSuccess = onSuccess;
+        this.onFailure = onFailure;
+    }
+
+    void completeSuccess(Object value) {
+        onSuccess.accept(value);
+    }
+
+    void completeFailure(Throwable error) {
+        onFailure.accept(error);
+    }
+}
+
+final class BoltFFICallbackFutureMap {
+    private static final AtomicLong NEXT_HANDLE = new AtomicLong(1);
+    private static final ConcurrentHashMap<Long, BoltFFICallbackCompletion> MAP = new ConcurrentHashMap<>();
+
+    static long insert(
+            java.util.function.Consumer<Object> onSuccess,
+            java.util.function.Consumer<Throwable> onFailure
+    ) {
+        long handle = NEXT_HANDLE.getAndIncrement();
+        MAP.put(handle, new BoltFFICallbackCompletion(onSuccess, onFailure));
+        return handle;
+    }
+
+    static void completeSuccess(long handle, Object value) {
+        BoltFFICallbackCompletion completion = MAP.remove(handle);
+        if (completion != null) {
+            completion.completeSuccess(value);
+        }
+    }
+
+    static void completeFailure(long handle, Throwable error) {
+        BoltFFICallbackCompletion completion = MAP.remove(handle);
+        if (completion != null) {
+            completion.completeFailure(error);
+        }
+    }
+}
+{%- endif %}
 {%- if module.async_mode.is_virtual_thread() %}
 
 final class BoltFFIAsync {

@@ -7,6 +7,9 @@ import java.util.concurrent.CompletableFuture;
 final class {{ callback.callbacks_class_name() }} {
     private static final java.util.concurrent.ConcurrentHashMap<Long, {{ callback.interface_name }}> HANDLE_MAP = new java.util.concurrent.ConcurrentHashMap<>();
     private static final java.util.concurrent.atomic.AtomicLong COUNTER = new java.util.concurrent.atomic.AtomicLong(1L);
+{%- if callback.supports_cleaner %}
+    private static final java.lang.ref.Cleaner CLEANER = java.lang.ref.Cleaner.create();
+{%- endif %}
 
     private {{ callback.callbacks_class_name() }}() {}
 
@@ -23,6 +26,100 @@ final class {{ callback.callbacks_class_name() }} {
     public static long clone(long handle) {
         {{ callback.interface_name }} obj = HANDLE_MAP.get(handle);
         return obj != null ? insert(obj) : 0L;
+    }
+
+{%- if callback.supports_cleaner %}
+    private static final class ProxyReleaser implements Runnable {
+        private long handle;
+
+        private ProxyReleaser(long handle) {
+            this.handle = handle;
+        }
+
+        @Override
+        public void run() {
+            if (handle == 0L) return;
+            Native.{{ callback.proxy_release_native_name() }}(handle);
+            handle = 0L;
+        }
+    }
+{%- endif %}
+
+    private static final class Proxy implements {{ callback.interface_name }} {
+        private final long handle;
+{%- if callback.supports_cleaner %}
+        private final java.lang.ref.Cleaner.Cleanable cleanable;
+{%- endif %}
+
+        private Proxy(long handle) {
+            this.handle = handle;
+{%- if callback.supports_cleaner %}
+            this.cleanable = CLEANER.register(this, new ProxyReleaser(handle));
+{%- endif %}
+        }
+
+        long rawHandle() {
+            return handle;
+        }
+
+{%- if !callback.supports_cleaner %}
+        @Override
+        protected void finalize() throws Throwable {
+            try {
+                if (handle != 0L) {
+                    Native.{{ callback.proxy_release_native_name() }}(handle);
+                }
+            } finally {
+                super.finalize();
+            }
+        }
+{%- endif %}
+{%- for method in callback.sync_methods %}
+
+        @Override
+        public {{ method.proxy.return_type }} {{ method.name }}({% for param in method.proxy.params %}{{ param.java_type }} {{ param.name }}{% if !loop.last %}, {% endif %}{% endfor %}) {
+{%- let proxy = method.proxy %}
+{%- let handle_name = "handle" %}
+{%- include "render_java/proxy_sync_method_body.txt" %}
+        }
+{%- endfor %}
+{%- for method in callback.async_methods %}
+
+        @Override
+        public CompletableFuture<{{ method.boxed_return_type() }}> {{ method.name }}({% for param in method.proxy.params %}{{ param.java_type }} {{ param.name }}{% if !loop.last %}, {% endif %}{% endfor %}) {
+            CompletableFuture<{{ method.boxed_return_type() }}> future = new CompletableFuture<>();
+            long callbackData = BoltFFICallbackFutureMap.insert(
+{%- if !method.proxy.return_plan.is_void() %}
+                    value -> future.complete(({{ method.proxy.boxed_return_type() }}) value),
+{%- else %}
+                    ignored -> future.complete(null),
+{%- endif %}
+                    future::completeExceptionally
+            );
+            try {
+{%- if method.proxy.wire_writers.is_empty() %}
+                Native.{{ method.proxy.native_name }}(handle{% if !method.proxy.params.is_empty() %}, {% endif %}{% for param in method.proxy.params %}{{ param.native_expr }}{% if !loop.last %}, {% endif %}{% endfor %}, callbackData);
+{%- else %}
+{%- for writer in method.proxy.wire_writers %}
+                try (WireWriter {{ writer.binding_name }} = new WireWriter({{ writer.size_expr }})) {
+                    {{ writer.encode_expr }};
+{%- endfor %}
+                    Native.{{ method.proxy.native_name }}(handle{% if !method.proxy.params.is_empty() %}, {% endif %}{% for param in method.proxy.params %}{{ param.native_expr }}{% if !loop.last %}, {% endif %}{% endfor %}, callbackData);
+{%- for _writer in method.proxy.wire_writers %}
+                }
+{%- endfor %}
+{%- endif %}
+            } catch (Throwable throwable) {
+                BoltFFICallbackFutureMap.completeFailure(callbackData, throwable);
+            }
+            return future;
+        }
+{%- endfor %}
+    }
+
+    static {{ callback.interface_name }} wrap(long handle) {
+        {{ callback.interface_name }} existing = HANDLE_MAP.get(handle);
+        return existing != null ? existing : new Proxy(handle);
     }
 {%- if callback.has_async_methods() %}
 
@@ -68,6 +165,10 @@ final class {{ callback.callbacks_class_name() }} {
 {% if result_return.error_capture.is_string %}
         } catch (RuntimeException exception) {
             result = BoltFFIResult.err(exception.getMessage());
+{% endif %}
+{% if !result_return.has_exception_class() && !result_return.error_capture.is_string %}
+        } catch (Exception exception) {
+            throw new RuntimeException("callback returned unexpected error", exception);
 {% endif %}
         }
         try (WireWriter wire = new WireWriter({{ result_return.encode_size_expr }})) {
@@ -149,6 +250,56 @@ final class {{ callback.callbacks_class_name() }} {
             Native.{{ method.success_invoker_name() }}(callbackPtr, callbackData);
 {% endmatch %}
         });
+    }
+
+    static void {{ method.proxy.success_name }}(long callbackData{% if method.proxy.return_plan.is_void() %}{% elif method.proxy.return_plan.is_direct() || method.proxy.return_plan.is_c_style_enum() %}, {{ method.proxy.return_plan.native_return_type }} value{% elif method.proxy.return_plan.is_handle() || method.proxy.return_plan.is_callback() %}, long value{% else %}, byte[] value{% endif %}) {
+{%- if method.proxy.return_plan.is_void() %}
+        BoltFFICallbackFutureMap.completeSuccess(callbackData, null);
+{%- elif method.proxy.return_plan.is_direct() %}
+        BoltFFICallbackFutureMap.completeSuccess(callbackData, value);
+{%- elif method.proxy.return_plan.is_c_style_enum() %}
+        BoltFFICallbackFutureMap.completeSuccess(callbackData, {{ method.proxy.return_plan.c_style_enum_class() }}.fromValue(value));
+{%- elif method.proxy.return_plan.is_handle() %}
+{%- if method.proxy.return_plan.handle_nullable() %}
+        BoltFFICallbackFutureMap.completeSuccess(callbackData, value == 0L ? null : new {{ method.proxy.return_plan.handle_class() }}(value));
+{%- else %}
+        BoltFFICallbackFutureMap.completeSuccess(callbackData, new {{ method.proxy.return_plan.handle_class() }}(value));
+{%- endif %}
+{%- elif method.proxy.return_plan.is_callback() %}
+{%- if method.proxy.return_plan.callback_nullable() %}
+        BoltFFICallbackFutureMap.completeSuccess(callbackData, value == 0L ? null : {{ method.proxy.return_plan.callback_bridge_class() }}.wrap(value));
+{%- else %}
+        BoltFFICallbackFutureMap.completeSuccess(callbackData, {{ method.proxy.return_plan.callback_bridge_class() }}.wrap(value));
+{%- endif %}
+{%- elif method.proxy.return_plan.is_decode() %}
+        if (value == null) {
+            BoltFFICallbackFutureMap.completeFailure(callbackData, new RuntimeException("FFI call returned null buffer"));
+            return;
+        }
+        WireReader reader = new WireReader(value);
+        BoltFFICallbackFutureMap.completeSuccess(callbackData, {{ method.proxy.return_plan.decode_expr() }});
+{%- elif method.proxy.return_plan.is_result() %}
+        if (value == null) {
+            BoltFFICallbackFutureMap.completeFailure(callbackData, new RuntimeException("FFI call returned null buffer"));
+            return;
+        }
+        WireReader reader = new WireReader(value);
+        if (reader.readI8() != 0) {
+{%- if method.proxy.return_plan.result_has_typed_exception() %}
+            BoltFFICallbackFutureMap.completeFailure(callbackData, new {{ method.proxy.return_plan.result_err_exception_class() }}({{ method.proxy.return_plan.result_err_decode() }}));
+{%- elif method.proxy.return_plan.result_err_is_string() %}
+            BoltFFICallbackFutureMap.completeFailure(callbackData, new RuntimeException({{ method.proxy.return_plan.result_err_decode() }}));
+{%- else %}
+            BoltFFICallbackFutureMap.completeFailure(callbackData, new RuntimeException(String.valueOf({{ method.proxy.return_plan.result_err_decode() }})));
+{%- endif %}
+            return;
+        }
+        BoltFFICallbackFutureMap.completeSuccess(callbackData, {{ method.proxy.return_plan.result_ok_decode() }});
+{%- endif %}
+    }
+
+    static void {{ method.proxy.failure_name }}(long callbackData) {
+        BoltFFICallbackFutureMap.completeFailure(callbackData, new RuntimeException("callback failed"));
     }
 {%- endfor %}
 

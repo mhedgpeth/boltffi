@@ -3,6 +3,9 @@ package {{ package_name }};
 final class {{ closure.callbacks_class_name }} {
     private static final java.util.concurrent.ConcurrentHashMap<Long, {{ closure.interface_name }}> HANDLE_MAP = new java.util.concurrent.ConcurrentHashMap<>();
     private static final java.util.concurrent.atomic.AtomicLong COUNTER = new java.util.concurrent.atomic.AtomicLong(1L);
+{%- if closure.supports_proxy_wrap && closure.supports_cleaner %}
+    private static final java.lang.ref.Cleaner CLEANER = java.lang.ref.Cleaner.create();
+{%- endif %}
 
     private {{ closure.callbacks_class_name }}() {}
 
@@ -20,6 +23,70 @@ final class {{ closure.callbacks_class_name }} {
         {{ closure.interface_name }} obj = HANDLE_MAP.get(handle);
         return obj != null ? insert(obj) : 0L;
     }
+
+{%- if closure.supports_proxy_wrap && closure.supports_cleaner %}
+    private static final class ProxyReleaser implements Runnable {
+        private long handle;
+
+        private ProxyReleaser(long handle) {
+            this.handle = handle;
+        }
+
+        @Override
+        public void run() {
+            if (handle == 0L) return;
+            Native.{{ closure.proxy_release_native_name() }}(handle);
+            handle = 0L;
+        }
+    }
+{%- endif %}
+
+{%- if closure.supports_proxy_wrap %}
+    private static final class Proxy implements {{ closure.interface_name }} {
+        private final long handle;
+{%- if closure.supports_cleaner %}
+        private final java.lang.ref.Cleaner.Cleanable cleanable;
+{%- endif %}
+
+        private Proxy(long handle) {
+            this.handle = handle;
+{%- if closure.supports_cleaner %}
+            this.cleanable = CLEANER.register(this, new ProxyReleaser(handle));
+{%- endif %}
+        }
+
+        long rawHandle() {
+            return handle;
+        }
+
+{%- if !closure.supports_cleaner %}
+        @Override
+        protected void finalize() throws Throwable {
+            try {
+                if (handle != 0L) {
+                    Native.{{ closure.proxy_release_native_name() }}(handle);
+                }
+            } finally {
+                super.finalize();
+            }
+        }
+{%- endif %}
+
+        @Override
+        public {{ closure.proxy.return_type }} invoke({% for param in closure.proxy.params %}{{ param.java_type }} {{ param.name }}{% if !loop.last %}, {% endif %}{% endfor %}) {
+{%- let proxy = closure.proxy %}
+{%- let handle_name = "handle" %}
+{%- include "render_java/proxy_sync_method_body.txt" %}
+        }
+    }
+{%- endif %}
+
+{%- if closure.supports_proxy_wrap %}
+    static {{ closure.interface_name }} wrap(long handle) {
+        {{ closure.interface_name }} existing = HANDLE_MAP.get(handle);
+        return existing != null ? existing : new Proxy(handle);
+    }
+{%- endif %}
 
     public static {% match closure.return_info %}{% when Some with (ret) %}{{ ret.jni_type() }}{% when None %}void{% endmatch %} call(long handle{% for param in closure.params %}, {{ param.jni_type }} {{ param.name }}{% endfor %}) {
         {{ closure.interface_name }} impl_ = HANDLE_MAP.get(handle);
@@ -49,6 +116,10 @@ final class {{ closure.callbacks_class_name }} {
         } catch (RuntimeException exception) {
             result = BoltFFIResult.err(exception.getMessage());
 {% endif %}
+{% if !result_return.has_exception_class() && !result_return.error_capture.is_string %}
+        } catch (Exception exception) {
+            throw new RuntimeException("callback returned unexpected error", exception);
+{% endif %}
         }
         try (WireWriter wire = new WireWriter({{ result_return.encode_size_expr }})) {
             {{ result_return.encode_expr }};
@@ -61,6 +132,11 @@ final class {{ closure.callbacks_class_name }} {
     }
 
     static long create({{ closure.interface_name }} impl_) {
+{%- if closure.supports_proxy_wrap %}
+        if (impl_ instanceof Proxy) {
+            return Native.{{ closure.proxy_clone_native_name() }}(((Proxy) impl_).rawHandle());
+        }
+{%- endif %}
         return insert(impl_);
     }
 }

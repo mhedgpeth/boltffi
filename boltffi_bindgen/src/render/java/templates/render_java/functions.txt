@@ -57,6 +57,14 @@ public final class {{ module.class_name }} {
 {%- endif %}
                     return new {{ ac.complete_return_plan.handle_class() }}(_handle);
                 },
+{%- elif ac.complete_return_plan.is_callback() %}
+                future -> {
+                    long _handle = Native.{{ ac.complete }}(future);
+{%- if ac.complete_return_plan.callback_nullable() %}
+                    if (_handle == 0L) return null;
+{%- endif %}
+                    return {{ ac.complete_return_plan.callback_bridge_class() }}.wrap(_handle);
+                },
 {%- elif ac.complete_return_plan.is_result() %}
                 future -> {
                     byte[] _buf = Native.{{ ac.complete }}(future);
@@ -94,6 +102,12 @@ public final class {{ module.class_name }} {
         return Native.{{ func.ffi_name }}({% for param in func.params %}{{ param.native_expr }}{% if !loop.last %}, {% endif %}{% endfor %});
 {%- elif func.return_plan.is_c_style_enum() %}
         return {{ func.return_plan.c_style_enum_class() }}.fromValue(Native.{{ func.ffi_name }}({% for param in func.params %}{{ param.native_expr }}{% if !loop.last %}, {% endif %}{% endfor %}));
+{%- elif func.return_plan.is_callback() %}
+        long _handle = Native.{{ func.ffi_name }}({% for param in func.params %}{{ param.native_expr }}{% if !loop.last %}, {% endif %}{% endfor %});
+{%- if func.return_plan.callback_nullable() %}
+        if (_handle == 0L) return null;
+{%- endif %}
+        return {{ func.return_plan.callback_bridge_class() }}.wrap(_handle);
 {%- elif func.return_plan.is_decode() %}
         byte[] _buf = Native.{{ func.ffi_name }}({% for param in func.params %}{{ param.native_expr }}{% if !loop.last %}, {% endif %}{% endfor %});
         if (_buf == null) throw new RuntimeException("FFI call returned null buffer");
@@ -132,6 +146,12 @@ public final class {{ module.class_name }} {
             return Native.{{ func.ffi_name }}({% for param in func.params %}{{ param.native_expr }}{% if !loop.last %}, {% endif %}{% endfor %});
 {%- elif func.return_plan.is_c_style_enum() %}
             return {{ func.return_plan.c_style_enum_class() }}.fromValue(Native.{{ func.ffi_name }}({% for param in func.params %}{{ param.native_expr }}{% if !loop.last %}, {% endif %}{% endfor %}));
+{%- elif func.return_plan.is_callback() %}
+            long _handle = Native.{{ func.ffi_name }}({% for param in func.params %}{{ param.native_expr }}{% if !loop.last %}, {% endif %}{% endfor %});
+{%- if func.return_plan.callback_nullable() %}
+            if (_handle == 0L) return null;
+{%- endif %}
+            return {{ func.return_plan.callback_bridge_class() }}.wrap(_handle);
 {%- elif func.return_plan.is_decode() %}
             byte[] _buf = Native.{{ func.ffi_name }}({% for param in func.params %}{{ param.native_expr }}{% if !loop.last %}, {% endif %}{% endfor %});
             if (_buf == null) throw new RuntimeException("FFI call returned null buffer");

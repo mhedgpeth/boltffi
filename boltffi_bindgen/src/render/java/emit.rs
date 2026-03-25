@@ -104,51 +104,43 @@ impl JavaEmitter {
             });
         }
 
-        for closure in &module.closures {
-            let template = ClosureTemplate {
-                closure,
-                package_name: &module.package_name,
-            };
-            files.push(JavaFile {
-                file_name: format!("{}.java", closure.interface_name),
-                source: template
-                    .render()
-                    .expect("closure interface template failed"),
-            });
+        let closure_files = module.closures.iter().flat_map(|closure| {
+            let pkg = &module.package_name;
+            [
+                JavaFile {
+                    file_name: format!("{}.java", closure.interface_name),
+                    source: ClosureTemplate { closure, package_name: pkg }
+                        .render()
+                        .expect("closure interface template failed"),
+                },
+                JavaFile {
+                    file_name: format!("{}.java", closure.callbacks_class_name),
+                    source: ClosureCallbacksTemplate { closure, package_name: pkg }
+                        .render()
+                        .expect("closure callbacks template failed"),
+                },
+            ]
+        });
 
-            let callbacks_template = ClosureCallbacksTemplate {
-                closure,
-                package_name: &module.package_name,
-            };
-            files.push(JavaFile {
-                file_name: format!("{}.java", closure.callbacks_class_name),
-                source: callbacks_template
-                    .render()
-                    .expect("closure callbacks template failed"),
-            });
-        }
+        let callback_files = module.callbacks.iter().flat_map(|callback| {
+            let pkg = &module.package_name;
+            [
+                JavaFile {
+                    file_name: format!("{}.java", callback.interface_name),
+                    source: CallbackTraitTemplate { callback, package_name: pkg }
+                        .render()
+                        .expect("callback trait template failed"),
+                },
+                JavaFile {
+                    file_name: format!("{}.java", callback.callbacks_class_name()),
+                    source: CallbackCallbacksTemplate { callback, package_name: pkg }
+                        .render()
+                        .expect("callback callbacks template failed"),
+                },
+            ]
+        });
 
-        for callback in &module.callbacks {
-            let template = CallbackTraitTemplate {
-                callback,
-                package_name: &module.package_name,
-            };
-            files.push(JavaFile {
-                file_name: format!("{}.java", callback.interface_name),
-                source: template.render().expect("callback trait template failed"),
-            });
-
-            let callbacks_template = CallbackCallbacksTemplate {
-                callback,
-                package_name: &module.package_name,
-            };
-            files.push(JavaFile {
-                file_name: format!("{}.java", callback.callbacks_class_name()),
-                source: callbacks_template
-                    .render()
-                    .expect("callback callbacks template failed"),
-            });
-        }
+        files.extend(closure_files.chain(callback_files));
 
         let mut main_source = String::new();
 
@@ -864,6 +856,70 @@ mod tests {
             .expect("time should be monotonic")
             .as_nanos();
         let tmp_root = env::temp_dir().join(format!("boltffi-java-{}", nanos));
+        let package_dir = tmp_root.join(&output.package_path);
+        fs::create_dir_all(&package_dir).expect("should create package directory");
+
+        let source_paths: Vec<_> = output
+            .files
+            .iter()
+            .map(|file| {
+                let path = package_dir.join(&file.file_name);
+                fs::write(&path, &file.source).expect("should write generated source");
+                path
+            })
+            .collect();
+
+        let status = Command::new("javac")
+            .args(source_paths)
+            .status()
+            .expect("javac should execute");
+        assert!(status.success());
+
+        let _ = fs::remove_dir_all(tmp_root);
+    }
+
+    #[test]
+    fn emit_callback_return_java_compiles_with_javac_when_available() {
+        if Command::new("javac").arg("-version").output().is_err() {
+            return;
+        }
+
+        let mut contract = empty_contract();
+        contract.catalog.insert_callback(CallbackTraitDef {
+            id: CallbackId::new("Listener"),
+            methods: vec![CallbackMethodDef {
+                id: MethodId::from("on_value"),
+                params: vec![param("value", TypeExpr::Primitive(PrimitiveType::I32))],
+                returns: ReturnDef::Value(TypeExpr::Primitive(PrimitiveType::I32)),
+                is_async: false,
+                doc: None,
+            }],
+            kind: CallbackKind::Trait,
+            doc: None,
+        });
+        contract.functions.push(FunctionDef {
+            id: FunctionId::new("next_listener"),
+            params: vec![],
+            returns: ReturnDef::Value(TypeExpr::Callback(CallbackId::new("Listener"))),
+            is_async: false,
+            doc: None,
+            deprecated: None,
+        });
+
+        let abi = IrLowerer::new(&contract).to_abi_contract();
+        let output = JavaEmitter::emit(
+            &contract,
+            &abi,
+            "com.test".to_string(),
+            "test".to_string(),
+            JavaOptions::default(),
+        );
+
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("time should be monotonic")
+            .as_nanos();
+        let tmp_root = env::temp_dir().join(format!("boltffi-java-callbacks-{}", nanos));
         let package_dir = tmp_root.join(&output.package_path);
         fs::create_dir_all(&package_dir).expect("should create package directory");
 

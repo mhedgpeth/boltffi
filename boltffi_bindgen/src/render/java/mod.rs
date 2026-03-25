@@ -49,4 +49,8 @@ impl JavaVersion {
     pub fn supports_completable_future(&self) -> bool {
         self.0 >= 8
     }
+
+    pub fn supports_cleaner(&self) -> bool {
+        self.0 >= 9
+    }
 }

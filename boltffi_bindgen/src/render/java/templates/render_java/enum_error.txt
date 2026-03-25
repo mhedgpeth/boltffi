@@ -12,6 +12,10 @@ public enum {{ enumeration.class_name }} {
         return VARIANTS[tag];
     }
 
+    int wireTag() {
+        return ordinal();
+    }
+
     public static final class Exception extends RuntimeException {
         private final {{ enumeration.class_name }} error;
 

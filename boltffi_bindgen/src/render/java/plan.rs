@@ -249,6 +249,10 @@ pub enum JavaReturnRender {
         class_name: String,
         nullable: bool,
     },
+    Callback {
+        callbacks_class_name: String,
+        nullable: bool,
+    },
     Result {
         ok_decode_expr: String,
         err_decode_expr: String,
@@ -276,6 +280,10 @@ impl JavaReturnPlan {
 
     pub fn is_handle(&self) -> bool {
         matches!(self.render, JavaReturnRender::Handle { .. })
+    }
+
+    pub fn is_callback(&self) -> bool {
+        matches!(self.render, JavaReturnRender::Callback { .. })
     }
 
     pub fn is_result(&self) -> bool {
@@ -352,6 +360,24 @@ impl JavaReturnPlan {
     pub fn handle_nullable(&self) -> bool {
         matches!(self.render, JavaReturnRender::Handle { nullable: true, .. })
     }
+
+    pub fn callback_bridge_class(&self) -> &str {
+        match &self.render {
+            JavaReturnRender::Callback {
+                callbacks_class_name,
+                ..
+            } => callbacks_class_name,
+            _ => "",
+        }
+    }
+
+    pub fn callback_nullable(&self) -> bool {
+        matches!(
+            self.render,
+            JavaReturnRender::Callback { nullable: true, .. }
+        )
+    }
+
 }
 
 #[derive(Debug, Clone)]
@@ -478,8 +504,11 @@ pub struct JavaClosureInterface {
     pub interface_name: String,
     pub callback_id: String,
     pub callbacks_class_name: String,
+    pub supports_proxy_wrap: bool,
+    pub supports_cleaner: bool,
     pub params: Vec<JavaBridgeParam>,
     pub return_info: Option<JavaBridgeReturn>,
+    pub proxy: JavaCallbackProxySyncMethod,
 }
 
 impl JavaClosureInterface {
@@ -500,12 +529,21 @@ impl JavaClosureInterface {
             .as_ref()
             .is_some_and(JavaBridgeReturn::requires_wire_writer)
     }
+
+    pub fn proxy_clone_native_name(&self) -> String {
+        format!("boltffi{}Clone", self.callbacks_class_name)
+    }
+
+    pub fn proxy_release_native_name(&self) -> String {
+        format!("boltffi{}Release", self.callbacks_class_name)
+    }
 }
 
 #[derive(Debug, Clone)]
 pub struct JavaCallbackTrait {
     pub interface_name: String,
     pub callback_id: String,
+    pub supports_cleaner: bool,
     pub sync_methods: Vec<JavaSyncCallbackMethod>,
     pub async_methods: Vec<JavaAsyncCallbackMethod>,
 }
@@ -513,6 +551,14 @@ pub struct JavaCallbackTrait {
 impl JavaCallbackTrait {
     pub fn callbacks_class_name(&self) -> String {
         format!("{}Callbacks", self.interface_name)
+    }
+
+    pub fn proxy_clone_native_name(&self) -> String {
+        format!("boltffiCallback{}Clone", self.interface_name)
+    }
+
+    pub fn proxy_release_native_name(&self) -> String {
+        format!("boltffiCallback{}Release", self.interface_name)
     }
 
     pub fn has_async_methods(&self) -> bool {
@@ -690,6 +736,7 @@ pub struct JavaSyncCallbackMethod {
     pub ffi_name: String,
     pub params: Vec<JavaBridgeParam>,
     pub return_info: Option<JavaBridgeReturn>,
+    pub proxy: JavaCallbackProxySyncMethod,
 }
 
 impl JavaSyncCallbackMethod {
@@ -707,6 +754,7 @@ pub struct JavaAsyncCallbackMethod {
     pub params: Vec<JavaBridgeParam>,
     pub return_info: Option<JavaBridgeReturn>,
     pub invoker_suffix: String,
+    pub proxy: JavaCallbackProxyAsyncMethod,
 }
 
 impl JavaAsyncCallbackMethod {
@@ -737,6 +785,32 @@ impl JavaAsyncCallbackMethod {
 pub struct JavaAsyncCallbackInvoker {
     pub suffix: String,
     pub result_jni_type: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct JavaCallbackProxySyncMethod {
+    pub native_name: String,
+    pub params: Vec<JavaParam>,
+    pub return_type: String,
+    pub return_plan: JavaReturnPlan,
+    pub wire_writers: Vec<JavaWireWriter>,
+}
+
+#[derive(Debug, Clone)]
+pub struct JavaCallbackProxyAsyncMethod {
+    pub native_name: String,
+    pub params: Vec<JavaParam>,
+    pub return_type: String,
+    pub return_plan: JavaReturnPlan,
+    pub wire_writers: Vec<JavaWireWriter>,
+    pub success_name: String,
+    pub failure_name: String,
+}
+
+impl JavaCallbackProxyAsyncMethod {
+    pub fn boxed_return_type(&self) -> &str {
+        box_java_type(&self.return_type)
+    }
 }
 
 impl JavaAsyncCallbackInvoker {
