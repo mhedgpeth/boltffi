@@ -1020,6 +1020,7 @@ mod tests {
             bridge_name: "DataHandlerBridge".to_string(),
             register_fn: "boltffi_register_data_handler".to_string(),
             create_fn: "boltffi_create_data_handler".to_string(),
+            supports_foreign_wrap: false,
             methods: vec![SwiftCallbackMethod {
                 swift_name: "onData".to_string(),
                 ffi_name: "on_data".to_string(),
@@ -1028,6 +1029,7 @@ mod tests {
                     swift_type: "Data".to_string(),
                     call_arg: "data".to_string(),
                     ffi_args: vec!["dataPtr".to_string(), "dataLen".to_string()],
+                    proxy_ffi_args: vec!["dataPtr".to_string(), "dataLen".to_string()],
                     decode_prelude: Some(
                         "let data = Data(bytes: dataPtr!, count: Int(dataLen))".to_string(),
                     ),
@@ -1052,6 +1054,7 @@ mod tests {
             bridge_name: "ValidatorBridge".to_string(),
             register_fn: "boltffi_register_validator".to_string(),
             create_fn: "boltffi_create_validator".to_string(),
+            supports_foreign_wrap: false,
             methods: vec![SwiftCallbackMethod {
                 swift_name: "validate".to_string(),
                 ffi_name: "validate".to_string(),
@@ -1060,6 +1063,7 @@ mod tests {
                     swift_type: "String".to_string(),
                     call_arg: "input".to_string(),
                     ffi_args: vec!["inputPtr".to_string(), "inputLen".to_string()],
+                    proxy_ffi_args: vec!["inputPtr".to_string(), "inputLen".to_string()],
                     decode_prelude: Some(
                         "let input = String(decoding: UnsafeBufferPointer(start: inputPtr, count: Int(inputLen)), as: UTF8.self)".to_string(),
                     ),
@@ -1334,6 +1338,7 @@ mod tests {
             bridge_name: "AsyncHandlerBridge".to_string(),
             register_fn: "boltffi_register_async_handler".to_string(),
             create_fn: "boltffi_create_async_handler".to_string(),
+            supports_foreign_wrap: false,
             methods: vec![SwiftCallbackMethod {
                 swift_name: "onComplete".to_string(),
                 ffi_name: "on_complete".to_string(),
@@ -1342,6 +1347,7 @@ mod tests {
                     swift_type: "String".to_string(),
                     call_arg: "result".to_string(),
                     ffi_args: vec!["resultPtr".to_string(), "resultLen".to_string()],
+                    proxy_ffi_args: vec!["resultPtr".to_string(), "resultLen".to_string()],
                     decode_prelude: Some(
                         "let result = String(decoding: UnsafeBufferPointer(start: resultPtr, count: Int(resultLen)), as: UTF8.self)".to_string(),
                     ),

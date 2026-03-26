@@ -11,6 +11,78 @@ private class {{ callback.wrapper_class }} {
     let impl_: {{ callback.protocol_name }}
     init(_ impl_: {{ callback.protocol_name }}) { self.impl_ = impl_ }
 }
+{%- if callback.supports_foreign_wrap %}
+
+private protocol {{ callback.bridge_name }}Bridgeable: {{ callback.protocol_name }} {
+    func _boltffiRetainedCallbackHandle() -> BoltFFICallbackHandle
+}
+
+private final class {{ callback.protocol_name }}Proxy: {{ callback.protocol_name }}, {{ callback.bridge_name }}Bridgeable {
+    private let handle_: BoltFFICallbackHandle
+
+    init(_ handle: BoltFFICallbackHandle) {
+        self.handle_ = handle
+    }
+
+    deinit {
+        {{ callback.bridge_name }}.release(handle_)
+    }
+
+    func _boltffiRetainedCallbackHandle() -> BoltFFICallbackHandle {
+        {{ callback.bridge_name }}.clone(handle_)
+    }
+{%- for method in callback.methods %}
+
+    func {{ method.swift_name }}({% for param in method.params %}{{ param.label }}: {{ param.swift_type }}{% if !loop.last %}, {% endif %}{% endfor %}){% if method.is_async %} async{% endif %}{% if method.throws() %} throws{% endif %}{% if let Some(ret) = method.return_type() %} -> {{ ret }}{% endif %} {
+{%- if method.is_async %}
+        fatalError("foreign callback proxies do not support async methods yet")
+{%- else %}
+        guard let vtable = handle_.vtable?.assumingMemoryBound(to: {{ callback.vtable_type }}.self),
+              let invoke = vtable.pointee.{{ method.ffi_name }} else {
+            fatalError("missing callback vtable entry")
+        }
+{%- if method.wire_encoded_return() %}
+        var outPtr: UnsafeMutablePointer<UInt8>? = nil
+        var outLen: UInt = 0
+        var ffiStatus = FfiStatus()
+        invoke(handle_.handle{% for param in method.params %}{% for arg in param.proxy_ffi_args %}, {{ arg }}{% endfor %}{% endfor %}, &outPtr, &outLen, &ffiStatus)
+{%- if method.throws() %}
+        guard ffiStatus.code == 0 else { throw FfiError(message: "callback invocation failed") }
+        defer { free(outPtr) }
+        return try boltffiDecodeOwnedBuf(outPtr, Int(outLen)) { reader in {{ method.returns.reader_decode_expr().unwrap() }} }
+{%- else %}
+        guard ffiStatus.code == 0 else { fatalError("callback invocation failed") }
+        defer { free(outPtr) }
+        return boltffiDecodeOwnedBuf(outPtr, Int(outLen)) { reader in {{ method.returns.reader_decode_expr().unwrap() }} }
+{%- endif %}
+{%- elif method.has_return() %}
+        var result: {{ method.proxy_out_ffi_type().unwrap() }} = 0
+        var ffiStatus = FfiStatus()
+        invoke(handle_.handle{% for param in method.params %}{% for arg in param.proxy_ffi_args %}, {{ arg }}{% endfor %}{% endfor %}, &result, &ffiStatus)
+{%- if method.throws() %}
+        guard ffiStatus.code == 0 else { throw FfiError(message: "callback invocation failed") }
+{%- else %}
+        guard ffiStatus.code == 0 else { fatalError("callback invocation failed") }
+{%- endif %}
+{%- if method.returns.is_c_style_enum() %}
+        return {{ method.returns.c_style_enum_type().unwrap() }}(rawValue: result)!
+{%- else %}
+        return result
+{%- endif %}
+{%- else %}
+        var ffiStatus = FfiStatus()
+        invoke(handle_.handle{% for param in method.params %}{% for arg in param.proxy_ffi_args %}, {{ arg }}{% endfor %}{% endfor %}, &ffiStatus)
+{%- if method.throws() %}
+        guard ffiStatus.code == 0 else { throw FfiError(message: "callback invocation failed") }
+{%- else %}
+        guard ffiStatus.code == 0 else { fatalError("callback invocation failed") }
+{%- endif %}
+{%- endif %}
+{%- endif %}
+    }
+{%- endfor %}
+}
+{%- endif %}
 {% for method in callback.methods %}
 {%- if method.is_async %}
 
@@ -96,31 +168,60 @@ private var {{ callback.vtable_var }}: {{ callback.vtable_type }} = {
 {%- if method.is_async %}
             _{{ callback.vtable_var }}_{{ method.swift_name }}(wrapper, {% for param in method.params %}{{ param.call_arg }}, {% endfor %}callback, callbackData)
 {%- else %}
+{%- if method.throws() %}
+            do {
+                {% if method.has_return() %}let result = {% endif %}try wrapper.impl_.{{ method.swift_name }}({% for param in method.params %}{{ param.label }}: {{ param.call_arg }}{% if !loop.last %}, {% endif %}{% endfor %})
+{%- if method.has_out_param %}
+{%- if method.wire_encoded_return() %}
+{%- if let Some(encoded) = method.wire_return_encode() %}
+                {{ encoded }}
+{%- endif %}
+                guard boltffiStoreEncodedCallbackResult(encoded, outPtr, outLen) else {
+                    statusPtr?.pointee = FfiStatus(code: 1)
+                    return
+                }
+{%- else %}
+                outPtr?.pointee = {{ method.direct_out_expr() }}
+{%- endif %}
+{%- endif %}
+                statusPtr?.pointee = FfiStatus(code: 0)
+            } catch {
+{%- if let Some(err_type) = method.err_type() %}
+{%- if let Some(err_encoded) = method.wire_err_encode() %}
+                guard let error = error as? {{ err_type }} else {
+                    statusPtr?.pointee = FfiStatus(code: 1)
+                    return
+                }
+                {{ err_encoded }}
+                guard boltffiStoreEncodedCallbackResult(encoded, outPtr, outLen) else {
+                    statusPtr?.pointee = FfiStatus(code: 1)
+                    return
+                }
+                statusPtr?.pointee = FfiStatus(code: 0)
+{%- else %}
+                statusPtr?.pointee = FfiStatus(code: 1)
+{%- endif %}
+{%- else %}
+                statusPtr?.pointee = FfiStatus(code: 1)
+{%- endif %}
+            }
+{%- else %}
             {% if method.has_return() %}let result = {% endif %}wrapper.impl_.{{ method.swift_name }}({% for param in method.params %}{{ param.label }}: {{ param.call_arg }}{% if !loop.last %}, {% endif %}{% endfor %})
 {%- if method.has_out_param %}
 {%- if method.wire_encoded_return() %}
 {%- if let Some(encoded) = method.wire_return_encode() %}
             {{ encoded }}
 {%- endif %}
-            if encoded.count > 0 {
-                guard let allocated = malloc(encoded.count)?.assumingMemoryBound(to: UInt8.self) else {
-                    statusPtr?.pointee = FfiStatus(code: 1)
-                    return
-                }
-                _ = encoded.withUnsafeBytes { bytes in
-                    memcpy(allocated, bytes.baseAddress!, bytes.count)
-                }
-                outPtr?.pointee = allocated
-                outLen?.pointee = UInt(encoded.count)
-            } else {
-                outPtr?.pointee = nil
-                outLen?.pointee = 0
+            guard boltffiStoreEncodedCallbackResult(encoded, outPtr, outLen) else {
+                statusPtr?.pointee = FfiStatus(code: 1)
+                return
             }
 {%- else %}
             outPtr?.pointee = {{ method.direct_out_expr() }}
 {%- endif %}
 {%- endif %}
             statusPtr?.pointee = FfiStatus(code: 0)
+{%- endif %}
 {%- endif %}
         }{% endfor %}
     )
@@ -131,10 +232,40 @@ enum {{ callback.bridge_name }} {
         {{ callback.register_fn }}(&{{ callback.vtable_var }})
     }()
 
+{%- if callback.supports_foreign_wrap %}
+    static func release(_ handle: BoltFFICallbackHandle) {
+        guard handle.handle != 0,
+              let vtable = handle.vtable?.assumingMemoryBound(to: {{ callback.vtable_type }}.self),
+              let free = vtable.pointee.free else { return }
+        free(handle.handle)
+    }
+
+    static func clone(_ handle: BoltFFICallbackHandle) -> BoltFFICallbackHandle {
+        guard handle.handle != 0,
+              let vtable = handle.vtable?.assumingMemoryBound(to: {{ callback.vtable_type }}.self),
+              let clone = vtable.pointee.clone else {
+            return BoltFFICallbackHandle(handle: 0, vtable: nil)
+        }
+        return BoltFFICallbackHandle(handle: clone(handle.handle), vtable: handle.vtable)
+    }
+{%- endif %}
+
     static func create(_ impl: {{ callback.protocol_name }}) -> BoltFFICallbackHandle {
         _ = _register
+{%- if callback.supports_foreign_wrap %}
+        if let bridgeable = impl as? {{ callback.bridge_name }}Bridgeable {
+            return bridgeable._boltffiRetainedCallbackHandle()
+        }
+{%- endif %}
         let wrapper = {{ callback.wrapper_class }}(impl)
         let handle = UInt64(UInt(bitPattern: Unmanaged.passRetained(wrapper).toOpaque()))
         return {{ callback.create_fn }}(handle)
     }
+
+{%- if callback.supports_foreign_wrap %}
+    static func wrap(_ handle: BoltFFICallbackHandle) -> any {{ callback.protocol_name }} {
+        _ = _register
+        return {{ callback.protocol_name }}Proxy(handle)
+    }
+{%- endif %}
 }

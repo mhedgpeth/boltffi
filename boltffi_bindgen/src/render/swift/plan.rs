@@ -207,6 +207,35 @@ impl SwiftAsyncResult {
             _ => None,
         }
     }
+
+    pub fn direct_return_expr(&self, raw_var: &str) -> Option<String> {
+        match self {
+            Self::Direct { conversion, .. } => Some(match conversion {
+                SwiftAsyncConversion::None => raw_var.to_string(),
+                SwiftAsyncConversion::Handle {
+                    class_name,
+                    nullable,
+                } => {
+                    if *nullable {
+                        format!("{}.map {{ {}(handle: $0) }}", raw_var, class_name)
+                    } else {
+                        format!("{}(handle: {}!)", class_name, raw_var)
+                    }
+                }
+                SwiftAsyncConversion::Callback { protocol, nullable } => {
+                    if *nullable {
+                        format!(
+                            "{}.handle == 0 ? nil : {}Bridge.wrap({})",
+                            raw_var, protocol, raw_var
+                        )
+                    } else {
+                        format!("{}Bridge.wrap({})", protocol, raw_var)
+                    }
+                }
+            }),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -811,6 +840,7 @@ pub struct SwiftCallback {
     pub bridge_name: String,
     pub register_fn: String,
     pub create_fn: String,
+    pub supports_foreign_wrap: bool,
     pub methods: Vec<SwiftCallbackMethod>,
     pub doc: Option<String>,
 }
@@ -832,6 +862,7 @@ pub struct SwiftCallbackParam {
     pub swift_type: String,
     pub call_arg: String,
     pub ffi_args: Vec<String>,
+    pub proxy_ffi_args: Vec<String>,
     pub decode_prelude: Option<String>,
 }
 
@@ -921,6 +952,34 @@ impl SwiftCallbackMethod {
             "result.cValue"
         } else {
             "result"
+        }
+    }
+
+    pub fn proxy_out_ffi_type(&self) -> Option<String> {
+        match &self.returns {
+            SwiftReturn::Direct { swift_type } => Some(swift_type.clone()),
+            SwiftReturn::CStyleEnumFromRawValue { swift_type } => {
+                Some(format!("{}.RawValue", swift_type))
+            }
+            SwiftReturn::FromComposite { c_type, .. } => Some(c_type.clone()),
+            SwiftReturn::Handle { class_name, nullable } => {
+                if *nullable {
+                    Some(format!("{}?.Handle", class_name))
+                } else {
+                    Some(format!("{}.Handle", class_name))
+                }
+            }
+            SwiftReturn::Callback {
+                protocol_name,
+                nullable,
+            } => {
+                if *nullable {
+                    Some(format!("(any {})?", protocol_name))
+                } else {
+                    Some(format!("any {}", protocol_name))
+                }
+            }
+            SwiftReturn::Void | SwiftReturn::FromWireBuffer { .. } | SwiftReturn::FromDirectBuffer { .. } | SwiftReturn::Throws { .. } => None,
         }
     }
 }
@@ -1376,6 +1435,10 @@ pub enum SwiftReturn {
         class_name: String,
         nullable: bool,
     },
+    Callback {
+        protocol_name: String,
+        nullable: bool,
+    },
     Throws {
         ok: Box<SwiftReturn>,
         err_type: String,
@@ -1403,6 +1466,16 @@ impl SwiftReturn {
                     Some(format!("{}?", class_name))
                 } else {
                     Some(class_name.clone())
+                }
+            }
+            SwiftReturn::Callback {
+                protocol_name,
+                nullable,
+            } => {
+                if *nullable {
+                    Some(format!("(any {})?", protocol_name))
+                } else {
+                    Some(format!("any {}", protocol_name))
                 }
             }
             SwiftReturn::Throws { ok, .. } => ok.swift_type(),
@@ -1477,6 +1550,10 @@ impl SwiftReturn {
         matches!(self, SwiftReturn::Handle { .. })
     }
 
+    pub fn is_callback(&self) -> bool {
+        matches!(self, SwiftReturn::Callback { .. })
+    }
+
     pub fn is_c_style_enum(&self) -> bool {
         matches!(self, SwiftReturn::CStyleEnumFromRawValue { .. })
     }
@@ -1523,6 +1600,16 @@ impl SwiftReturn {
                 class_name,
                 nullable,
             } => Some((class_name.as_str(), *nullable)),
+            _ => None,
+        }
+    }
+
+    pub fn callback_info(&self) -> Option<(&str, bool)> {
+        match self {
+            SwiftReturn::Callback {
+                protocol_name,
+                nullable,
+            } => Some((protocol_name.as_str(), *nullable)),
             _ => None,
         }
     }

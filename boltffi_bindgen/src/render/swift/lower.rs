@@ -973,6 +973,7 @@ impl<'a> SwiftLowerer<'a> {
                     bridge_name: format!("{}Bridge", protocol_name),
                     register_fn: plan.register_fn.as_str().to_string(),
                     create_fn: plan.create_fn.as_str().to_string(),
+                    supports_foreign_wrap: self.callback_is_returned(&def.id),
                     methods,
                     doc: def.doc.clone(),
                 }
@@ -982,11 +983,32 @@ impl<'a> SwiftLowerer<'a> {
 
     fn lower_callback_param(&self, def: &ParamDef, param: &AbiParam) -> SwiftCallbackParam {
         let label = camel_case(param.name.as_str());
-        let (swift_type, ffi_args, decode_prelude) = match &param.role {
+        let (swift_type, ffi_args, proxy_ffi_args, decode_prelude) = match &param.role {
+            ParamRole::Input {
+                transport: Transport::Scalar(ScalarOrigin::CStyleEnum { .. }),
+                ..
+            } => {
+                let raw_label = format!("raw{}", pascal_case(param.name.as_str()));
+                let swift_type = self.swift_type(&def.type_expr);
+                (
+                    swift_type.clone(),
+                    vec![raw_label.clone()],
+                    vec![format!("{}.rawValue", label)],
+                    Some(format!(
+                        "let {} = {}(rawValue: {})!",
+                        label, swift_type, raw_label
+                    )),
+                )
+            }
             ParamRole::Input {
                 transport: Transport::Scalar(_),
                 ..
-            } => (self.swift_type(&def.type_expr), vec![label.clone()], None),
+            } => (
+                self.swift_type(&def.type_expr),
+                vec![label.clone()],
+                vec![label.clone()],
+                None,
+            ),
             ParamRole::Input {
                 transport: Transport::Span(SpanContent::Encoded(_)),
                 decode_ops: Some(decode_ops),
@@ -996,6 +1018,7 @@ impl<'a> SwiftLowerer<'a> {
                 let reader_decode = emit::emit_reader_read(decode_ops);
                 (
                     self.swift_type(&def.type_expr),
+                    vec![label.clone(), len_name.clone()],
                     vec![label.clone(), len_name.clone()],
                     Some(format!(
                         "let {} = {{ var reader = WireReader(ptr: {}!, len: Int({})); return {} }}()",
@@ -1014,6 +1037,7 @@ impl<'a> SwiftLowerer<'a> {
             swift_type,
             call_arg: label,
             ffi_args,
+            proxy_ffi_args,
             decode_prelude,
         }
     }
@@ -1398,13 +1422,10 @@ impl<'a> SwiftLowerer<'a> {
                 else {
                     unreachable!("callback handle return strategy requires callback transport");
                 };
-                let protocol = pascal_case(callback_id.as_str());
-                let swift_type = if *nullable {
-                    format!("(any {})?", protocol)
-                } else {
-                    format!("any {}", protocol)
-                };
-                SwiftReturn::Direct { swift_type }
+                SwiftReturn::Callback {
+                    protocol_name: pascal_case(callback_id.as_str()),
+                    nullable: *nullable,
+                }
             }
         };
 
@@ -1473,6 +1494,32 @@ impl<'a> SwiftLowerer<'a> {
             }),
         }
     }
+
+    fn callback_is_returned(&self, callback_id: &CallbackId) -> bool {
+        self.abi.calls.iter().any(|call| {
+            self.return_shape_references_callback(&call.returns, callback_id)
+                || match &call.mode {
+                    CallMode::Sync => false,
+                    CallMode::Async(async_call) => {
+                        self.return_shape_references_callback(&async_call.result, callback_id)
+                    }
+                }
+        })
+    }
+
+    fn return_shape_references_callback(
+        &self,
+        return_shape: &ReturnShape,
+        callback_id: &CallbackId,
+    ) -> bool {
+        matches!(
+            &return_shape.transport,
+            Some(Transport::Callback {
+                callback_id: returned_callback,
+                ..
+            }) if returned_callback == callback_id
+        )
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1528,6 +1575,17 @@ impl<'a> SwiftLowerer<'a> {
             .catalog
             .resolve_enum(enum_id)
             .map(|e| matches!(e.repr, EnumRepr::CStyle { .. }))
+            .unwrap_or(false)
+    }
+
+    fn is_c_style_enum_type_expr(&self, type_expr: &TypeExpr) -> bool {
+        let TypeExpr::Enum(enum_id) = type_expr else {
+            return false;
+        };
+        self.contract
+            .catalog
+            .resolve_enum(enum_id)
+            .map(|enumeration| matches!(enumeration.repr, EnumRepr::CStyle { .. }))
             .unwrap_or(false)
     }
 
@@ -1981,10 +2039,15 @@ impl<'a> SwiftLowerer<'a> {
                 ..
             } => {
                 let arg_name = format!("arg{}", idx);
+                let decode_expr = if self.is_c_style_enum_type_expr(&param_def.type_expr) {
+                    format!("{}(rawValue: {})!", self.swift_type(&param_def.type_expr), arg_name)
+                } else {
+                    arg_name.clone()
+                };
                 SwiftClosureTrampolineParam {
                     name: arg_name.clone(),
                     c_type: self.abi_to_swift(&abi_param.abi_type),
-                    decode_expr: arg_name,
+                    decode_expr,
                 }
             }
             _ => unreachable!(

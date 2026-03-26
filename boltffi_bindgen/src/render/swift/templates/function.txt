@@ -9,6 +9,18 @@
     let futureHandle = {% for w in func.closure_wrappers() %}{{ w }} {% endfor %}{{ func.start_call_expr() }}{% for _ in func.closure_wrappers() %} }{% endfor %}
 
 {%- if result.is_direct() || result.is_unit() %}
+{%- if result.is_direct() %}
+    let rawResult = try await boltffiAsyncCallDirect(
+        futureHandle: futureHandle,
+        pollFn: {{ poll }},
+        completeFn: {{ complete }},
+        cancelFn: {{ cancel }},
+        freeFn: {{ free }}
+    )
+{%- if let Some(expr) = result.direct_return_expr("rawResult") %}
+    return {{ expr }}
+{%- endif %}
+{%- else %}
     return try await boltffiAsyncCallDirect(
         futureHandle: futureHandle,
         pollFn: {{ poll }},
@@ -16,6 +28,7 @@
         cancelFn: {{ cancel }},
         freeFn: {{ free }}
     )
+{%- endif %}
 {%- elif result.is_direct_buffer() %}
     return try await boltffiAsyncCall(
         futureHandle: futureHandle,
@@ -118,6 +131,12 @@
 {{ func.body_indent() }}let ptr = {{ symbol }}({% for p in func.params %}{{ p.ffi_arg() }}{% if !loop.last %}, {% endif %}{% endfor %})!
 {{ func.body_indent() }}return {{ class_name }}(handle: ptr)
 {%- endif %}
+{%- elif let Some((protocol_name, nullable)) = func.returns.callback_info() %}
+{{ func.body_indent() }}let callback = {{ symbol }}({% for p in func.params %}{{ p.ffi_arg() }}{% if !loop.last %}, {% endif %}{% endfor %})
+{%- if nullable %}
+{{ func.body_indent() }}guard callback.handle != 0 else { return nil }
+{%- endif %}
+{{ func.body_indent() }}return {{ protocol_name }}Bridge.wrap(callback)
 {%- elif func.returns.is_composite() %}
 {%- if let Some(convert_expr) = func.returns.composite_convert_expr("_raw") %}
 {{ func.body_indent() }}let _raw = {{ symbol }}({% for p in func.params %}{{ p.ffi_arg() }}{% if !loop.last %}, {% endif %}{% endfor %})

@@ -313,6 +313,28 @@ final class FfiFutureState<T>: @unchecked Sendable {
     return try decode(&reader)
 }
 
+@discardableResult
+@inlinable func boltffiStoreEncodedCallbackResult(
+    _ encoded: [UInt8],
+    _ outPtr: UnsafeMutablePointer<UnsafeMutablePointer<UInt8>?>?,
+    _ outLen: UnsafeMutablePointer<UInt>?
+) -> Bool {
+    if encoded.isEmpty {
+        outPtr?.pointee = nil
+        outLen?.pointee = 0
+        return true
+    }
+    guard let allocated = malloc(encoded.count)?.assumingMemoryBound(to: UInt8.self) else {
+        return false
+    }
+    _ = encoded.withUnsafeBytes { bytes in
+        memcpy(allocated, bytes.baseAddress!, bytes.count)
+    }
+    outPtr?.pointee = allocated
+    outLen?.pointee = UInt(encoded.count)
+    return true
+}
+
 @inlinable func boltffiEncode(_ body: (inout WireWriter) -> Void) -> [UInt8] {
     var writer = WireWriter()
     body(&writer)
