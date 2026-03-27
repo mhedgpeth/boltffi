@@ -13,7 +13,8 @@ export async function run() {
   assertArrayEqual(holder.getItems(), ["a", "b"]);
   assert.equal(holder.removeLast(), "b");
   assert.equal(holder.transformValue((value) => Math.trunc(value / 2)), 3);
-  assert.equal(await holder.asyncGetValue(), 3);
+  assert.equal(holder.applyValueCallback({ onValue: (value) => value + 3 }), 6);
+  assert.equal(await holder.asyncGetValue(), 6);
   await holder.asyncSetValue(9);
   assert.equal(holder.getValue(), 9);
   assert.equal(await holder.asyncAddItem("z"), 2);

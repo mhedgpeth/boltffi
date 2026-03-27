@@ -1,12 +1,15 @@
-import { assert, assertArrayEqual, assertPoint, demo } from "../support/index.mjs";
+import { wireErr, wireOk } from "@boltffi/runtime";
+import { assert, assertArrayEqual, assertPoint, assertThrowsWithCode, demo } from "../support/index.mjs";
 
 export async function run() {
   const doubler = { onValue: (value) => value * 2 };
   const tripler = { onValue: (value) => value * 3 };
+  const incrementer = demo.makeIncrementingCallback(5);
   const pointTransformer = { transform: (point) => ({ x: point.x + 10, y: point.y + 20 }) };
   const statusMapper = {
     mapStatus: (status) => (status === demo.Status.Pending ? demo.Status.Active : demo.Status.Inactive),
   };
+  const flipper = demo.makeStatusFlipper();
   const multiMethodCallback = {
     methodA: (value) => value + 1,
     methodB: (left, right) => left * right,
@@ -15,6 +18,18 @@ export async function run() {
   const optionCallback = {
     findValue: (key) => (key > 0 ? key * 10 : null),
   };
+  const resultCallback = {
+    compute: (value) => (value >= 0 ? value * 10 : wireErr(demo.MathError.NegativeInput)),
+  };
+  const falliblePointTransformer = {
+    transformPoint: (point, status) =>
+      status === demo.Status.Inactive
+        ? wireErr(demo.MathError.NegativeInput)
+        : wireOk({ x: point.x + 100, y: point.y + 200 }),
+  };
+  const offsetCallback = {
+    offset: (value, delta) => value + delta,
+  };
   const vecProcessor = {
     process: (values) => values.map((value) => value * value),
   };
@@ -22,15 +37,38 @@ export async function run() {
   assert.equal(demo.invokeValueCallback(doubler, 4), 8);
   assert.equal(demo.invokeValueCallbackTwice(doubler, 3, 4), 14);
   assert.equal(demo.invokeBoxedValueCallback(doubler, 5), 10);
+  assert.equal(incrementer.onValue(4), 9);
+  assert.equal(demo.invokeValueCallback(incrementer, 4), 9);
+  assert.equal(demo.invokeOptionalValueCallback(doubler, 4), 8);
+  assert.equal(demo.invokeOptionalValueCallback(null, 4), 4);
   assertPoint(demo.transformPoint(pointTransformer, { x: 1, y: 2 }), { x: 11, y: 22 });
   assertPoint(demo.transformPointBoxed(pointTransformer, { x: 3, y: 4 }), { x: 13, y: 24 });
   assert.equal(demo.mapStatus(statusMapper, demo.Status.Pending), demo.Status.Active);
+  assert.equal(flipper.mapStatus(demo.Status.Active), demo.Status.Inactive);
+  assert.equal(demo.mapStatus(flipper, demo.Status.Inactive), demo.Status.Pending);
   assertArrayEqual(demo.processVec(vecProcessor, [1, 2, 3]), [1, 4, 9]);
   assert.equal(demo.invokeMultiMethod(multiMethodCallback, 3, 4), 21);
   assert.equal(demo.invokeMultiMethodBoxed(multiMethodCallback, 3, 4), 21);
   assert.equal(demo.invokeTwoCallbacks(doubler, tripler, 5), 25);
   assert.equal(demo.invokeOptionCallback(optionCallback, 7), 70);
   assert.equal(demo.invokeOptionCallback(optionCallback, 0), null);
+  assert.equal(demo.invokeResultCallback(resultCallback, 7), 70);
+  assertThrowsWithCode(
+    () => demo.invokeResultCallback(resultCallback, -1),
+    demo.MathErrorException,
+    demo.MathError.NegativeInput,
+  );
+  assert.equal(demo.invokeOffsetCallback(offsetCallback, -5, 8), 3);
+  assert.equal(demo.invokeBoxedOffsetCallback(offsetCallback, 10, 4), 14);
+  assertPoint(
+    demo.invokeFalliblePointTransformer(falliblePointTransformer, { x: 2, y: 3 }, demo.Status.Active),
+    { x: 102, y: 203 },
+  );
+  assertThrowsWithCode(
+    () => demo.invokeFalliblePointTransformer(falliblePointTransformer, { x: 2, y: 3 }, demo.Status.Inactive),
+    demo.MathErrorException,
+    demo.MathError.NegativeInput,
+  );
 
   const valueCallbackHandle = demo.registerValueCallback(doubler);
   const pointTransformerHandle = demo.registerPointTransformer(pointTransformer);
@@ -38,6 +76,8 @@ export async function run() {
   const vecProcessorHandle = demo.registerVecProcessor(vecProcessor);
   const multiMethodCallbackHandle = demo.registerMultiMethodCallback(multiMethodCallback);
   const optionCallbackHandle = demo.registerOptionCallback(optionCallback);
+  const falliblePointTransformerHandle = demo.registerFalliblePointTransformer(falliblePointTransformer);
+  const offsetCallbackHandle = demo.registerOffsetCallback(offsetCallback);
 
   assert.ok(valueCallbackHandle > 0);
   assert.ok(pointTransformerHandle > 0);
@@ -45,6 +85,8 @@ export async function run() {
   assert.ok(vecProcessorHandle > 0);
   assert.ok(multiMethodCallbackHandle > 0);
   assert.ok(optionCallbackHandle > 0);
+  assert.ok(falliblePointTransformerHandle > 0);
+  assert.ok(offsetCallbackHandle > 0);
 
   demo.unregisterValueCallback(valueCallbackHandle);
   demo.unregisterPointTransformer(pointTransformerHandle);
@@ -52,4 +94,6 @@ export async function run() {
   demo.unregisterVecProcessor(vecProcessorHandle);
   demo.unregisterMultiMethodCallback(multiMethodCallbackHandle);
   demo.unregisterOptionCallback(optionCallbackHandle);
+  demo.unregisterFalliblePointTransformer(falliblePointTransformerHandle);
+  demo.unregisterOffsetCallback(offsetCallbackHandle);
 }

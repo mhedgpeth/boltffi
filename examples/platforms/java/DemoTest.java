@@ -32,6 +32,7 @@ public final class DemoTest {
         testAsyncCallbacks();
         testAsyncFunctions();
         testAsyncClassMethods();
+        testSingleThreadedStateHolder();
         testResultFunctions();
         testResultClassMethods();
         testResultEnumErrors();
@@ -502,6 +503,32 @@ public final class DemoTest {
         assert !Demo.applyBoolClosure(value -> !value, true) : "applyBoolClosure";
         assert Math.abs(Demo.applyF64Closure(value -> value * value, 3.0) - 9.0) < 0.0001 : "applyF64Closure";
         assert Demo.applyBinaryClosure((left, right) -> left + right, 3, 4) == 7 : "applyBinaryClosure";
+        assert Demo.applyOffsetClosure((value, delta) -> value + delta, -5L, 8L) == 3L : "applyOffsetClosure";
+        assert Demo.applyStatusClosure(status -> status == Status.ACTIVE ? Status.PENDING : Status.ACTIVE, Status.ACTIVE) == Status.PENDING : "applyStatusClosure";
+
+        Optional<Point> optionalPoint = Demo.applyOptionalPointClosure(
+            point -> point.map(value -> new Point(value.x() + 2.0, value.y() + 3.0)),
+            Optional.of(new Point(1.0, 2.0))
+        );
+        assert optionalPoint.isPresent() : "applyOptionalPointClosure some";
+        assert optionalPoint.get().x() == 3.0 : "applyOptionalPointClosure.x";
+        assert optionalPoint.get().y() == 5.0 : "applyOptionalPointClosure.y";
+        assert !Demo.applyOptionalPointClosure(point -> point, Optional.empty()).isPresent() : "applyOptionalPointClosure none";
+
+        assert Demo.applyResultClosure(value -> {
+            if (value < 0) {
+                throw new MathError.Exception(MathError.NEGATIVE_INPUT);
+            }
+            return value * 4;
+        }, 6) == 24 : "applyResultClosure ok";
+        try {
+            Demo.applyResultClosure(value -> {
+                throw new MathError.Exception(MathError.NEGATIVE_INPUT);
+            }, -1);
+            assert false : "applyResultClosure should throw";
+        } catch (MathError.Exception e) {
+            assert e.getError() == MathError.NEGATIVE_INPUT : "applyResultClosure error type";
+        }
 
         Point transformedPoint = Demo.applyPointClosure(
             point -> new Point(point.x() + 1.0, point.y() + 1.0),
@@ -526,8 +553,10 @@ public final class DemoTest {
 
         ValueCallback doubler = value -> value * 2;
         ValueCallback tripler = value -> value * 3;
+        ValueCallback incrementer = Demo.makeIncrementingCallback(5);
         PointTransformer pointTransformer = point -> new Point(point.x() + 10.0, point.y() + 20.0);
         StatusMapper statusMapper = status -> status == Status.PENDING ? Status.ACTIVE : Status.INACTIVE;
+        StatusMapper flipper = Demo.makeStatusFlipper();
         MultiMethodCallback multiMethod = new MultiMethodCallback() {
             @Override
             public int methodA(int x) {
@@ -545,12 +574,31 @@ public final class DemoTest {
             }
         };
         OptionCallback optionCallback = key -> key > 0 ? Optional.of(key * 10) : Optional.empty();
+        ResultCallback resultCallback = value -> {
+            if (value < 0) {
+                throw new MathError.Exception(MathError.NEGATIVE_INPUT);
+            }
+            return value * 10;
+        };
+        FalliblePointTransformer falliblePointTransformer = (point, status) -> {
+            if (status == Status.INACTIVE) {
+                throw new MathError.Exception(MathError.NEGATIVE_INPUT);
+            }
+            return new Point(point.x() + 100.0, point.y() + 200.0);
+        };
+        OffsetCallback offsetCallback = (value, delta) -> value + delta;
         VecProcessor vecProcessor = values -> Arrays.stream(values).map(value -> value * value).toArray();
 
         assert Demo.invokeValueCallback(doubler, 4) == 8 : "invokeValueCallback";
         assert Demo.invokeValueCallbackTwice(doubler, 3, 4) == 14 : "invokeValueCallbackTwice";
         assert Demo.invokeBoxedValueCallback(doubler, 5) == 10 : "invokeBoxedValueCallback";
+        assert incrementer.onValue(4) == 9 : "makeIncrementingCallback direct";
+        assert Demo.invokeValueCallback(incrementer, 4) == 9 : "makeIncrementingCallback bridged";
+        assert Demo.invokeOptionalValueCallback(Optional.of(doubler), 4) == 8 : "invokeOptionalValueCallback some";
+        assert Demo.invokeOptionalValueCallback(Optional.empty(), 4) == 4 : "invokeOptionalValueCallback none";
         assert Demo.mapStatus(statusMapper, Status.PENDING) == Status.ACTIVE : "mapStatus";
+        assert flipper.mapStatus(Status.ACTIVE) == Status.INACTIVE : "makeStatusFlipper direct";
+        assert Demo.mapStatus(flipper, Status.INACTIVE) == Status.PENDING : "makeStatusFlipper bridged";
 
         int[] processed = Demo.processVec(vecProcessor, new int[]{1, 2, 3});
         assert processed.length == 3 : "processVec length";
@@ -563,6 +611,28 @@ public final class DemoTest {
         Optional<Integer> optionResult = Demo.invokeOptionCallback(optionCallback, 7);
         assert optionResult.isPresent() && optionResult.get() == 70 : "invokeOptionCallback some";
         assert !Demo.invokeOptionCallback(optionCallback, 0).isPresent() : "invokeOptionCallback none";
+        assert Demo.invokeResultCallback(resultCallback, 7) == 70 : "invokeResultCallback ok";
+        try {
+            Demo.invokeResultCallback(resultCallback, -1);
+            assert false : "invokeResultCallback should throw";
+        } catch (MathError.Exception e) {
+            assert e.getError() == MathError.NEGATIVE_INPUT : "invokeResultCallback error type";
+        }
+        assert Demo.invokeOffsetCallback(offsetCallback, -5L, 8L) == 3L : "invokeOffsetCallback";
+        assert Demo.invokeBoxedOffsetCallback(offsetCallback, 10L, 4L) == 14L : "invokeBoxedOffsetCallback";
+        Point richPoint = Demo.invokeFalliblePointTransformer(
+            falliblePointTransformer,
+            new Point(2.0, 3.0),
+            Status.ACTIVE
+        );
+        assert richPoint.x() == 102.0 : "invokeFalliblePointTransformer.x";
+        assert richPoint.y() == 203.0 : "invokeFalliblePointTransformer.y";
+        try {
+            Demo.invokeFalliblePointTransformer(falliblePointTransformer, new Point(2.0, 3.0), Status.INACTIVE);
+            assert false : "invokeFalliblePointTransformer should throw";
+        } catch (MathError.Exception e) {
+            assert e.getError() == MathError.NEGATIVE_INPUT : "invokeFalliblePointTransformer error type";
+        }
 
         Point transformed = Demo.transformPoint(pointTransformer, new Point(1.0, 2.0));
         assert transformed.x() == 11.0 : "transformPoint.x";
@@ -603,6 +673,42 @@ public final class DemoTest {
             assert !none.isPresent() : "invokeAsyncOptionFetcher none";
         } catch (Exception exception) {
             throw new RuntimeException("async callback test failed", exception);
+        }
+        System.out.println("  PASS\n");
+    }
+
+    private static void testSingleThreadedStateHolder() {
+        System.out.println("Testing single-threaded state holder...");
+        try {
+            StateHolder holder = new StateHolder("local");
+            ValueCallback doubler = value -> value * 2;
+
+            assert holder.getLabel().equals("local") : "StateHolder.getLabel";
+            assert holder.getValue() == 0 : "StateHolder.getValue";
+            holder.setValue(5);
+            assert holder.getValue() == 5 : "StateHolder.setValue";
+            assert holder.increment() == 6 : "StateHolder.increment";
+            holder.addItem("a");
+            holder.addItem("b");
+            assert holder.itemCount() == 2 : "StateHolder.itemCount";
+            assert holder.getItems().equals(Arrays.asList("a", "b")) : "StateHolder.getItems";
+            assert holder
+                .removeLast()
+                .orElseThrow(() -> new AssertionError("expected removed item"))
+                .equals("b") : "StateHolder.removeLast";
+            assert holder.transformValue(value -> value / 2) == 3 : "StateHolder.transformValue";
+            assert holder.applyValueCallback(doubler) == 6 : "StateHolder.applyValueCallback";
+            assert holder.asyncGetValue().get() == 6 : "StateHolder.asyncGetValue";
+            holder.asyncSetValue(9).get();
+            assert holder.getValue() == 9 : "StateHolder.asyncSetValue";
+            assert holder.asyncAddItem("z").get() == 2 : "StateHolder.asyncAddItem";
+            assert holder.getItems().equals(Arrays.asList("a", "z")) : "StateHolder.itemsAfterAsyncAdd";
+            holder.clear();
+            assert holder.getValue() == 0 : "StateHolder.clear value";
+            assert holder.getItems().equals(Collections.emptyList()) : "StateHolder.clear items";
+            holder.close();
+        } catch (Exception e) {
+            throw new RuntimeException("single-threaded state holder test failed", e);
         }
         System.out.println("  PASS\n");
     }

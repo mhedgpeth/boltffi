@@ -1,6 +1,8 @@
 use boltffi::*;
 
+use crate::enums::c_style::Status;
 use crate::records::blittable::Point;
+use crate::results::error_enums::MathError;
 
 /// Applies a closure to a single i32 value and returns the result.
 #[export]
@@ -51,4 +53,30 @@ pub fn map_vec_with_closure(f: impl Fn(i32) -> i32, values: Vec<i32>) -> Vec<i32
 #[export]
 pub fn filter_vec_with_closure(f: impl Fn(i32) -> bool, values: Vec<i32>) -> Vec<i32> {
     values.into_iter().filter(|&v| f(v)).collect()
+}
+
+#[export]
+pub fn apply_offset_closure(f: impl Fn(isize, usize) -> isize, value: isize, delta: usize) -> isize {
+    f(value, delta)
+}
+
+#[export]
+pub fn apply_status_closure(f: impl Fn(Status) -> Status, status: Status) -> Status {
+    f(status)
+}
+
+#[export]
+pub fn apply_optional_point_closure(
+    f: impl Fn(Option<Point>) -> Option<Point>,
+    point: Option<Point>,
+) -> Option<Point> {
+    f(point)
+}
+
+#[export]
+pub fn apply_result_closure(
+    f: impl Fn(i32) -> Result<i32, MathError>,
+    value: i32,
+) -> Result<i32, MathError> {
+    f(value)
 }

@@ -431,15 +431,20 @@ final class RustSwiftSurfaceContractTests: XCTestCase {
     private func repositoryRootURL() throws -> URL {
         var currentURL = URL(fileURLWithPath: #filePath)
 
-        while currentURL.lastPathComponent != "mobiFFI" && currentURL.path != "/" {
+        while currentURL.path != "/" {
+            let cargoManifestURL = currentURL.appendingPathComponent("Cargo.toml")
+            let demoConfigURL = currentURL.appendingPathComponent("examples/demo/boltffi.toml")
+            let applePackageURL = currentURL.appendingPathComponent("examples/platforms/apple/Package.swift")
+            if FileManager.default.fileExists(atPath: cargoManifestURL.path)
+                && FileManager.default.fileExists(atPath: demoConfigURL.path)
+                && FileManager.default.fileExists(atPath: applePackageURL.path)
+            {
+                return currentURL
+            }
             currentURL.deleteLastPathComponent()
         }
 
-        guard currentURL.lastPathComponent == "mobiFFI" else {
-            throw NSError(domain: "RustSwiftSurfaceContractTests", code: 1, userInfo: [NSLocalizedDescriptionKey: "could not locate repository root"])
-        }
-
-        return currentURL
+        throw NSError(domain: "RustSwiftSurfaceContractTests", code: 1, userInfo: [NSLocalizedDescriptionKey: "could not locate repository root"])
     }
 
     private func match(_ text: String, pattern: String) -> [String]? {

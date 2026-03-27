@@ -2,6 +2,7 @@ use boltffi::*;
 
 use crate::enums::c_style::Status;
 use crate::records::blittable::Point;
+use crate::results::error_enums::MathError;
 
 /// A callback trait for transforming integer values.
 #[export]
@@ -23,6 +24,31 @@ pub fn invoke_value_callback_twice(callback: impl ValueCallback, a: i32, b: i32)
 #[export]
 pub fn invoke_boxed_value_callback(callback: Box<dyn ValueCallback>, input: i32) -> i32 {
     callback.on_value(input)
+}
+
+#[export]
+pub fn invoke_optional_value_callback(
+    callback: Option<Box<dyn ValueCallback>>,
+    input: i32,
+) -> i32 {
+    callback
+        .map(|value_callback| value_callback.on_value(input))
+        .unwrap_or(input)
+}
+
+struct IncrementingValueCallback {
+    delta: i32,
+}
+
+impl ValueCallback for IncrementingValueCallback {
+    fn on_value(&self, value: i32) -> i32 {
+        value + self.delta
+    }
+}
+
+#[export]
+pub fn make_incrementing_callback(delta: i32) -> Box<dyn ValueCallback> {
+    Box::new(IncrementingValueCallback { delta })
 }
 
 #[export]
@@ -48,6 +74,23 @@ pub trait StatusMapper {
 #[export]
 pub fn map_status(mapper: impl StatusMapper, status: Status) -> Status {
     mapper.map_status(status)
+}
+
+struct FlippingStatusMapper;
+
+impl StatusMapper for FlippingStatusMapper {
+    fn map_status(&self, status: Status) -> Status {
+        match status {
+            Status::Active => Status::Inactive,
+            Status::Inactive => Status::Pending,
+            Status::Pending => Status::Active,
+        }
+    }
+}
+
+#[export]
+pub fn make_status_flipper() -> Box<dyn StatusMapper> {
+    Box::new(FlippingStatusMapper)
 }
 
 #[export]
@@ -94,4 +137,47 @@ pub trait OptionCallback {
 #[export]
 pub fn invoke_option_callback(callback: impl OptionCallback, key: i32) -> Option<i32> {
     callback.find_value(key)
+}
+
+#[export]
+pub trait ResultCallback {
+    fn compute(&self, value: i32) -> Result<i32, MathError>;
+}
+
+#[export]
+pub fn invoke_result_callback(callback: impl ResultCallback, value: i32) -> Result<i32, MathError> {
+    callback.compute(value)
+}
+
+#[export]
+pub trait FalliblePointTransformer {
+    fn transform_point(&self, point: Point, status: Status) -> Result<Point, MathError>;
+}
+
+#[export]
+pub fn invoke_fallible_point_transformer(
+    callback: impl FalliblePointTransformer,
+    point: Point,
+    status: Status,
+) -> Result<Point, MathError> {
+    callback.transform_point(point, status)
+}
+
+#[export]
+pub trait OffsetCallback {
+    fn offset(&self, value: isize, delta: usize) -> isize;
+}
+
+#[export]
+pub fn invoke_offset_callback(callback: impl OffsetCallback, value: isize, delta: usize) -> isize {
+    callback.offset(value, delta)
+}
+
+#[export]
+pub fn invoke_boxed_offset_callback(
+    callback: Box<dyn OffsetCallback>,
+    value: isize,
+    delta: usize,
+) -> isize {
+    callback.offset(value, delta)
 }

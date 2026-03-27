@@ -26,6 +26,31 @@ class DemoCallbacksAndAsyncTest {
             intArrayOf(2, 4),
             filterVecWithClosure(ClosureI32ToBool { it % 2 == 0 }, intArrayOf(1, 2, 3, 4))
         )
+        assertEquals(3L, applyOffsetClosure(ClosureISizeUSizeToISize { value, delta -> value + delta.toLong() }, -5L, 8uL))
+        assertEquals(Status.PENDING, applyStatusClosure(ClosureStatusToStatus {
+            if (it == Status.ACTIVE) Status.PENDING else Status.ACTIVE
+        }, Status.ACTIVE))
+        assertPointEquals(
+            3.0,
+            5.0,
+            applyOptionalPointClosure(
+                ClosureOptPointToOptPoint { point -> point?.let { Point(it.x + 2.0, it.y + 3.0) } },
+                Point(1.0, 2.0)
+            )!!
+        )
+        assertEquals(null, applyOptionalPointClosure(ClosureOptPointToOptPoint { it }, null))
+        assertEquals(24, applyResultClosure(ClosureI32ToResultI32ErrMathError { value ->
+            if (value < 0) {
+                throw MathError.NegativeInput
+            }
+            value * 4
+        }, 6))
+        assertEquals(
+            MathError.NegativeInput,
+            assertFailsWith<MathError> {
+                applyResultClosure(ClosureI32ToResultI32ErrMathError { throw MathError.NegativeInput }, -1)
+            }
+        )
     }
 
     @Test
@@ -42,12 +67,14 @@ class DemoCallbacksAndAsyncTest {
         val tripler = object : ValueCallback {
             override fun onValue(value: Int): Int = value * 3
         }
+        val incrementer = makeIncrementingCallback(5)
         val pointTransformer = object : PointTransformer {
             override fun transform(point: Point): Point = Point(point.x + 10.0, point.y + 20.0)
         }
         val statusMapper = object : StatusMapper {
             override fun mapStatus(status: Status): Status = if (status == Status.PENDING) Status.ACTIVE else Status.INACTIVE
         }
+        val flipper = makeStatusFlipper()
         val multiMethod = object : MultiMethodCallback {
             override fun methodA(x: Int): Int = x + 1
             override fun methodB(x: Int, y: Int): Int = x * y
@@ -56,6 +83,25 @@ class DemoCallbacksAndAsyncTest {
         val optionCallback = object : OptionCallback {
             override fun findValue(key: Int): Int? = key.takeIf { it > 0 }?.times(10)
         }
+        val resultCallback = object : ResultCallback {
+            override fun compute(value: Int): Int {
+                if (value < 0) {
+                    throw MathError.NegativeInput
+                }
+                return value * 10
+            }
+        }
+        val falliblePointTransformer = object : FalliblePointTransformer {
+            override fun transformPoint(point: Point, status: Status): Point {
+                if (status == Status.INACTIVE) {
+                    throw MathError.NegativeInput
+                }
+                return Point(point.x + 100.0, point.y + 200.0)
+            }
+        }
+        val offsetCallback = object : OffsetCallback {
+            override fun offset(value: Long, delta: ULong): Long = value + delta.toLong()
+        }
         val vecProcessor = object : VecProcessor {
             override fun process(values: IntArray): IntArray = values.map { it * it }.toIntArray()
         }
@@ -63,13 +109,30 @@ class DemoCallbacksAndAsyncTest {
         assertEquals(8, invokeValueCallback(doubler, 4))
         assertEquals(14, invokeValueCallbackTwice(doubler, 3, 4))
         assertEquals(10, invokeBoxedValueCallback(doubler, 5))
+        assertEquals(9, incrementer.onValue(4))
+        assertEquals(9, invokeValueCallback(incrementer, 4))
+        assertEquals(8, invokeOptionalValueCallback(doubler, 4))
+        assertEquals(4, invokeOptionalValueCallback(null, 4))
         assertEquals(Status.ACTIVE, mapStatus(statusMapper, Status.PENDING))
+        assertEquals(Status.INACTIVE, flipper.mapStatus(Status.ACTIVE))
+        assertEquals(Status.PENDING, mapStatus(flipper, Status.INACTIVE))
         assertContentEquals(intArrayOf(1, 4, 9), processVec(vecProcessor, intArrayOf(1, 2, 3)))
         assertEquals(21, invokeMultiMethod(multiMethod, 3, 4))
         assertEquals(21, invokeMultiMethodBoxed(multiMethod, 3, 4))
         assertEquals(25, invokeTwoCallbacks(doubler, tripler, 5))
         assertEquals(70, invokeOptionCallback(optionCallback, 7))
         assertNull(invokeOptionCallback(optionCallback, 0))
+        assertEquals(70, invokeResultCallback(resultCallback, 7))
+        assertEquals(MathError.NegativeInput, assertFailsWith<MathError> { invokeResultCallback(resultCallback, -1) })
+        assertEquals(3L, invokeOffsetCallback(offsetCallback, -5L, 8uL))
+        assertEquals(14L, invokeBoxedOffsetCallback(offsetCallback, 10L, 4uL))
+        assertPointEquals(102.0, 203.0, invokeFalliblePointTransformer(falliblePointTransformer, Point(2.0, 3.0), Status.ACTIVE))
+        assertEquals(
+            MathError.NegativeInput,
+            assertFailsWith<MathError> {
+                invokeFalliblePointTransformer(falliblePointTransformer, Point(2.0, 3.0), Status.INACTIVE)
+            }
+        )
     }
 
     @Test

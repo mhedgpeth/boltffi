@@ -1,5 +1,7 @@
 use boltffi::*;
 
+use crate::callbacks::sync_traits::ValueCallback;
+
 pub struct StateHolder {
     label: String,
     value: i32,
@@ -61,6 +63,11 @@ impl StateHolder {
 
     pub fn transform_value(&mut self, f: impl Fn(i32) -> i32) -> i32 {
         self.value = f(self.value);
+        self.value
+    }
+
+    pub fn apply_value_callback(&mut self, callback: impl ValueCallback) -> i32 {
+        self.value = callback.on_value(self.value);
         self.value
     }
 

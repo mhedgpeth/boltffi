@@ -91,6 +91,9 @@ class DemoClassesAndStreamsTest {
         }
 
         StateHolder("local").use { holder ->
+            val doubler = object : ValueCallback {
+                override fun onValue(value: Int): Int = value * 2
+            }
             assertEquals("local", holder.getLabel())
             assertEquals(0, holder.getValue())
             holder.setValue(5)
@@ -102,7 +105,8 @@ class DemoClassesAndStreamsTest {
             assertEquals(listOf("a", "b"), holder.getItems())
             assertEquals("b", holder.removeLast())
             assertEquals(3, holder.transformValue(ClosureI32ToI32 { it / 2 }))
-            assertEquals(3, holder.asyncGetValue())
+            assertEquals(6, holder.applyValueCallback(doubler))
+            assertEquals(6, holder.asyncGetValue())
             holder.asyncSetValue(9)
             assertEquals(9, holder.getValue())
             assertEquals(2u, holder.asyncAddItem("z"))

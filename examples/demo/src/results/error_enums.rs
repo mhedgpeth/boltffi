@@ -21,6 +21,12 @@ impl std::fmt::Display for MathError {
 
 impl std::error::Error for MathError {}
 
+impl From<UnexpectedFfiCallbackError> for MathError {
+    fn from(_: UnexpectedFfiCallbackError) -> Self {
+        Self::Overflow
+    }
+}
+
 #[export]
 pub fn checked_divide(a: i32, b: i32) -> Result<i32, MathError> {
     if b == 0 {

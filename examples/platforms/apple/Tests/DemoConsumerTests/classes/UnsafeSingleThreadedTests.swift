@@ -4,6 +4,7 @@ import XCTest
 final class UnsafeSingleThreadedTests: XCTestCase {
     func testStateHolderSyncAndAsyncMethods() async throws {
         let stateHolder = StateHolder(label: "local")
+        let incrementer = makeIncrementingCallback(delta: 3)
         XCTAssertEqual(stateHolder.getLabel(), "local")
         XCTAssertEqual(stateHolder.getValue(), 0)
         stateHolder.setValue(value: 5)
@@ -15,8 +16,9 @@ final class UnsafeSingleThreadedTests: XCTestCase {
         XCTAssertEqual(stateHolder.getItems(), ["a", "b"])
         XCTAssertEqual(stateHolder.removeLast(), "b")
         XCTAssertEqual(stateHolder.transformValue(f: { $0 / 2 }), 3)
+        XCTAssertEqual(stateHolder.applyValueCallback(callback: incrementer), 6)
         let asyncValue = try await stateHolder.asyncGetValue()
-        XCTAssertEqual(asyncValue, 3)
+        XCTAssertEqual(asyncValue, 6)
         try await stateHolder.asyncSetValue(value: 9)
         XCTAssertEqual(stateHolder.getValue(), 9)
         let asyncItemCount = try await stateHolder.asyncAddItem(item: "z")
@@ -27,4 +29,3 @@ final class UnsafeSingleThreadedTests: XCTestCase {
         XCTAssertEqual(stateHolder.getItems(), [])
     }
 }
-
