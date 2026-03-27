@@ -41,7 +41,7 @@ impl CallbackHandle {
 
         #[cfg(not(target_arch = "wasm32"))]
         {
-        self.handle == 0 || self.vtable.is_null()
+            self.handle == 0 || self.vtable.is_null()
         }
     }
 

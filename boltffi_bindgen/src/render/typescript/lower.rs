@@ -1021,11 +1021,12 @@ impl<'a> TypeScriptLowerer<'a> {
                 }
             }
             ParamRole::Input {
-                transport: Transport::Callback {
-                    callback_id,
-                    nullable,
-                    ..
-                },
+                transport:
+                    Transport::Callback {
+                        callback_id,
+                        nullable,
+                        ..
+                    },
                 ..
             } => {
                 let interface_name = naming::to_upper_camel_case(callback_id.as_str());
@@ -1851,11 +1852,12 @@ mod tests {
     use crate::ir::Lowerer as IrLowerer;
     use crate::ir::contract::{FfiContract, PackageInfo};
     use crate::ir::definitions::{
-        CStyleVariant, CallbackKind, CallbackMethodDef, CallbackTraitDef, ClassDef,
-        ConstructorDef, EnumDef, EnumRepr, FunctionDef, MethodDef, ParamDef, ParamPassing,
-        Receiver, ReturnDef,
+        CStyleVariant, CallbackKind, CallbackMethodDef, CallbackTraitDef, ClassDef, ConstructorDef,
+        EnumDef, EnumRepr, FunctionDef, MethodDef, ParamDef, ParamPassing, Receiver, ReturnDef,
     };
-    use crate::ir::ids::{CallbackId, ClassId, EnumId, FunctionId, MethodId, ParamName, VariantName};
+    use crate::ir::ids::{
+        CallbackId, ClassId, EnumId, FunctionId, MethodId, ParamName, VariantName,
+    };
     use std::path::PathBuf;
 
     fn empty_contract() -> FfiContract {
@@ -2096,15 +2098,17 @@ mod tests {
         ));
         contract.functions.push(function(
             "invoke_optional_value_callback",
-            vec![ParamDef {
-                name: ParamName::new("callback"),
-                type_expr: TypeExpr::Option(Box::new(TypeExpr::Callback(CallbackId::new(
-                    "ValueCallback",
-                )))),
-                passing: ParamPassing::Value,
-                doc: None,
-            },
-            primitive_param("input", PrimitiveType::I32)],
+            vec![
+                ParamDef {
+                    name: ParamName::new("callback"),
+                    type_expr: TypeExpr::Option(Box::new(TypeExpr::Callback(CallbackId::new(
+                        "ValueCallback",
+                    )))),
+                    passing: ParamPassing::Value,
+                    doc: None,
+                },
+                primitive_param("input", PrimitiveType::I32),
+            ],
             ReturnDef::Value(TypeExpr::Primitive(PrimitiveType::I32)),
             false,
         ));
@@ -2124,7 +2128,9 @@ mod tests {
         assert_eq!(callback_param.ts_type, "ValueCallback | null");
         assert_eq!(
             callback_param.wrapper_code().as_deref(),
-            Some("const callback_handle = callback === null ? 0 : registerValueCallback(callback);")
+            Some(
+                "const callback_handle = callback === null ? 0 : registerValueCallback(callback);"
+            )
         );
         assert_eq!(callback_param.ffi_args(), vec!["callback_handle"]);
     }
@@ -2161,9 +2167,16 @@ mod tests {
             Some("wrapValueCallback")
         );
 
-        let rendered = crate::render::typescript::templates::TypeScriptEmitter::emit(&lowered_module);
-        assert!(rendered.contains("export function makeIncrementingCallback(delta: number): ValueCallback {"));
-        assert!(rendered.contains("const result = (_exports.boltffi_make_incrementing_callback as Function)(delta);"));
+        let rendered =
+            crate::render::typescript::templates::TypeScriptEmitter::emit(&lowered_module);
+        assert!(
+            rendered.contains(
+                "export function makeIncrementingCallback(delta: number): ValueCallback {"
+            )
+        );
+        assert!(rendered.contains(
+            "const result = (_exports.boltffi_make_incrementing_callback as Function)(delta);"
+        ));
         assert!(rendered.contains("return wrapValueCallback(result);"));
     }
 

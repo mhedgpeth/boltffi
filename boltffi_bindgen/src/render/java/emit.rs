@@ -1,8 +1,10 @@
 use crate::ir::abi::AbiContract;
-use crate::ir::codec::{EnumLayout, EnumTagStrategy, VecLayout};
 use crate::ir::contract::FfiContract;
 use crate::ir::ops::{ReadOp, ReadSeq, SizeExpr, ValueExpr, WriteOp, WriteSeq};
 use crate::ir::types::{PrimitiveType, TypeExpr};
+use boltffi_ffi_rules::transport::EnumTagStrategy;
+
+use crate::ir::codec::{EnumLayout, VecLayout};
 
 use super::JavaOptions;
 use super::lower::JavaLowerer;
@@ -109,15 +111,21 @@ impl JavaEmitter {
             [
                 JavaFile {
                     file_name: format!("{}.java", closure.interface_name),
-                    source: ClosureTemplate { closure, package_name: pkg }
-                        .render()
-                        .expect("closure interface template failed"),
+                    source: ClosureTemplate {
+                        closure,
+                        package_name: pkg,
+                    }
+                    .render()
+                    .expect("closure interface template failed"),
                 },
                 JavaFile {
                     file_name: format!("{}.java", closure.callbacks_class_name),
-                    source: ClosureCallbacksTemplate { closure, package_name: pkg }
-                        .render()
-                        .expect("closure callbacks template failed"),
+                    source: ClosureCallbacksTemplate {
+                        closure,
+                        package_name: pkg,
+                    }
+                    .render()
+                    .expect("closure callbacks template failed"),
                 },
             ]
         });
@@ -127,15 +135,21 @@ impl JavaEmitter {
             [
                 JavaFile {
                     file_name: format!("{}.java", callback.interface_name),
-                    source: CallbackTraitTemplate { callback, package_name: pkg }
-                        .render()
-                        .expect("callback trait template failed"),
+                    source: CallbackTraitTemplate {
+                        callback,
+                        package_name: pkg,
+                    }
+                    .render()
+                    .expect("callback trait template failed"),
                 },
                 JavaFile {
                     file_name: format!("{}.java", callback.callbacks_class_name()),
-                    source: CallbackCallbacksTemplate { callback, package_name: pkg }
-                        .render()
-                        .expect("callback callbacks template failed"),
+                    source: CallbackCallbacksTemplate {
+                        callback,
+                        package_name: pkg,
+                    }
+                    .render()
+                    .expect("callback callbacks template failed"),
                 },
             ]
         });

@@ -1,5 +1,5 @@
-use proc_macro2::Span;
 use boltffi_ffi_rules::naming;
+use proc_macro2::Span;
 use std::cell::RefCell;
 use std::env;
 use std::fs;

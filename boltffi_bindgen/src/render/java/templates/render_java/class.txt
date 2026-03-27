@@ -19,7 +19,10 @@ public final class {{ class.class_name }} implements AutoCloseable {
     }
 
     private static long createHandle{{ loop.index0 }}({% for param in ctor.params %}{{ param.java_type }} {{ param.name }}{% if !loop.last %}, {% endif %}{% endfor %}) {
-{%- if ctor.wire_writers.is_empty() %}
+{%- for binding in ctor.input_bindings.direct_composites %}
+        {{ binding.declaration() }};
+{%- endfor %}
+{%- if ctor.input_bindings.wire_writers.is_empty() %}
 {%- if ctor.is_fallible %}
         long _handle = Native.{{ ctor.ffi_name }}({% for param in ctor.params %}{{ param.native_expr }}{% if !loop.last %}, {% endif %}{% endfor %});
         if (_handle == 0L) throw new RuntimeException("Constructor failed");
@@ -29,11 +32,11 @@ public final class {{ class.class_name }} implements AutoCloseable {
 {%- endif %}
 {%- else %}
         try (
-{%- for writer in ctor.wire_writers %}
+{%- for writer in ctor.input_bindings.wire_writers %}
             WireWriter {{ writer.binding_name }} = new WireWriter({{ writer.size_expr }}){% if !loop.last %};{% endif %}
 {%- endfor %}
         ) {
-{%- for writer in ctor.wire_writers %}
+{%- for writer in ctor.input_bindings.wire_writers %}
             {{ writer.encode_expr }};
 {%- endfor %}
 {%- if ctor.is_fallible %}
@@ -61,7 +64,10 @@ public final class {{ class.class_name }} implements AutoCloseable {
 {%- for ctor in class.constructors %}{% if ctor.is_factory() %}
 
     public static {{ class.class_name }} {{ ctor.name }}({% for param in ctor.params %}{{ param.java_type }} {{ param.name }}{% if !loop.last %}, {% endif %}{% endfor %}) {
-{%- if ctor.wire_writers.is_empty() %}
+{%- for binding in ctor.input_bindings.direct_composites %}
+        {{ binding.declaration() }};
+{%- endfor %}
+{%- if ctor.input_bindings.wire_writers.is_empty() %}
 {%- if ctor.is_fallible %}
         long _handle = Native.{{ ctor.ffi_name }}({% for param in ctor.params %}{{ param.native_expr }}{% if !loop.last %}, {% endif %}{% endfor %});
         if (_handle == 0L) throw new RuntimeException("Factory constructor failed");
@@ -71,11 +77,11 @@ public final class {{ class.class_name }} implements AutoCloseable {
 {%- endif %}
 {%- else %}
         try (
-{%- for writer in ctor.wire_writers %}
+{%- for writer in ctor.input_bindings.wire_writers %}
             WireWriter {{ writer.binding_name }} = new WireWriter({{ writer.size_expr }}){% if !loop.last %};{% endif %}
 {%- endfor %}
         ) {
-{%- for writer in ctor.wire_writers %}
+{%- for writer in ctor.input_bindings.wire_writers %}
             {{ writer.encode_expr }};
 {%- endfor %}
 {%- if ctor.is_fallible %}
@@ -92,7 +98,10 @@ public final class {{ class.class_name }} implements AutoCloseable {
 {%- for method in class.methods %}{% if method.is_static && !method.is_async() %}
 
     public static {{ method.return_type }} {{ method.name }}({% for param in method.params %}{{ param.java_type }} {{ param.name }}{% if !loop.last %}, {% endif %}{% endfor %}) {
-{%- if method.wire_writers.is_empty() %}
+{%- for binding in method.input_bindings.direct_composites %}
+        {{ binding.declaration() }};
+{%- endfor %}
+{%- if method.input_bindings.wire_writers.is_empty() %}
 {%- if method.return_plan.is_void() %}
         Native.{{ method.ffi_name }}({% for param in method.params %}{{ param.native_expr }}{% if !loop.last %}, {% endif %}{% endfor %});
 {%- elif method.return_plan.is_direct() %}
@@ -136,11 +145,11 @@ public final class {{ class.class_name }} implements AutoCloseable {
 {%- endif %}
 {%- else %}
         try (
-{%- for writer in method.wire_writers %}
+{%- for writer in method.input_bindings.wire_writers %}
             WireWriter {{ writer.binding_name }} = new WireWriter({{ writer.size_expr }}){% if !loop.last %};{% endif %}
 {%- endfor %}
         ) {
-{%- for writer in method.wire_writers %}
+{%- for writer in method.input_bindings.wire_writers %}
             {{ writer.encode_expr }};
 {%- endfor %}
 {%- if method.return_plan.is_void() %}
@@ -207,16 +216,19 @@ public final class {{ class.class_name }} implements AutoCloseable {
         return BoltFFIAsync.callAsync(
 {%- endif %}
 {%- endif %}
-{%- if method.wire_writers.is_empty() %}
+{%- if method.input_bindings.is_empty() %}
                 () -> Native.{{ method.ffi_name }}({% if !method.is_static %}handle{% if !method.params.is_empty() %}, {% endif %}{% endif %}{% for param in method.params %}{{ param.native_expr }}{% if !loop.last %}, {% endif %}{% endfor %}),
 {%- else %}
                 () -> {
-{%- for writer in method.wire_writers %}
+{%- for binding in method.input_bindings.direct_composites %}
+                    {{ binding.declaration() }};
+{%- endfor %}
+{%- for writer in method.input_bindings.wire_writers %}
                     try (WireWriter {{ writer.binding_name }} = new WireWriter({{ writer.size_expr }})) {
                         {{ writer.encode_expr }};
 {%- endfor %}
                         return Native.{{ method.ffi_name }}({% if !method.is_static %}handle{% if !method.params.is_empty() %}, {% endif %}{% endif %}{% for param in method.params %}{{ param.native_expr }}{% if !loop.last %}, {% endif %}{% endfor %});
-{%- for _writer in method.wire_writers %}
+{%- for _writer in method.input_bindings.wire_writers %}
                     }
 {%- endfor %}
                 },
@@ -281,7 +293,10 @@ public final class {{ class.class_name }} implements AutoCloseable {
 {%- for method in class.methods %}{% if !method.is_static && !method.is_async() %}
 
     public {{ method.return_type }} {{ method.name }}({% for param in method.params %}{{ param.java_type }} {{ param.name }}{% if !loop.last %}, {% endif %}{% endfor %}) {
-{%- if method.wire_writers.is_empty() %}
+{%- for binding in method.input_bindings.direct_composites %}
+        {{ binding.declaration() }};
+{%- endfor %}
+{%- if method.input_bindings.wire_writers.is_empty() %}
 {%- if method.return_plan.is_void() %}
         Native.{{ method.ffi_name }}(handle{% if !method.params.is_empty() %}, {% endif %}{% for param in method.params %}{{ param.native_expr }}{% if !loop.last %}, {% endif %}{% endfor %});
 {%- elif method.return_plan.is_direct() %}
@@ -325,11 +340,11 @@ public final class {{ class.class_name }} implements AutoCloseable {
 {%- endif %}
 {%- else %}
         try (
-{%- for writer in method.wire_writers %}
+{%- for writer in method.input_bindings.wire_writers %}
             WireWriter {{ writer.binding_name }} = new WireWriter({{ writer.size_expr }}){% if !loop.last %};{% endif %}
 {%- endfor %}
         ) {
-{%- for writer in method.wire_writers %}
+{%- for writer in method.input_bindings.wire_writers %}
             {{ writer.encode_expr }};
 {%- endfor %}
 {%- if method.return_plan.is_void() %}

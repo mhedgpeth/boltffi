@@ -3,8 +3,8 @@ use proc_macro::TokenStream;
 use quote::{format_ident, quote};
 use syn::Type;
 
-mod lowered_return;
 mod local_handle;
+mod lowered_return;
 mod native;
 mod wasm;
 

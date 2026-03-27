@@ -962,7 +962,10 @@ impl SwiftCallbackMethod {
                 Some(format!("{}.RawValue", swift_type))
             }
             SwiftReturn::FromComposite { c_type, .. } => Some(c_type.clone()),
-            SwiftReturn::Handle { class_name, nullable } => {
+            SwiftReturn::Handle {
+                class_name,
+                nullable,
+            } => {
                 if *nullable {
                     Some(format!("{}?.Handle", class_name))
                 } else {
@@ -979,7 +982,10 @@ impl SwiftCallbackMethod {
                     Some(format!("any {}", protocol_name))
                 }
             }
-            SwiftReturn::Void | SwiftReturn::FromWireBuffer { .. } | SwiftReturn::FromDirectBuffer { .. } | SwiftReturn::Throws { .. } => None,
+            SwiftReturn::Void
+            | SwiftReturn::FromWireBuffer { .. }
+            | SwiftReturn::FromDirectBuffer { .. }
+            | SwiftReturn::Throws { .. } => None,
         }
     }
 }

@@ -1017,9 +1017,7 @@ mod tests {
     #[test]
     fn closure_result_return_becomes_fallible_callback_return() {
         let mut module = empty_module();
-        module
-            .enums
-            .push(Enumeration::new("MathError").as_error());
+        module.enums.push(Enumeration::new("MathError").as_error());
         module.functions.push(
             model::Function::new("apply_result_closure")
                 .with_param(Parameter::new(

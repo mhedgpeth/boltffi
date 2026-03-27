@@ -926,7 +926,9 @@ mod tests {
         .unwrap();
 
         assert!(rendered.contains("const _value_handler_ref_counts = new Map<number, number>();"));
-        assert!(rendered.contains("let _value_handler_next_id = _callback_handle_js_namespace_start;"));
+        assert!(
+            rendered.contains("let _value_handler_next_id = _callback_handle_js_namespace_start;")
+        );
         assert!(rendered.contains("const handle_key = _callback_handle_key(handle);"));
         assert!(rendered.contains("_value_handler_ref_counts.set(id, 1);"));
         assert!(rendered.contains("return _value_handler_retain(handle);"));
@@ -943,16 +945,15 @@ mod tests {
         .render()
         .unwrap();
 
+        assert!(rendered.contains(
+            "Cannot clone unknown callback handle ${handle_key} in ValueHandler registry"
+        ));
+        assert!(rendered.contains(
+            "Cannot free unknown callback handle ${handle_key} in ValueHandler registry"
+        ));
         assert!(
-            rendered.contains(
-                "Cannot clone unknown callback handle ${handle_key} in ValueHandler registry"
-            )
+            rendered.contains("Callback handle ${handle_key} not found in ValueHandler registry")
         );
-        assert!(
-            rendered
-                .contains("Cannot free unknown callback handle ${handle_key} in ValueHandler registry")
-        );
-        assert!(rendered.contains("Callback handle ${handle_key} not found in ValueHandler registry"));
         assert!(rendered.contains("if (currentCount === 1) {"));
         assert!(rendered.contains("_value_handler_ref_counts.delete(handle_key);"));
         assert!(rendered.contains("_value_handler_registry.delete(handle_key);"));

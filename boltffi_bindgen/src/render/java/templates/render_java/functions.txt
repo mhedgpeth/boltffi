@@ -21,16 +21,19 @@ public final class {{ module.class_name }} {
         return BoltFFIAsync.callAsync(
 {%- endif %}
 {%- endif %}
-{%- if func.wire_writers.is_empty() %}
+{%- if func.input_bindings.is_empty() %}
                 () -> Native.{{ func.ffi_name }}({% for param in func.params %}{{ param.native_expr }}{% if !loop.last %}, {% endif %}{% endfor %}),
 {%- else %}
                 () -> {
-{%- for writer in func.wire_writers %}
+{%- for binding in func.input_bindings.direct_composites %}
+                    {{ binding.declaration() }};
+{%- endfor %}
+{%- for writer in func.input_bindings.wire_writers %}
                     try (WireWriter {{ writer.binding_name }} = new WireWriter({{ writer.size_expr }})) {
                         {{ writer.encode_expr }};
 {%- endfor %}
                         return Native.{{ func.ffi_name }}({% for param in func.params %}{{ param.native_expr }}{% if !loop.last %}, {% endif %}{% endfor %});
-{%- for _writer in func.wire_writers %}
+{%- for _writer in func.input_bindings.wire_writers %}
                     }
 {%- endfor %}
                 },
@@ -95,7 +98,10 @@ public final class {{ module.class_name }} {
 {%- else %}
 
     public static {{ func.return_type }} {{ func.name }}({% for param in func.params %}{{ param.java_type }} {{ param.name }}{% if !loop.last %}, {% endif %}{% endfor %}) {
-{%- if func.wire_writers.is_empty() %}
+{%- for binding in func.input_bindings.direct_composites %}
+        {{ binding.declaration() }};
+{%- endfor %}
+{%- if func.input_bindings.wire_writers.is_empty() %}
 {%- if func.return_plan.is_void() %}
         Native.{{ func.ffi_name }}({% for param in func.params %}{{ param.native_expr }}{% if !loop.last %}, {% endif %}{% endfor %});
 {%- elif func.return_plan.is_direct() %}
@@ -133,11 +139,11 @@ public final class {{ module.class_name }} {
 {%- endif %}
 {%- else %}
         try (
-{%- for writer in func.wire_writers %}
+{%- for writer in func.input_bindings.wire_writers %}
             WireWriter {{ writer.binding_name }} = new WireWriter({{ writer.size_expr }}){% if !loop.last %};{% endif %}
 {%- endfor %}
         ) {
-{%- for writer in func.wire_writers %}
+{%- for writer in func.input_bindings.wire_writers %}
             {{ writer.encode_expr }};
 {%- endfor %}
 {%- if func.return_plan.is_void() %}

@@ -81,13 +81,17 @@ impl<'a> CallbackBindingBuilder<'a> {
         callback_name: &Ident,
     ) -> CallbackArgLowering {
         if matches!(
-            self.return_lowering.lower_type(arg_type).value_return_strategy(),
+            self.return_lowering
+                .lower_type(arg_type)
+                .value_return_strategy(),
             ValueReturnStrategy::Scalar(_)
         ) {
             return CallbackArgLowering {
                 ffi_arg_types: vec![quote! { <#arg_type as ::boltffi::__private::Passable>::Out }],
                 prelude: quote! {},
-                call_args: vec![quote! { <#arg_type as ::boltffi::__private::Passable>::pack(#arg_name) }],
+                call_args: vec![
+                    quote! { <#arg_type as ::boltffi::__private::Passable>::pack(#arg_name) },
+                ],
             };
         }
 
@@ -589,7 +593,9 @@ fn callback_type_id_from_syn_type(rust_type: &syn::Type) -> callback_naming::Typ
     match rust_type {
         syn::Type::Tuple(tuple) if tuple.elems.is_empty() => callback_naming::TypeId::Void,
         syn::Type::Reference(reference) => match reference.elem.as_ref() {
-            syn::Type::Path(type_path) if path_last_segment_name(&type_path.path).as_deref() == Some("str") => {
+            syn::Type::Path(type_path)
+                if path_last_segment_name(&type_path.path).as_deref() == Some("str") =>
+            {
                 callback_naming::TypeId::String
             }
             syn::Type::Slice(slice) => callback_naming::TypeId::Slice(Box::new(
@@ -597,9 +603,9 @@ fn callback_type_id_from_syn_type(rust_type: &syn::Type) -> callback_naming::Typ
             )),
             other => callback_type_id_from_syn_type(other),
         },
-        syn::Type::Slice(slice) => callback_naming::TypeId::Slice(Box::new(
-            callback_type_id_from_syn_type(&slice.elem),
-        )),
+        syn::Type::Slice(slice) => {
+            callback_naming::TypeId::Slice(Box::new(callback_type_id_from_syn_type(&slice.elem)))
+        }
         syn::Type::Path(type_path) => callback_type_id_from_path(&type_path.path),
         _ => {
             let type_name = quote!(#rust_type).to_string().replace(' ', "");
@@ -626,8 +632,9 @@ fn callback_type_id_from_path(type_path: &syn::Path) -> callback_naming::TypeId 
         "Option" => single_generic_type_id(last_segment)
             .map(|inner| callback_naming::TypeId::Option(Box::new(inner)))
             .unwrap_or_else(|| callback_naming::TypeId::Named(type_name)),
-        "Result" => result_type_id(last_segment)
-            .unwrap_or_else(|| callback_naming::TypeId::Named(type_name)),
+        "Result" => {
+            result_type_id(last_segment).unwrap_or(callback_naming::TypeId::Named(type_name))
+        }
         _ => callback_naming::TypeId::Named(type_name),
     }
 }

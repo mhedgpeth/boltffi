@@ -1,4 +1,7 @@
 use boltffi_ffi_rules::naming::{GlobalSymbol, Name, VtableField};
+use boltffi_ffi_rules::transport::{
+    EncodedReturnStrategy, ParamContract, ScalarReturnStrategy, ValueReturnStrategy,
+};
 
 use crate::ir::codec::CodecPlan;
 use crate::ir::ids::{CallbackId, ClassId, EnumId, FieldName, ParamName, RecordId};
@@ -40,6 +43,7 @@ pub struct CompletionCallback {
 #[derive(Debug, Clone)]
 pub struct ParamPlan {
     pub name: ParamName,
+    pub contract: ParamContract,
     pub transport: Transport,
     pub mutability: Mutability,
 }
@@ -82,6 +86,26 @@ impl ScalarOrigin {
         match self {
             Self::Primitive(p) => *p,
             Self::CStyleEnum { tag_type, .. } => *tag_type,
+        }
+    }
+}
+
+impl Transport {
+    pub fn value_return_strategy(&self) -> ValueReturnStrategy {
+        match self {
+            Self::Scalar(ScalarOrigin::Primitive(_)) => {
+                ValueReturnStrategy::Scalar(ScalarReturnStrategy::PrimitiveValue)
+            }
+            Self::Scalar(ScalarOrigin::CStyleEnum { .. }) => {
+                ValueReturnStrategy::Scalar(ScalarReturnStrategy::CStyleEnumTag)
+            }
+            Self::Composite(_) => ValueReturnStrategy::CompositeValue,
+            Self::Span(SpanContent::Scalar(_)) | Self::Span(SpanContent::Composite(_)) => {
+                ValueReturnStrategy::Buffer(EncodedReturnStrategy::DirectVec)
+            }
+            Self::Span(_) => ValueReturnStrategy::Buffer(EncodedReturnStrategy::WireEncoded),
+            Self::Handle { .. } => ValueReturnStrategy::ObjectHandle,
+            Self::Callback { .. } => ValueReturnStrategy::CallbackHandle,
         }
     }
 }

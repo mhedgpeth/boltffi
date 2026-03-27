@@ -1,13 +1,12 @@
 use std::collections::{HashMap, HashSet};
 
-use boltffi_ffi_rules::transport::{ScalarReturnStrategy, ValueReturnStrategy};
+use boltffi_ffi_rules::transport::{EnumTagStrategy, ScalarReturnStrategy, ValueReturnStrategy};
 
 use crate::ir::abi::{
     AbiCall, AbiCallbackInvocation, AbiCallbackMethod, AbiContract, AbiEnum, AbiEnumField,
     AbiEnumPayload, AbiEnumVariant, AbiParam, AbiRecord, AbiStream, CallId, CallMode,
     ErrorTransport, ParamRole, ReturnShape, StreamItemTransport,
 };
-use crate::ir::codec::EnumTagStrategy;
 use crate::ir::codec::VecLayout;
 use crate::ir::contract::FfiContract;
 use crate::ir::definitions::Receiver;
@@ -1948,17 +1947,13 @@ impl<'a> KotlinLowerer<'a> {
             params: abi_method
                 .params
                 .iter()
-                .filter(|param| {
-                    match &param.role {
-                        ParamRole::Input { .. } => method_param_names.contains(&param.name),
-                        ParamRole::SyntheticLen { for_param } => {
-                            method_param_names.contains(for_param)
-                        }
-                        ParamRole::CallbackContext { .. }
-                        | ParamRole::OutLen { .. }
-                        | ParamRole::OutDirect
-                        | ParamRole::StatusOut => false,
-                    }
+                .filter(|param| match &param.role {
+                    ParamRole::Input { .. } => method_param_names.contains(&param.name),
+                    ParamRole::SyntheticLen { for_param } => method_param_names.contains(for_param),
+                    ParamRole::CallbackContext { .. }
+                    | ParamRole::OutLen { .. }
+                    | ParamRole::OutDirect
+                    | ParamRole::StatusOut => false,
                 })
                 .cloned()
                 .collect(),
@@ -2248,14 +2243,14 @@ impl<'a> KotlinLowerer<'a> {
                 format!("{}.fromValue({})", enum_name, name)
             }
             (ty, _) => match ty {
-            TypeExpr::Primitive(p) => match p {
-                PrimitiveType::U8 => format!("{}.toUByte()", name),
-                PrimitiveType::U16 => format!("{}.toUShort()", name),
-                PrimitiveType::U32 => format!("{}.toUInt()", name),
-                PrimitiveType::U64 | PrimitiveType::USize => format!("{}.toULong()", name),
+                TypeExpr::Primitive(p) => match p {
+                    PrimitiveType::U8 => format!("{}.toUByte()", name),
+                    PrimitiveType::U16 => format!("{}.toUShort()", name),
+                    PrimitiveType::U32 => format!("{}.toUInt()", name),
+                    PrimitiveType::U64 | PrimitiveType::USize => format!("{}.toULong()", name),
+                    _ => name.to_string(),
+                },
                 _ => name.to_string(),
-            },
-            _ => name.to_string(),
             },
         }
     }

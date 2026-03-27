@@ -79,8 +79,7 @@ impl SyncCallbackReturn {
         &self,
         callback_expression: TokenStream,
     ) -> TokenStream {
-        let local_handle_expression =
-            self.lower_native_result_expression(callback_expression);
+        let local_handle_expression = self.lower_native_result_expression(callback_expression);
         quote! {
             (#local_handle_expression).handle() as u32
         }

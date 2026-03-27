@@ -1304,10 +1304,7 @@ impl<'a> JniLowerer<'a> {
                         is_direct: true,
                         jni_return_type: self.primitive_return_jni_type(tag_type),
                         jni_c_return_type: self.primitive_c_type(tag_type),
-                        jni_return_expr: format!(
-                            "{}_result",
-                            self.primitive_return_cast(tag_type)
-                        ),
+                        jni_return_expr: format!("{}_result", self.primitive_return_cast(tag_type)),
                     }
                 }
                 TypeExpr::String
@@ -1610,25 +1607,23 @@ impl<'a> JniLowerer<'a> {
             })
             .collect();
 
-        let proxy_sync_methods = if supports_callback_proxy_sync_wrap {
-            callback
-                .methods
-                .iter()
-                .filter(|method| !method.is_async)
-                .filter(|method| self.callback_method_supported(callback, method))
-                .filter_map(|method| {
-                    let abi_method = abi_methods.get(&method.id)?;
-                    Some(self.lower_callback_proxy_sync_method(
-                        callback,
-                        method,
-                        abi_method,
-                        jni_prefix,
-                    ))
-                })
-                .collect()
-        } else {
-            Vec::new()
-        };
+        let proxy_sync_methods =
+            if supports_callback_proxy_sync_wrap {
+                callback
+                    .methods
+                    .iter()
+                    .filter(|method| !method.is_async)
+                    .filter(|method| self.callback_method_supported(callback, method))
+                    .filter_map(|method| {
+                        let abi_method = abi_methods.get(&method.id)?;
+                        Some(self.lower_callback_proxy_sync_method(
+                            callback, method, abi_method, jni_prefix,
+                        ))
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            };
 
         let async_methods = callback
             .methods
@@ -1650,10 +1645,7 @@ impl<'a> JniLowerer<'a> {
                 .filter_map(|method| {
                     let abi_method = abi_methods.get(&method.id)?;
                     Some(self.lower_callback_proxy_async_method(
-                        callback,
-                        method,
-                        abi_method,
-                        jni_prefix,
+                        callback, method, abi_method, jni_prefix,
                     ))
                 })
                 .collect()
@@ -1725,7 +1717,11 @@ impl<'a> JniLowerer<'a> {
         JniCallbackProxySyncMethod {
             vtable_field: abi_method.vtable_field.as_str().to_string(),
             native_name: native_name.clone(),
-            jni_name: format!("Java_{}_Native_{}", jni_prefix, native_name.replace('_', "_1")),
+            jni_name: format!(
+                "Java_{}_Native_{}",
+                jni_prefix,
+                native_name.replace('_', "_1")
+            ),
             jni_params: self.format_jni_params(&params),
             params,
             return_is_unit: return_meta.is_unit,
@@ -1762,8 +1758,16 @@ impl<'a> JniLowerer<'a> {
         JniCallbackProxyAsyncMethod {
             vtable_field: abi_method.vtable_field.as_str().to_string(),
             native_name: native_name.clone(),
-            jni_name: format!("Java_{}_Native_{}", jni_prefix, native_name.replace('_', "_1")),
-            jni_params: format!("{}{}", self.format_jni_params(&params), ", jlong callbackData"),
+            jni_name: format!(
+                "Java_{}_Native_{}",
+                jni_prefix,
+                native_name.replace('_', "_1")
+            ),
+            jni_params: format!(
+                "{}{}",
+                self.format_jni_params(&params),
+                ", jlong callbackData"
+            ),
             params,
             return_c_type: self.async_callback_return_c_type(&abi_method.returns),
             success_method_name: format!("complete{}", method_name),
@@ -3258,7 +3262,8 @@ mod tests {
 
     #[test]
     fn callback_proxy_record_return_uses_wire_buffer_path() {
-        let contract = contract_with_point_transformer_callback(CallbackKind::Trait, "PointTransformer");
+        let contract =
+            contract_with_point_transformer_callback(CallbackKind::Trait, "PointTransformer");
         let lowerer = lowerer_from_contract_with_binding_style(&contract, JvmBindingStyle::Java);
         let module = lowerer.lower();
         let callback = module
@@ -3279,8 +3284,10 @@ mod tests {
 
     #[test]
     fn closure_proxy_record_return_uses_wire_buffer_path() {
-        let contract =
-            contract_with_point_transformer_callback(CallbackKind::Closure, "__Closure_PointToPoint");
+        let contract = contract_with_point_transformer_callback(
+            CallbackKind::Closure,
+            "__Closure_PointToPoint",
+        );
         let lowerer = lowerer_from_contract_with_binding_style(&contract, JvmBindingStyle::Java);
         let callback = contract
             .catalog
@@ -3289,7 +3296,12 @@ mod tests {
         let trampoline = lowerer.lower_closure_trampoline(callback, "com/test");
 
         assert!(!trampoline.proxy_sync_method.return_is_direct);
-        assert!(trampoline.proxy_sync_method.return_composite_c_type.is_none());
+        assert!(
+            trampoline
+                .proxy_sync_method
+                .return_composite_c_type
+                .is_none()
+        );
         assert_eq!(trampoline.proxy_sync_method.jni_return_type, "jbyteArray");
     }
 

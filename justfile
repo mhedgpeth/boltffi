@@ -58,6 +58,9 @@ build-all-release:
 test:
     cargo test --workspace
 
+demo-verify:
+    ./examples/demo/verify-platform-demos.sh
+
 # Run tests with cargo-nextest (parallel, faster)
 test-nextest:
     cargo nextest run --workspace

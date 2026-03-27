@@ -2040,7 +2040,11 @@ impl<'a> SwiftLowerer<'a> {
             } => {
                 let arg_name = format!("arg{}", idx);
                 let decode_expr = if self.is_c_style_enum_type_expr(&param_def.type_expr) {
-                    format!("{}(rawValue: {})!", self.swift_type(&param_def.type_expr), arg_name)
+                    format!(
+                        "{}(rawValue: {})!",
+                        self.swift_type(&param_def.type_expr),
+                        arg_name
+                    )
                 } else {
                     arg_name.clone()
                 };

@@ -99,7 +99,7 @@ mod tests {
     use crate::render::java::JavaVersion;
     use crate::render::java::plan::{
         JavaAsyncMode, JavaClassMethod, JavaConstructor, JavaConstructorKind, JavaFunction,
-        JavaParam, JavaReturnPlan, JavaReturnRender, JavaWireWriter,
+        JavaInputBindings, JavaParam, JavaReturnPlan, JavaReturnRender, JavaWireWriter,
     };
 
     fn java_param(name: &str, java_type: &str, native_type: &str, native_expr: &str) -> JavaParam {
@@ -162,7 +162,7 @@ mod tests {
                         nullable: true,
                     },
                 },
-                wire_writers: vec![],
+                input_bindings: JavaInputBindings::default(),
                 async_call: None,
             }],
         };
@@ -211,7 +211,10 @@ mod tests {
                             class_name: "Status".to_string(),
                         },
                     },
-                    wire_writers: vec![payload_writer.clone()],
+                    input_bindings: JavaInputBindings {
+                        direct_composites: vec![],
+                        wire_writers: vec![payload_writer.clone()],
+                    },
                     async_call: None,
                 },
                 JavaClassMethod {
@@ -226,7 +229,10 @@ mod tests {
                             class_name: "Status".to_string(),
                         },
                     },
-                    wire_writers: vec![payload_writer],
+                    input_bindings: JavaInputBindings {
+                        direct_composites: vec![],
+                        wire_writers: vec![payload_writer],
+                    },
                     async_call: None,
                 },
             ],
@@ -263,7 +269,7 @@ mod tests {
                 is_fallible: false,
                 params: vec![],
                 ffi_name: "boltffi_counter_new".to_string(),
-                wire_writers: vec![],
+                input_bindings: JavaInputBindings::default(),
             }],
             methods: vec![
                 JavaClassMethod {
@@ -276,7 +282,7 @@ mod tests {
                         native_return_type: "int".to_string(),
                         render: JavaReturnRender::Direct,
                     },
-                    wire_writers: vec![],
+                    input_bindings: JavaInputBindings::default(),
                     async_call: None,
                 },
                 JavaClassMethod {
@@ -289,7 +295,7 @@ mod tests {
                         native_return_type: "int".to_string(),
                         render: JavaReturnRender::Direct,
                     },
-                    wire_writers: vec![],
+                    input_bindings: JavaInputBindings::default(),
                     async_call: None,
                 },
             ],
@@ -304,7 +310,7 @@ mod tests {
                     native_return_type: "void".to_string(),
                     render: JavaReturnRender::Void,
                 },
-                wire_writers: vec![],
+                input_bindings: JavaInputBindings::default(),
                 async_call: None,
             }],
             ..java_module(vec![class])

@@ -9,7 +9,10 @@ use crate::callbacks::registry as callback_registry;
 use crate::exports::callback_return::resolve_sync_callback_return;
 use crate::lowering::params::{FfiParams, transform_method_params, transform_method_params_async};
 use crate::lowering::returns::lower::{encoded_return_body, encoded_return_buffer_expression};
-use crate::lowering::returns::model::{ReturnLoweringContext, WasmOptionScalarEncoding};
+use crate::lowering::returns::model::{
+    DirectBufferReturnMethod, ResolvedReturn, ReturnInvocationContext, ReturnLoweringContext,
+    ReturnPlatform, WasmOptionScalarEncoding,
+};
 use crate::registries::custom_types;
 use crate::registries::data_types;
 use boltffi_ffi_rules::transport::EncodedReturnStrategy;
@@ -167,25 +170,46 @@ fn build_instance_encoded_return_exports(
     export_name: &syn::Ident,
     type_name: &syn::Ident,
     ffi_params: &[proc_macro2::TokenStream],
+    resolved_return: &ResolvedReturn,
     encode_body: proc_macro2::TokenStream,
 ) -> proc_macro2::TokenStream {
+    let wasm_return_method = resolved_return
+        .direct_buffer_return_method(ReturnInvocationContext::SyncExport, ReturnPlatform::Wasm)
+        .unwrap_or_else(|| {
+            panic!(
+                "encoded instance sync export must use a direct wasm buffer return carrier: {:?}",
+                resolved_return.value_return_strategy()
+            )
+        });
+    let native_return_method = resolved_return
+        .direct_buffer_return_method(ReturnInvocationContext::SyncExport, ReturnPlatform::Native)
+        .unwrap_or_else(|| {
+            panic!(
+                "encoded instance sync export must use a direct native buffer return carrier: {:?}",
+                resolved_return.value_return_strategy()
+            )
+        });
+    let wasm_return_type = direct_buffer_return_type(wasm_return_method);
+    let wasm_return_body = direct_buffer_return_body(wasm_return_method, encode_body.clone());
+    let native_return_type = direct_buffer_return_type(native_return_method);
+    let native_return_body = direct_buffer_return_body(native_return_method, encode_body);
+
     match ffi_params.is_empty() {
         true => quote! {
             #[cfg(target_arch = "wasm32")]
             #[unsafe(no_mangle)]
             pub unsafe extern "C" fn #export_name(
                 handle: *mut #type_name
-            ) -> u64 {
-                let __boltffi_buf: ::boltffi::__private::FfiBuf = { #encode_body };
-                __boltffi_buf.into_packed()
+            ) -> #wasm_return_type {
+                #wasm_return_body
             }
 
             #[cfg(not(target_arch = "wasm32"))]
             #[unsafe(no_mangle)]
             pub unsafe extern "C" fn #export_name(
                 handle: *mut #type_name
-            ) -> ::boltffi::__private::FfiBuf {
-                #encode_body
+            ) -> #native_return_type {
+                #native_return_body
             }
         },
         false => quote! {
@@ -194,9 +218,8 @@ fn build_instance_encoded_return_exports(
             pub unsafe extern "C" fn #export_name(
                 handle: *mut #type_name,
                 #(#ffi_params),*
-            ) -> u64 {
-                let __boltffi_buf: ::boltffi::__private::FfiBuf = { #encode_body };
-                __boltffi_buf.into_packed()
+            ) -> #wasm_return_type {
+                #wasm_return_body
             }
 
             #[cfg(not(target_arch = "wasm32"))]
@@ -204,8 +227,8 @@ fn build_instance_encoded_return_exports(
             pub unsafe extern "C" fn #export_name(
                 handle: *mut #type_name,
                 #(#ffi_params),*
-            ) -> ::boltffi::__private::FfiBuf {
-                #encode_body
+            ) -> #native_return_type {
+                #native_return_body
             }
         },
     }
@@ -214,21 +237,42 @@ fn build_instance_encoded_return_exports(
 fn build_static_encoded_return_exports(
     export_name: &syn::Ident,
     ffi_params: &[proc_macro2::TokenStream],
+    resolved_return: &ResolvedReturn,
     encode_body: proc_macro2::TokenStream,
 ) -> proc_macro2::TokenStream {
+    let wasm_return_method = resolved_return
+        .direct_buffer_return_method(ReturnInvocationContext::SyncExport, ReturnPlatform::Wasm)
+        .unwrap_or_else(|| {
+            panic!(
+                "encoded static sync export must use a direct wasm buffer return carrier: {:?}",
+                resolved_return.value_return_strategy()
+            )
+        });
+    let native_return_method = resolved_return
+        .direct_buffer_return_method(ReturnInvocationContext::SyncExport, ReturnPlatform::Native)
+        .unwrap_or_else(|| {
+            panic!(
+                "encoded static sync export must use a direct native buffer return carrier: {:?}",
+                resolved_return.value_return_strategy()
+            )
+        });
+    let wasm_return_type = direct_buffer_return_type(wasm_return_method);
+    let wasm_return_body = direct_buffer_return_body(wasm_return_method, encode_body.clone());
+    let native_return_type = direct_buffer_return_type(native_return_method);
+    let native_return_body = direct_buffer_return_body(native_return_method, encode_body);
+
     match ffi_params.is_empty() {
         true => quote! {
             #[cfg(target_arch = "wasm32")]
             #[unsafe(no_mangle)]
-            pub extern "C" fn #export_name() -> u64 {
-                let __boltffi_buf: ::boltffi::__private::FfiBuf = { #encode_body };
-                __boltffi_buf.into_packed()
+            pub extern "C" fn #export_name() -> #wasm_return_type {
+                #wasm_return_body
             }
 
             #[cfg(not(target_arch = "wasm32"))]
             #[unsafe(no_mangle)]
-            pub extern "C" fn #export_name() -> ::boltffi::__private::FfiBuf {
-                #encode_body
+            pub extern "C" fn #export_name() -> #native_return_type {
+                #native_return_body
             }
         },
         false => quote! {
@@ -236,19 +280,38 @@ fn build_static_encoded_return_exports(
             #[unsafe(no_mangle)]
             pub unsafe extern "C" fn #export_name(
                 #(#ffi_params),*
-            ) -> u64 {
-                let __boltffi_buf: ::boltffi::__private::FfiBuf = { #encode_body };
-                __boltffi_buf.into_packed()
+            ) -> #wasm_return_type {
+                #wasm_return_body
             }
 
             #[cfg(not(target_arch = "wasm32"))]
             #[unsafe(no_mangle)]
             pub unsafe extern "C" fn #export_name(
                 #(#ffi_params),*
-            ) -> ::boltffi::__private::FfiBuf {
-                #encode_body
+            ) -> #native_return_type {
+                #native_return_body
             }
         },
+    }
+}
+
+fn direct_buffer_return_type(return_method: DirectBufferReturnMethod) -> proc_macro2::TokenStream {
+    match return_method {
+        DirectBufferReturnMethod::Packed => quote! { u64 },
+        DirectBufferReturnMethod::Descriptor => quote! { ::boltffi::__private::FfiBuf },
+    }
+}
+
+fn direct_buffer_return_body(
+    return_method: DirectBufferReturnMethod,
+    encode_body: proc_macro2::TokenStream,
+) -> proc_macro2::TokenStream {
+    match return_method {
+        DirectBufferReturnMethod::Packed => quote! {
+            let __boltffi_buf: ::boltffi::__private::FfiBuf = { #encode_body };
+            __boltffi_buf.into_packed()
+        },
+        DirectBufferReturnMethod::Descriptor => encode_body,
     }
 }
 
@@ -564,8 +627,7 @@ fn generate_method_export(
         let other_inputs = method.sig.inputs.iter().skip(1).cloned();
         let native_on_wire_record_error =
             callback_return.native_invalid_arg_early_return_statement();
-        let wasm_on_wire_record_error =
-            callback_return.wasm_invalid_arg_early_return_statement();
+        let wasm_on_wire_record_error = callback_return.wasm_invalid_arg_early_return_statement();
         let FfiParams {
             ffi_params: native_ffi_params,
             conversions: native_conversions,
@@ -793,6 +855,7 @@ fn generate_method_export(
             &export_name,
             type_name,
             &ffi_params,
+            &return_abi,
             body,
         ));
     }
@@ -843,8 +906,7 @@ fn generate_static_method_export(
         let all_inputs = method.sig.inputs.iter().cloned();
         let native_on_wire_record_error =
             callback_return.native_invalid_arg_early_return_statement();
-        let wasm_on_wire_record_error =
-            callback_return.wasm_invalid_arg_early_return_statement();
+        let wasm_on_wire_record_error = callback_return.wasm_invalid_arg_early_return_statement();
         let FfiParams {
             ffi_params: native_ffi_params,
             conversions: native_conversions,
@@ -1063,6 +1125,7 @@ fn generate_static_method_export(
         return Some(build_static_encoded_return_exports(
             &export_name,
             &ffi_params,
+            &return_abi,
             body,
         ));
     }

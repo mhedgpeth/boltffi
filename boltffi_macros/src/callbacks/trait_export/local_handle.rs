@@ -8,10 +8,8 @@ use crate::lowering::returns::lower::encoded_return_buffer_expression;
 use crate::lowering::returns::model::{
     ReturnLoweringContext, ScalarReturnStrategy, ValueReturnStrategy,
 };
-use crate::registries::custom_types::{
-    contains_custom_types, from_wire_expr_owned, wire_type_for,
-};
 use crate::registries::custom_types::CustomTypeRegistry;
+use crate::registries::custom_types::{contains_custom_types, from_wire_expr_owned, wire_type_for};
 
 const WASM_FOREIGN_CALLBACK_HANDLE_START: u32 = 0x8000_0000;
 
@@ -60,12 +58,9 @@ impl<'a> LocalHandleExpander<'a> {
             "__BOLTFFI_LOCAL_{}_VTABLE",
             self.trait_name_snake.to_string().to_uppercase()
         );
-        let free_function_name =
-            format_ident!("__boltffi_local_{}_free", self.trait_name_snake);
-        let clone_function_name =
-            format_ident!("__boltffi_local_{}_clone", self.trait_name_snake);
-        let local_handle_name =
-            format_ident!("__boltffi_local_{}_handle", self.trait_name_snake);
+        let free_function_name = format_ident!("__boltffi_local_{}_free", self.trait_name_snake);
+        let clone_function_name = format_ident!("__boltffi_local_{}_clone", self.trait_name_snake);
+        let local_handle_name = format_ident!("__boltffi_local_{}_handle", self.trait_name_snake);
 
         let local_method_expansions = self
             .item_trait
@@ -269,12 +264,8 @@ impl<'a> LocalHandleMethodExpander<'a> {
             }
         };
 
-        let wasm_tokens = self.expand_wasm_method(
-            &function_name,
-            ffi_params,
-            decode_steps,
-            &invoke_expression,
-        )?;
+        let wasm_tokens =
+            self.expand_wasm_method(&function_name, ffi_params, decode_steps, &invoke_expression)?;
 
         Ok(LocalHandleMethodExpansion {
             function_name: function_name.clone(),
@@ -492,16 +483,14 @@ impl<'a> LocalHandleMethodExpander<'a> {
                     #invoke_expression;
                 }
             }),
-            syn::ReturnType::Type(_, return_type) => {
-                self.expand_wasm_returning_method(
-                    function_name,
-                    local_registry_lookup_name,
-                    ffi_params,
-                    decode_steps,
-                    return_type,
-                    invoke_expression,
-                )
-            }
+            syn::ReturnType::Type(_, return_type) => self.expand_wasm_returning_method(
+                function_name,
+                local_registry_lookup_name,
+                ffi_params,
+                decode_steps,
+                return_type,
+                invoke_expression,
+            ),
         }
     }
 
@@ -613,26 +602,25 @@ impl<'a> LocalHandleMethodExpander<'a> {
                 _ => None,
             })
             .map(|(param_name, param_type)| self.lower_param(&param_name, &param_type))
-            .fold(LocalHandleMethodParams::default(), |mut lowered_params, lowered_param| {
-                lowered_params
-                    .ffi_params
-                    .extend(lowered_param.ffi_params);
-                lowered_params
-                    .decode_steps
-                    .extend(lowered_param.decode_steps);
-                lowered_params.call_args.push(lowered_param.call_arg);
-                lowered_params
-            })
+            .fold(
+                LocalHandleMethodParams::default(),
+                |mut lowered_params, lowered_param| {
+                    lowered_params.ffi_params.extend(lowered_param.ffi_params);
+                    lowered_params
+                        .decode_steps
+                        .extend(lowered_param.decode_steps);
+                    lowered_params.call_args.push(lowered_param.call_arg);
+                    lowered_params
+                },
+            )
     }
 
-    fn lower_param(
-        &self,
-        param_name: &syn::Ident,
-        param_type: &syn::Type,
-    ) -> LocalHandleParam {
+    fn lower_param(&self, param_name: &syn::Ident, param_type: &syn::Type) -> LocalHandleParam {
         let direct_ffi_type = direct_callback_return_ffi_type(param_type);
         if matches!(
-            self.return_lowering.lower_type(param_type).value_return_strategy(),
+            self.return_lowering
+                .lower_type(param_type)
+                .value_return_strategy(),
             ValueReturnStrategy::Scalar(_)
         ) {
             return LocalHandleParam {

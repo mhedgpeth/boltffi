@@ -100,6 +100,31 @@ public final class DemoTest {
         Point point = Demo.makePoint(1.0, 2.0);
         assert point.x() == 1.0 : "makePoint.x";
         assert point.y() == 2.0 : "makePoint.y";
+        Point origin = Point.origin();
+        assert origin.x() == 0.0 : "Point.origin.x";
+        assert origin.y() == 0.0 : "Point.origin.y";
+        Point fromPolar = Point.fromPolar(2.0, Math.PI / 2.0);
+        assert Math.abs(fromPolar.x()) < 0.0001 : "Point.fromPolar.x";
+        assert Math.abs(fromPolar.y() - 2.0) < 0.0001 : "Point.fromPolar.y";
+        Point unit = Point.tryUnit(3.0, 4.0);
+        assert Math.abs(unit.x() - 0.6) < 0.0001 : "Point.tryUnit.x";
+        assert Math.abs(unit.y() - 0.8) < 0.0001 : "Point.tryUnit.y";
+        try {
+            Point.tryUnit(0.0, 0.0);
+            assert false : "Point.tryUnit should throw for zero vector";
+        } catch (RuntimeException expected) {
+            assert expected.getMessage().contains("cannot normalize zero vector") : "Point.tryUnit error";
+        }
+        assert Point.checkedUnit(3.0, 4.0).isPresent() : "Point.checkedUnit some";
+        assert !Point.checkedUnit(0.0, 0.0).isPresent() : "Point.checkedUnit none";
+        assert Math.abs(point.distance() - Math.sqrt(5.0)) < 0.0001 : "Point.distance";
+        Point scaledPoint = point.scale(2.5);
+        assert scaledPoint.x() == 2.5 : "Point.scale.x";
+        assert scaledPoint.y() == 5.0 : "Point.scale.y";
+        Point addedPoint = point.add(new Point(10.0, 20.0));
+        assert addedPoint.x() == 11.0 : "Point.add.x";
+        assert addedPoint.y() == 22.0 : "Point.add.y";
+        assert Point.dimensions() == 2 : "Point.dimensions";
         Point echoedPoint = Demo.echoPoint(point);
         assert echoedPoint.x() == 1.0 : "echoPoint.x";
         assert echoedPoint.y() == 2.0 : "echoPoint.y";
@@ -155,6 +180,14 @@ public final class DemoTest {
         assert Demo.echoDirection(Direction.NORTH) == Direction.NORTH : "echoDirection(North)";
         assert Demo.oppositeDirection(Direction.NORTH) == Direction.SOUTH : "oppositeDirection(North)";
         assert Demo.oppositeDirection(Direction.EAST) == Direction.WEST : "oppositeDirection(East)";
+        assert Direction.cardinal() == Direction.NORTH : "Direction.cardinal";
+        assert Direction.fromDegrees(90.0) == Direction.EAST : "Direction.fromDegrees(90)";
+        assert Direction.fromDegrees(225.0) == Direction.WEST : "Direction.fromDegrees(225)";
+        assert Direction.NORTH.opposite() == Direction.SOUTH : "Direction.opposite";
+        assert Direction.WEST.isHorizontal() : "Direction.isHorizontal(West)";
+        assert !Direction.NORTH.isHorizontal() : "Direction.isHorizontal(North)";
+        assert Direction.SOUTH.label().equals("S") : "Direction.label";
+        assert Direction.count() == 4 : "Direction.count";
 
         assert Demo.echoPriority(Priority.HIGH) == Priority.HIGH : "echoPriority(High)";
         assert Demo.priorityLabel(Priority.LOW).equals("low") : "priorityLabel(Low)";
@@ -177,6 +210,26 @@ public final class DemoTest {
 
         Shape rect = Demo.makeRectangle(3.0, 4.0);
         assert rect instanceof Shape.Rectangle : "makeRectangle returns Rectangle";
+        Shape unitCircle = Shape.unitCircle();
+        assert unitCircle instanceof Shape.Circle : "Shape.unitCircle type";
+        assert Math.abs(((Shape.Circle) unitCircle).radius - 1.0) < 0.0001 : "Shape.unitCircle.radius";
+        Shape square = Shape.square(3.0);
+        assert square instanceof Shape.Rectangle : "Shape.square type";
+        assert Math.abs(((Shape.Rectangle) square).width - 3.0) < 0.0001 : "Shape.square.width";
+        assert Math.abs(((Shape.Rectangle) square).height - 3.0) < 0.0001 : "Shape.square.height";
+        Shape checkedCircle = Shape.tryCircle(2.0);
+        assert checkedCircle instanceof Shape.Circle : "Shape.tryCircle type";
+        try {
+            Shape.tryCircle(0.0);
+            assert false : "Shape.tryCircle should throw on non-positive radius";
+        } catch (RuntimeException expected) {
+            assert expected.getMessage().contains("radius must be positive") : "Shape.tryCircle error";
+        }
+        assert Math.abs(circle.area() - (Math.PI * 25.0)) < 0.0001 : "Shape.area circle";
+        assert Math.abs(rect.area() - 12.0) < 0.0001 : "Shape.area rectangle";
+        assert circle.describe().equals("circle r=5") : "Shape.describe circle";
+        assert rect.describe().equals("rect 3x4") : "Shape.describe rectangle";
+        assert Shape.variantCount() == 4 : "Shape.variantCount";
 
         Shape echoedCircle = Demo.echoShape(circle);
         assert echoedCircle instanceof Shape.Circle : "echoShape(circle) type";

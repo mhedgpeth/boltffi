@@ -3,9 +3,7 @@ use quote::{format_ident, quote};
 use syn::{FnArg, Pat, ReturnType};
 
 use super::lowered_return::LoweredCallbackReturn;
-use super::{
-    direct_callback_return_ffi_type, parse_result_type, to_snake_case_ident,
-};
+use super::{direct_callback_return_ffi_type, parse_result_type, to_snake_case_ident};
 use crate::lowering::returns::model::{ReturnLoweringContext, ValueReturnStrategy};
 use crate::registries::custom_types;
 
@@ -331,13 +329,17 @@ impl<'a> WasmCallbackMethodExpander<'a> {
         let rust_param = quote! { #param_name: #param_type };
         let direct_ffi_type = direct_callback_return_ffi_type(param_type);
         if matches!(
-            self.return_lowering.lower_type(param_type).value_return_strategy(),
+            self.return_lowering
+                .lower_type(param_type)
+                .value_return_strategy(),
             ValueReturnStrategy::Scalar(_)
         ) {
             return WasmCallbackParamLowering {
                 ffi_params: vec![quote! { #param_name: #direct_ffi_type }],
                 rust_param,
-                call_args: vec![quote! { <#param_type as ::boltffi::__private::Passable>::pack(#param_name) }],
+                call_args: vec![
+                    quote! { <#param_type as ::boltffi::__private::Passable>::pack(#param_name) },
+                ],
                 prelude: None,
             };
         }
