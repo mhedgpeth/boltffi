@@ -334,7 +334,7 @@ impl<'a> LocalHandleMethodExpander<'a> {
                         Some(self.custom_types),
                     );
                     quote! {
-                        let callback_buffer = #encoded_buffer;
+                        let callback_buffer = { #encoded_buffer };
                         let callback_bytes = unsafe { callback_buffer.as_byte_slice() };
                     }
                 }
