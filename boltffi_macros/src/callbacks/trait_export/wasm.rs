@@ -168,7 +168,7 @@ impl<'a> WasmCallbackMethodExpander<'a> {
                 data_len: u32,
                 data_cap: u32,
             ) -> i32 {
-                ::boltffi::__private::complete_request_from_ffi(
+                ::boltffi::__private::AsyncCallbackRegistry::current().complete_from_ffi(
                     request_id,
                     completion_code,
                     data_ptr,
@@ -185,8 +185,9 @@ impl<'a> WasmCallbackMethodExpander<'a> {
         let poll_body = self.async_poll_body(return_type.as_ref());
 
         let impl_body = quote! {
-            let request_id = ::boltffi::__private::allocate_request();
-            let _guard = ::boltffi::__private::RequestGuard(request_id);
+            let callback_registry = ::boltffi::__private::AsyncCallbackRegistry::current();
+            let request_id = callback_registry.allocate();
+            let _guard = ::boltffi::__private::AsyncCallbackRequestGuard::new(request_id);
             {
                 #(#prelude_stmts)*
                 unsafe {
@@ -219,8 +220,8 @@ impl<'a> WasmCallbackMethodExpander<'a> {
                     let err_type = result_types.err;
                     quote! {
                         std::future::poll_fn(move |cx| {
-                            ::boltffi::__private::set_request_waker(request_id, cx.waker().clone());
-                            match ::boltffi::__private::take_request_result(request_id) {
+                            callback_registry.set_waker(request_id, cx.waker().clone());
+                            match callback_registry.take_completion(request_id) {
                                 Some(result) => {
                                     if !result.code.is_success() {
                                         let error_msg = if result.data.is_empty() {
@@ -246,8 +247,8 @@ impl<'a> WasmCallbackMethodExpander<'a> {
                 } else {
                     quote! {
                         std::future::poll_fn(move |cx| {
-                            ::boltffi::__private::set_request_waker(request_id, cx.waker().clone());
-                            match ::boltffi::__private::take_request_result(request_id) {
+                            callback_registry.set_waker(request_id, cx.waker().clone());
+                            match callback_registry.take_completion(request_id) {
                                 Some(result) => {
                                     if !result.code.is_success() {
                                         let error_msg = if result.data.is_empty() {
@@ -271,8 +272,8 @@ impl<'a> WasmCallbackMethodExpander<'a> {
             None => {
                 quote! {
                     std::future::poll_fn(move |cx| {
-                        ::boltffi::__private::set_request_waker(request_id, cx.waker().clone());
-                        match ::boltffi::__private::take_request_result(request_id) {
+                        callback_registry.set_waker(request_id, cx.waker().clone());
+                        match callback_registry.take_completion(request_id) {
                             Some(result) => {
                                 if !result.code.is_success() {
                                     let error_msg = if result.data.is_empty() {

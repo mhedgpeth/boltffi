@@ -57,13 +57,3 @@ pub unsafe extern "C" fn boltffi_pending_free(handle: *mut PendingHandle) {
         drop(unsafe { Box::from_raw(handle) });
     }
 }
-
-pub type AsyncCallback<T> =
-    extern "C" fn(user_data: *mut core::ffi::c_void, status: crate::FfiStatus, result: T);
-pub type AsyncCallbackVoid =
-    extern "C" fn(user_data: *mut core::ffi::c_void, status: crate::FfiStatus);
-pub type AsyncCallbackString = extern "C" fn(
-    user_data: *mut core::ffi::c_void,
-    status: crate::FfiStatus,
-    result: crate::FfiString,
-);

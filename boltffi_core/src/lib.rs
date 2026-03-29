@@ -4,28 +4,18 @@ extern crate self as boltffi_core;
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
-#[cfg(target_arch = "wasm32")]
-pub mod async_callback;
 pub mod callback;
 pub mod custom_ffi;
 pub mod handle;
 pub mod passable;
-pub mod pending;
 pub mod ringbuffer;
-pub mod rustfuture;
+pub mod runtime;
 pub mod safety;
 pub mod status;
-pub mod subscription;
 pub mod types;
 pub mod wasm;
 pub mod wire;
 
-#[cfg(target_arch = "wasm32")]
-pub use async_callback::{
-    AsyncCallbackCompletionCode, CallbackRequestId, CompleteResult, CompletionPayload,
-    RequestGuard, allocate_request, cancel_request, complete_request, complete_request_from_ffi,
-    remove_request, set_request_waker, take_request_result,
-};
 pub use boltffi_macros::{
     Data, FfiType, custom_ffi, custom_type, data, default, error, export, ffi_class, ffi_export,
     ffi_stream, ffi_trait, name, skip,
@@ -36,19 +26,28 @@ pub use callback::{CallbackForeignType, CallbackHandle, FromCallbackHandle};
 pub use custom_ffi::CustomFfiConvertible;
 pub use handle::HandleBox;
 pub use passable::{Passable, Seal, VecTransport, WirePassable};
-pub use pending::{CancellationToken, PendingHandle};
 pub use ringbuffer::SpscRingBuffer;
-pub use rustfuture::{
+pub use runtime::async_callback;
+pub use runtime::async_callback::{
+    AsyncCallback, AsyncCallbackCompletion, AsyncCallbackCompletionCode,
+    AsyncCallbackCompletionResult, AsyncCallbackRegistry, AsyncCallbackRequestGuard,
+    AsyncCallbackRequestId, AsyncCallbackString, AsyncCallbackVoid,
+};
+pub use runtime::future as rustfuture;
+pub use runtime::future::{
     RustFuture, RustFutureContinuationCallback, RustFutureHandle, RustFuturePoll,
 };
 #[cfg(target_arch = "wasm32")]
-pub use rustfuture::{WasmPollStatus, rust_future_panic_message, rust_future_poll_sync};
-pub use safety::catch_ffi_panic;
-pub use status::{FfiStatus, clear_last_error, set_last_error, take_last_error};
-pub use subscription::{
+pub use runtime::future::{WasmPollStatus, rust_future_panic_message, rust_future_poll_sync};
+pub use runtime::pending;
+pub use runtime::pending::{CancellationToken, PendingHandle};
+pub use runtime::subscription;
+pub use runtime::subscription::{
     EventSubscription, StreamContinuationCallback, StreamPollResult, StreamProducer,
     SubscriptionHandle, WaitResult,
 };
+pub use safety::catch_ffi_panic;
+pub use status::{FfiStatus, clear_last_error, set_last_error, take_last_error};
 
 pub use types::{FfiBuf, FfiError, FfiOption, FfiSlice, FfiSpan, FfiString};
 pub use wasm::WASM_ABI_VERSION;
