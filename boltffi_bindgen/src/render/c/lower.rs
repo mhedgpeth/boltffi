@@ -1,4 +1,5 @@
 use askama::Template;
+use boltffi_ffi_rules::callable::ExecutionKind;
 use boltffi_ffi_rules::naming;
 
 use crate::ir::abi::{
@@ -197,7 +198,7 @@ impl<'a> CHeaderLowerer<'a> {
                 .map(|p| self.param_c(p)),
         );
 
-        if method.is_async {
+        if method.execution_kind() == ExecutionKind::Async {
             let ret_params = self.async_callback_return_params(&method.returns);
             parts.push(format!("void (*callback)(uint64_t{})", ret_params));
             parts.push("uint64_t callback_data".to_string());

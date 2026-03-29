@@ -1,3 +1,4 @@
+use boltffi_ffi_rules::callable::{CallableForm, ExecutionKind};
 use boltffi_ffi_rules::naming::{
     self, snake_to_camel as camel_case, to_upper_camel_case as pascal_case,
 };
@@ -347,7 +348,7 @@ impl<'a> SwiftLowerer<'a> {
                     .collect();
                 let methods = def
                     .method_calls()
-                    .filter(|(_, m)| !m.is_async)
+                    .filter(|(_, method)| !method.is_async())
                     .filter_map(|(call_id, method)| {
                         let call = self.resolve_abi_call(&call_id)?;
                         Some(self.lower_value_type_method(method, call, &abi_record.encode_ops))
@@ -490,7 +491,7 @@ impl<'a> SwiftLowerer<'a> {
                 .map(|p| self.lower_param(p, call))
                 .collect(),
             returns,
-            is_static: method.receiver == Receiver::Static,
+            is_static: method.callable_form() == CallableForm::StaticMethod,
             value_self,
             mutating_void,
             doc: method.doc.clone(),
@@ -588,7 +589,7 @@ impl<'a> SwiftLowerer<'a> {
                     .collect();
                 let methods = def
                     .method_calls()
-                    .filter(|(_, m)| !m.is_async)
+                    .filter(|(_, method)| !method.is_async())
                     .filter_map(|(call_id, method)| {
                         let call = self.resolve_abi_call(&call_id)?;
                         Some(self.lower_value_type_method(method, call, &abi_enum.encode_ops))
@@ -779,7 +780,7 @@ impl<'a> SwiftLowerer<'a> {
                                     .map(|p| self.lower_param(p, call))
                                     .collect(),
                                 returns,
-                                is_static: method.receiver == Receiver::Static,
+                                is_static: method.callable_form() == CallableForm::StaticMethod,
                                 value_self: None,
                                 mutating_void: false,
                                 doc: method.doc.clone(),
@@ -923,7 +924,8 @@ impl<'a> SwiftLowerer<'a> {
                             ),
                             "result",
                         );
-                        let has_out_param = !abi_method.is_async && !returns.is_void();
+                        let has_out_param =
+                            abi_method.execution_kind() == ExecutionKind::Sync && !returns.is_void();
                         let param_map = method_def
                             .params
                             .iter()
@@ -958,7 +960,7 @@ impl<'a> SwiftLowerer<'a> {
                             ffi_name: abi_method.vtable_field.as_str().to_string(),
                             params,
                             returns,
-                            is_async: abi_method.is_async,
+                            execution_kind: abi_method.execution_kind(),
                             has_out_param,
                             doc: method_def.doc.clone(),
                         }
@@ -2809,7 +2811,7 @@ mod tests {
                     doc: None,
                 }],
                 returns: ReturnDef::Void,
-                is_async: false,
+                execution_kind: ExecutionKind::Sync,
                 doc: None,
             }],
             kind: CallbackKind::Trait,
@@ -2837,7 +2839,7 @@ mod tests {
                 id: MethodId::new("call"),
                 params: vec![],
                 returns: ReturnDef::Value(TypeExpr::Primitive(PrimitiveType::I32)),
-                is_async: false,
+                execution_kind: ExecutionKind::Sync,
                 doc: None,
             }],
             kind: CallbackKind::Closure,
@@ -2852,7 +2854,7 @@ mod tests {
                 doc: None,
             }],
             returns: ReturnDef::Value(TypeExpr::Primitive(PrimitiveType::I32)),
-            is_async: false,
+            execution_kind: ExecutionKind::Sync,
             doc: None,
             deprecated: None,
         });
@@ -2893,7 +2895,7 @@ mod tests {
                     doc: None,
                 }],
                 returns: ReturnDef::Value(TypeExpr::String),
-                is_async: false,
+                execution_kind: ExecutionKind::Sync,
                 doc: None,
             }],
             kind: CallbackKind::Closure,
@@ -2916,7 +2918,7 @@ mod tests {
                 },
             ],
             returns: ReturnDef::Value(TypeExpr::String),
-            is_async: false,
+            execution_kind: ExecutionKind::Sync,
             doc: None,
             deprecated: None,
         });
@@ -2962,7 +2964,7 @@ mod tests {
                     doc: None,
                 }],
                 returns: ReturnDef::Value(TypeExpr::Record(RecordId::new("Point"))),
-                is_async: false,
+                execution_kind: ExecutionKind::Sync,
                 doc: None,
             }],
             kind: CallbackKind::Closure,
@@ -2985,7 +2987,7 @@ mod tests {
                 },
             ],
             returns: ReturnDef::Value(TypeExpr::Record(RecordId::new("Point"))),
-            is_async: false,
+            execution_kind: ExecutionKind::Sync,
             doc: None,
             deprecated: None,
         });
@@ -3132,7 +3134,7 @@ mod tests {
                 doc: None,
             }],
             returns: ReturnDef::Void,
-            is_async: false,
+            execution_kind: ExecutionKind::Sync,
             doc: None,
             deprecated: None,
         });
@@ -3170,7 +3172,7 @@ mod tests {
             id: FunctionId::new("get_origin"),
             params: vec![],
             returns: ReturnDef::Value(TypeExpr::Record(RecordId::new("Point"))),
-            is_async: false,
+            execution_kind: ExecutionKind::Sync,
             doc: None,
             deprecated: None,
         });
@@ -3238,7 +3240,7 @@ mod tests {
                     receiver: Receiver::RefSelf,
                     params: vec![],
                     returns: ReturnDef::Value(TypeExpr::Primitive(PrimitiveType::F64)),
-                    is_async: false,
+                    execution_kind: ExecutionKind::Sync,
                     doc: None,
                     deprecated: None,
                 },
@@ -3247,7 +3249,7 @@ mod tests {
                     receiver: Receiver::RefMutSelf,
                     params: vec![],
                     returns: ReturnDef::Void,
-                    is_async: false,
+                    execution_kind: ExecutionKind::Sync,
                     doc: None,
                     deprecated: None,
                 },
@@ -3256,7 +3258,7 @@ mod tests {
                     receiver: Receiver::Static,
                     params: vec![],
                     returns: ReturnDef::Value(TypeExpr::Primitive(PrimitiveType::F64)),
-                    is_async: false,
+                    execution_kind: ExecutionKind::Sync,
                     doc: None,
                     deprecated: None,
                 },
@@ -3387,7 +3389,7 @@ mod tests {
                 receiver: Receiver::RefSelf,
                 params: vec![],
                 returns: ReturnDef::Value(TypeExpr::Primitive(PrimitiveType::I32)),
-                is_async: false,
+                execution_kind: ExecutionKind::Sync,
                 doc: None,
                 deprecated: None,
             }],
@@ -3453,7 +3455,7 @@ mod tests {
             returns: ReturnDef::Value(TypeExpr::Option(Box::new(TypeExpr::Record(RecordId::new(
                 "Point",
             ))))),
-            is_async: false,
+            execution_kind: ExecutionKind::Sync,
             doc: None,
             deprecated: None,
         });

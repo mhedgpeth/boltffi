@@ -1,26 +1,69 @@
-use boltffi_ffi_rules::classification::{self, FieldPrimitive, PassableCategory};
+use boltffi_ffi_rules::classification::PassableCategory;
 use quote::quote;
-use syn::Fields;
 
-use crate::expansion::data::wire;
-use crate::registries::custom_types;
-use crate::registries::data_types::{extract_integer_repr, has_repr_c};
+use crate::data::analysis::{EnumDataShape, StructDataShape};
 
-pub fn is_c_style_enum(item_enum: &syn::ItemEnum) -> bool {
-    item_enum.variants.iter().all(|v| v.fields.is_empty())
+pub(super) struct StructPassableExpansion<'a> {
+    item_struct: &'a syn::ItemStruct,
 }
 
-pub fn has_integer_repr(attrs: &[syn::Attribute]) -> bool {
-    extract_integer_repr(attrs).is_some()
+pub(super) struct EnumPassableExpansion<'a> {
+    item_enum: &'a syn::ItemEnum,
 }
 
-fn type_to_field_primitive(ty: &syn::Type) -> Option<FieldPrimitive> {
-    match ty {
-        syn::Type::Path(path) => path
-            .path
-            .get_ident()
-            .and_then(|ident| FieldPrimitive::from_type_name(&ident.to_string())),
-        _ => None,
+enum EnumPassableKind<'a> {
+    Scalar {
+        repr_type: syn::Ident,
+        variants: &'a syn::punctuated::Punctuated<syn::Variant, syn::Token![,]>,
+    },
+    WireEncoded {
+        enum_name: &'a syn::Ident,
+    },
+}
+
+impl<'a> StructPassableExpansion<'a> {
+    pub(super) fn new(item_struct: &'a syn::ItemStruct) -> Self {
+        Self { item_struct }
+    }
+
+    pub(super) fn render(&self) -> proc_macro2::TokenStream {
+        match StructDataShape::new(self.item_struct).passable_category() {
+            PassableCategory::Blittable => {
+                generate_passable_for_blittable_struct(&self.item_struct.ident)
+            }
+            _ => generate_passable_for_wire_encoded(&self.item_struct.ident),
+        }
+    }
+}
+
+impl<'a> EnumPassableExpansion<'a> {
+    pub(super) fn new(item_enum: &'a syn::ItemEnum) -> Self {
+        Self { item_enum }
+    }
+
+    pub(super) fn render(&self) -> proc_macro2::TokenStream {
+        match self.passable_kind() {
+            EnumPassableKind::Scalar {
+                repr_type,
+                variants,
+            } => generate_passable_for_scalar_enum(&self.item_enum.ident, &repr_type, variants),
+            EnumPassableKind::WireEncoded { enum_name } => {
+                generate_passable_for_wire_encoded(enum_name)
+            }
+        }
+    }
+
+    fn passable_kind(&self) -> EnumPassableKind<'a> {
+        let enum_shape = EnumDataShape::new(self.item_enum);
+        match enum_shape.passable_category() {
+            PassableCategory::Scalar => EnumPassableKind::Scalar {
+                repr_type: enum_shape.effective_integer_repr(),
+                variants: &self.item_enum.variants,
+            },
+            _ => EnumPassableKind::WireEncoded {
+                enum_name: &self.item_enum.ident,
+            },
+        }
     }
 }
 
@@ -107,73 +150,4 @@ fn generate_passable_for_blittable_struct(struct_name: &syn::Ident) -> proc_macr
             }
         }
     }
-}
-
-pub fn classify_and_generate_struct_passable(
-    item_struct: &syn::ItemStruct,
-) -> proc_macro2::TokenStream {
-    let struct_name = &item_struct.ident;
-    let struct_has_repr_c = has_repr_c(&item_struct.attrs);
-
-    let field_primitives: Vec<FieldPrimitive> = match &item_struct.fields {
-        Fields::Named(named) => named
-            .named
-            .iter()
-            .filter_map(|f| type_to_field_primitive(&f.ty))
-            .collect(),
-        Fields::Unnamed(unnamed) => unnamed
-            .unnamed
-            .iter()
-            .filter_map(|f| type_to_field_primitive(&f.ty))
-            .collect(),
-        Fields::Unit => vec![],
-    };
-
-    let total_fields = match &item_struct.fields {
-        Fields::Named(named) => named.named.len(),
-        Fields::Unnamed(unnamed) => unnamed.unnamed.len(),
-        Fields::Unit => 0,
-    };
-
-    let all_primitive = field_primitives.len() == total_fields;
-    let classify_fields: Vec<FieldPrimitive> = if all_primitive {
-        field_primitives
-    } else {
-        vec![]
-    };
-
-    match classification::classify_struct(struct_has_repr_c, &classify_fields) {
-        PassableCategory::Blittable => generate_passable_for_blittable_struct(struct_name),
-        _ => generate_passable_for_wire_encoded(struct_name),
-    }
-}
-
-pub fn classify_and_generate_enum_passable(item_enum: &syn::ItemEnum) -> proc_macro2::TokenStream {
-    let enum_name = &item_enum.ident;
-
-    match classification::classify_enum(
-        is_c_style_enum(item_enum),
-        has_integer_repr(&item_enum.attrs),
-    ) {
-        PassableCategory::Scalar => {
-            let repr_type = extract_integer_repr(&item_enum.attrs)
-                .unwrap_or_else(|| syn::Ident::new("i32", enum_name.span()));
-            generate_passable_for_scalar_enum(enum_name, &repr_type, &item_enum.variants)
-        }
-        _ => generate_passable_for_wire_encoded(enum_name),
-    }
-}
-
-pub fn generate_struct_wire_impls(
-    item_struct: &syn::ItemStruct,
-    custom_types: &custom_types::CustomTypeRegistry,
-) -> proc_macro2::TokenStream {
-    wire::generate_wire_impls(item_struct, custom_types)
-}
-
-pub fn generate_enum_wire_impls(
-    item_enum: &syn::ItemEnum,
-    custom_types: &custom_types::CustomTypeRegistry,
-) -> proc_macro2::TokenStream {
-    wire::generate_enum_wire_impls(item_enum, custom_types)
 }

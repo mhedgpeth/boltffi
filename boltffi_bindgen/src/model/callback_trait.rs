@@ -1,3 +1,4 @@
+use boltffi_ffi_rules::callable::ExecutionKind;
 use serde::{Deserialize, Serialize};
 
 use super::types::{Deprecation, ReturnType, Type};
@@ -38,11 +39,15 @@ impl CallbackTrait {
     }
 
     pub fn sync_methods(&self) -> impl Iterator<Item = &TraitMethod> {
-        self.methods.iter().filter(|m| !m.is_async)
+        self.methods
+            .iter()
+            .filter(|method| method.execution_kind == ExecutionKind::Sync)
     }
 
     pub fn async_methods(&self) -> impl Iterator<Item = &TraitMethod> {
-        self.methods.iter().filter(|m| m.is_async)
+        self.methods
+            .iter()
+            .filter(|method| method.execution_kind == ExecutionKind::Async)
     }
 }
 
@@ -51,7 +56,7 @@ pub struct TraitMethod {
     pub name: String,
     pub inputs: Vec<TraitMethodParam>,
     pub returns: ReturnType,
-    pub is_async: bool,
+    pub execution_kind: ExecutionKind,
     pub doc: Option<String>,
 }
 
@@ -61,7 +66,7 @@ impl TraitMethod {
             name: name.into(),
             inputs: Vec::new(),
             returns: ReturnType::Void,
-            is_async: false,
+            execution_kind: ExecutionKind::Sync,
             doc: None,
         }
     }
@@ -82,7 +87,7 @@ impl TraitMethod {
     }
 
     pub fn make_async(mut self) -> Self {
-        self.is_async = true;
+        self.execution_kind = ExecutionKind::Async;
         self
     }
 
@@ -95,6 +100,10 @@ impl TraitMethod {
 
     pub fn maybe_async(self, is_async: bool) -> Self {
         if is_async { self.make_async() } else { self }
+    }
+
+    pub fn is_async(&self) -> bool {
+        self.execution_kind == ExecutionKind::Async
     }
 
     pub fn maybe_return(self, returns: Option<ReturnType>) -> Self {

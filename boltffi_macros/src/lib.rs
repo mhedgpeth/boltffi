@@ -3,10 +3,11 @@ use quote::quote;
 use syn::{DeriveInput, ItemFn, parse_macro_input};
 
 mod callbacks;
-mod expansion;
+mod custom;
+mod data;
 mod exports;
+mod index;
 mod lowering;
-mod registries;
 mod safety;
 
 #[proc_macro_derive(FfiType)]
@@ -52,31 +53,31 @@ pub fn ffi_trait(_attr: TokenStream, item: TokenStream) -> TokenStream {
 
 #[proc_macro_attribute]
 pub fn custom_ffi(_attr: TokenStream, item: TokenStream) -> TokenStream {
-    expansion::custom_ffi::custom_ffi_impl(item)
+    custom::ffi::custom_ffi_impl(item)
 }
 
 #[proc_macro]
 pub fn custom_type(item: TokenStream) -> TokenStream {
-    expansion::custom_type::custom_type_impl(item)
+    custom::r#type::custom_type_impl(item)
 }
 
 #[proc_macro_attribute]
 pub fn data(attr: TokenStream, item: TokenStream) -> TokenStream {
     let attr_str = attr.to_string();
     if attr_str.trim() == "impl" {
-        return expansion::data::data_impl_block(item);
+        return data::expansion::data_impl_block(item);
     }
-    expansion::data::data_impl(item)
+    data::expansion::data_impl(item)
 }
 
 #[proc_macro_attribute]
 pub fn error(_attr: TokenStream, item: TokenStream) -> TokenStream {
-    expansion::data::data_impl(item)
+    data::expansion::data_impl(item)
 }
 
 #[proc_macro_derive(Data)]
 pub fn derive_data(input: TokenStream) -> TokenStream {
-    expansion::data::derive_data_impl(input)
+    data::expansion::derive_data_impl(input)
 }
 
 #[proc_macro_attribute]

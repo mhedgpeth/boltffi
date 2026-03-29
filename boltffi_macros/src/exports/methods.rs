@@ -1,77 +1,466 @@
 use super::common::{impl_type_name, is_factory_constructor, is_result_of_self_type_path};
 
+use boltffi_ffi_rules::callable::{CallableForm, ExecutionKind};
 use boltffi_ffi_rules::naming;
 use proc_macro::TokenStream;
 use quote::{quote, quote_spanned};
 use syn::{FnArg, ReturnType, Type};
 
-use crate::callbacks::registry as callback_registry;
+use crate::exports::async_export::{
+    AsyncExportNames, AsyncRuntimeExports, AsyncWasmCompleteExport,
+};
+use crate::exports::callable::MethodCallable;
 use crate::exports::callback_return::resolve_sync_callback_return;
+use crate::exports::extern_export::{
+    DirectBufferCarrier, DualPlatformExternExport, ExportBody, ExportCondition, ExportSafety,
+    ExternExport, ReceiverParameter,
+};
+use crate::index::callback_traits::CallbackTraitRegistry;
+use crate::index::{CrateIndex, custom_types};
 use crate::lowering::params::{FfiParams, transform_method_params, transform_method_params_async};
 use crate::lowering::returns::lower::{encoded_return_body, encoded_return_buffer_expression};
 use crate::lowering::returns::model::{
-    DirectBufferReturnMethod, ResolvedReturn, ReturnInvocationContext, ReturnLoweringContext,
-    ReturnPlatform, WasmOptionScalarEncoding,
+    ResolvedReturn, ReturnInvocationContext, ReturnLoweringContext, ReturnPlatform,
+    WasmOptionScalarEncoding,
 };
-use crate::registries::custom_types;
-use crate::registries::data_types;
 use boltffi_ffi_rules::transport::EncodedReturnStrategy;
 
-fn has_mut_self_methods(input: &syn::ItemImpl) -> bool {
-    input.items.iter().any(|item| {
-        if let syn::ImplItem::Fn(method) = item
-            && matches!(method.vis, syn::Visibility::Public(_))
-            && !method.attrs.iter().any(|a| a.path().is_ident("skip"))
-            && let Some(FnArg::Receiver(r)) = method.sig.inputs.first()
-        {
-            return r.mutability.is_some();
+struct ClassExportConfig {
+    single_threaded: bool,
+}
+
+struct ExportableMethod<'a> {
+    method: &'a syn::ImplItemFn,
+}
+
+struct InstanceMethodExport<'a> {
+    visibility: &'a syn::Visibility,
+    export_name: &'a syn::Ident,
+    type_name: &'a syn::Ident,
+    ffi_params: &'a [proc_macro2::TokenStream],
+}
+
+struct StaticMethodExport<'a> {
+    visibility: &'a syn::Visibility,
+    export_name: &'a syn::Ident,
+    ffi_params: &'a [proc_macro2::TokenStream],
+}
+
+struct StaticCallbackReturnPlan<'a> {
+    safety: ExportSafety,
+    wasm_params: &'a [proc_macro2::TokenStream],
+    native_params: &'a [proc_macro2::TokenStream],
+    wasm_return_type: proc_macro2::TokenStream,
+    native_return_type: proc_macro2::TokenStream,
+    wasm_body: proc_macro2::TokenStream,
+    native_body: proc_macro2::TokenStream,
+}
+
+impl ClassExportConfig {
+    fn from_attr(attr: &TokenStream) -> Self {
+        use syn::parse::Parser;
+        let parser = syn::punctuated::Punctuated::<syn::Ident, syn::Token![,]>::parse_terminated;
+        let single_threaded = parser
+            .parse(attr.clone())
+            .map(|args| {
+                args.iter()
+                    .any(|ident| ident == "single_threaded" || ident == "thread_unsafe")
+            })
+            .unwrap_or(false);
+        Self { single_threaded }
+    }
+
+    fn validate(&self, item_impl: &syn::ItemImpl) -> syn::Result<()> {
+        if self.single_threaded || !Self::has_mut_self_methods(item_impl) {
+            return Ok(());
         }
-        false
-    })
-}
 
-fn parse_single_threaded_attr(attr: &TokenStream) -> bool {
-    use syn::parse::Parser;
-    let parser = syn::punctuated::Punctuated::<syn::Ident, syn::Token![,]>::parse_terminated;
-    parser
-        .parse(attr.clone())
-        .map(|args| {
-            args.iter()
-                .any(|id| id == "single_threaded" || id == "thread_unsafe")
-        })
-        .unwrap_or(false)
-}
-
-pub fn ffi_class_impl(attr: TokenStream, item: TokenStream) -> TokenStream {
-    let single_threaded = parse_single_threaded_attr(&attr);
-    let input = syn::parse_macro_input!(item as syn::ItemImpl);
-
-    if has_mut_self_methods(&input) && !single_threaded {
-        return syn::Error::new_spanned(
-            &input,
+        Err(syn::Error::new_spanned(
+            item_impl,
             "BoltFFI: `&mut self` methods are not thread-safe in FFI contexts\n\n\
              Two threads calling `&mut self` on the same instance = undefined behavior.\n\n\
              Options:\n\
              1. Use `&self` with interior mutability (Mutex, RwLock, atomics) [recommended]\n\
              2. Add #[export(single_threaded)] ONLY if you enforce thread safety in the target \
                 language and want to avoid synchronization overhead you don't need",
-        )
-        .to_compile_error()
-        .into();
+        ))
     }
 
-    let custom_types = match custom_types::registry_for_current_crate() {
-        Ok(registry) => registry,
+    fn thread_safety_assertion(&self, type_name: &syn::Ident) -> proc_macro2::TokenStream {
+        if self.single_threaded {
+            return quote! {};
+        }
+
+        let span = type_name.span();
+        quote_spanned! {span=>
+            #[allow(dead_code)]
+            const _: () = {
+                #[diagnostic::on_unimplemented(
+                    message = "BoltFFI: `{Self}` must be thread-safe (Send + Sync)",
+                    note = "exported types can be accessed from any thread in the foreign language",
+                    note = "add #[export(single_threaded)] if you guarantee single-threaded access"
+                )]
+                trait BoltFFIThreadSafe: Send + Sync {}
+                impl<T: Send + Sync> BoltFFIThreadSafe for T {}
+                fn _assert<T: BoltFFIThreadSafe>() {}
+                fn _check() { _assert::<#type_name>(); }
+            };
+        }
+    }
+
+    fn has_mut_self_methods(item_impl: &syn::ItemImpl) -> bool {
+        item_impl
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                syn::ImplItem::Fn(method) => Some(ExportableMethod { method }),
+                _ => None,
+            })
+            .any(|method| method.is_public_mut_self())
+    }
+}
+
+#[cfg(test)]
+fn has_mut_self_methods(input: &syn::ItemImpl) -> bool {
+    ClassExportConfig::has_mut_self_methods(input)
+}
+
+impl<'a> ExportableMethod<'a> {
+    fn from_item(item: &'a syn::ImplItem) -> Option<Self> {
+        match item {
+            syn::ImplItem::Fn(method) => Some(Self { method }),
+            _ => None,
+        }
+    }
+
+    fn is_public(&self) -> bool {
+        matches!(self.method.vis, syn::Visibility::Public(_))
+    }
+
+    fn is_skipped(&self) -> bool {
+        self.method
+            .attrs
+            .iter()
+            .any(|attribute| attribute.path().is_ident("skip"))
+    }
+
+    fn is_exported(&self) -> bool {
+        self.is_public() && !self.is_skipped()
+    }
+
+    fn is_public_mut_self(&self) -> bool {
+        self.is_exported()
+            && self.method.sig.inputs.first().is_some_and(
+                |arg| matches!(arg, FnArg::Receiver(receiver) if receiver.mutability.is_some()),
+            )
+    }
+
+    fn stream_item_type(&self) -> Option<syn::Type> {
+        extract_ffi_stream_item(&self.method.attrs)
+    }
+
+    fn callable(&self) -> MethodCallable<'a> {
+        MethodCallable::new(self.method)
+    }
+}
+
+impl<'a> InstanceMethodExport<'a> {
+    fn new(
+        visibility: &'a syn::Visibility,
+        export_name: &'a syn::Ident,
+        type_name: &'a syn::Ident,
+        ffi_params: &'a [proc_macro2::TokenStream],
+    ) -> Self {
+        Self {
+            visibility,
+            export_name,
+            type_name,
+            ffi_params,
+        }
+    }
+
+    fn render_dual_platform(
+        self,
+        wasm: ExportBody,
+        native: ExportBody,
+    ) -> proc_macro2::TokenStream {
+        DualPlatformExternExport {
+            wasm: ExternExport {
+                visibility: self.visibility,
+                export_name: self.export_name,
+                safety: ExportSafety::Unsafe,
+                receiver: ReceiverParameter::Handle(self.type_name),
+                params: self.ffi_params,
+                allow_ptr_deref: false,
+                body: wasm,
+            },
+            native: ExternExport {
+                visibility: self.visibility,
+                export_name: self.export_name,
+                safety: ExportSafety::Unsafe,
+                receiver: ReceiverParameter::Handle(self.type_name),
+                params: self.ffi_params,
+                allow_ptr_deref: false,
+                body: native,
+            },
+        }
+        .render()
+    }
+
+    fn render_encoded_return(
+        self,
+        resolved_return: &ResolvedReturn,
+        encode_body: proc_macro2::TokenStream,
+    ) -> proc_macro2::TokenStream {
+        let wasm_return_carrier = DirectBufferCarrier::new(
+            resolved_return
+                .direct_buffer_return_method(
+                    ReturnInvocationContext::SyncExport,
+                    ReturnPlatform::Wasm,
+                )
+                .unwrap_or_else(|| {
+                    panic!(
+                        "encoded instance sync export must use a direct wasm buffer return carrier: {:?}",
+                        resolved_return.value_return_strategy()
+                    )
+                }),
+        );
+        let native_return_carrier = DirectBufferCarrier::new(
+            resolved_return
+                .direct_buffer_return_method(
+                    ReturnInvocationContext::SyncExport,
+                    ReturnPlatform::Native,
+                )
+                .unwrap_or_else(|| {
+                    panic!(
+                        "encoded instance sync export must use a direct native buffer return carrier: {:?}",
+                        resolved_return.value_return_strategy()
+                    )
+                }),
+        );
+        let wasm_return_type = wasm_return_carrier.return_type();
+        let native_return_type = native_return_carrier.return_type();
+
+        self.render_dual_platform(
+            ExportBody {
+                return_type: quote! { -> #wasm_return_type },
+                body: wasm_return_carrier.lower_body(encode_body.clone()),
+            },
+            ExportBody {
+                return_type: quote! { -> #native_return_type },
+                body: native_return_carrier.lower_body(encode_body),
+            },
+        )
+    }
+
+    fn render_callback_return(
+        self,
+        wasm_params: &'a [proc_macro2::TokenStream],
+        native_params: &'a [proc_macro2::TokenStream],
+        wasm_return_type: proc_macro2::TokenStream,
+        native_return_type: proc_macro2::TokenStream,
+        wasm_body: proc_macro2::TokenStream,
+        native_body: proc_macro2::TokenStream,
+    ) -> proc_macro2::TokenStream {
+        DualPlatformExternExport {
+            wasm: ExternExport {
+                visibility: self.visibility,
+                export_name: self.export_name,
+                safety: ExportSafety::Unsafe,
+                receiver: ReceiverParameter::Handle(self.type_name),
+                params: wasm_params,
+                allow_ptr_deref: false,
+                body: ExportBody {
+                    return_type: quote! { -> #wasm_return_type },
+                    body: wasm_body,
+                },
+            },
+            native: ExternExport {
+                visibility: self.visibility,
+                export_name: self.export_name,
+                safety: ExportSafety::Unsafe,
+                receiver: ReceiverParameter::Handle(self.type_name),
+                params: native_params,
+                allow_ptr_deref: false,
+                body: ExportBody {
+                    return_type: quote! { -> #native_return_type },
+                    body: native_body,
+                },
+            },
+        }
+        .render()
+    }
+
+    fn render_async_entry(self, body: proc_macro2::TokenStream) -> proc_macro2::TokenStream {
+        ExternExport {
+            visibility: self.visibility,
+            export_name: self.export_name,
+            safety: ExportSafety::Unsafe,
+            receiver: ReceiverParameter::Handle(self.type_name),
+            params: self.ffi_params,
+            allow_ptr_deref: false,
+            body: ExportBody {
+                return_type: quote! { -> ::boltffi::__private::RustFutureHandle },
+                body,
+            },
+        }
+        .render(ExportCondition::Always)
+    }
+}
+
+impl<'a> StaticMethodExport<'a> {
+    fn new(
+        visibility: &'a syn::Visibility,
+        export_name: &'a syn::Ident,
+        ffi_params: &'a [proc_macro2::TokenStream],
+    ) -> Self {
+        Self {
+            visibility,
+            export_name,
+            ffi_params,
+        }
+    }
+
+    fn render_dual_platform(
+        self,
+        safety: ExportSafety,
+        wasm: ExportBody,
+        native: ExportBody,
+    ) -> proc_macro2::TokenStream {
+        DualPlatformExternExport {
+            wasm: ExternExport {
+                visibility: self.visibility,
+                export_name: self.export_name,
+                safety,
+                receiver: ReceiverParameter::None,
+                params: self.ffi_params,
+                allow_ptr_deref: false,
+                body: wasm,
+            },
+            native: ExternExport {
+                visibility: self.visibility,
+                export_name: self.export_name,
+                safety,
+                receiver: ReceiverParameter::None,
+                params: self.ffi_params,
+                allow_ptr_deref: false,
+                body: native,
+            },
+        }
+        .render()
+    }
+
+    fn render_encoded_return(
+        self,
+        resolved_return: &ResolvedReturn,
+        encode_body: proc_macro2::TokenStream,
+    ) -> proc_macro2::TokenStream {
+        let wasm_return_carrier = DirectBufferCarrier::new(
+            resolved_return
+                .direct_buffer_return_method(
+                    ReturnInvocationContext::SyncExport,
+                    ReturnPlatform::Wasm,
+                )
+                .unwrap_or_else(|| {
+                    panic!(
+                        "encoded static sync export must use a direct wasm buffer return carrier: {:?}",
+                        resolved_return.value_return_strategy()
+                    )
+                }),
+        );
+        let native_return_carrier = DirectBufferCarrier::new(
+            resolved_return
+                .direct_buffer_return_method(
+                    ReturnInvocationContext::SyncExport,
+                    ReturnPlatform::Native,
+                )
+                .unwrap_or_else(|| {
+                    panic!(
+                        "encoded static sync export must use a direct native buffer return carrier: {:?}",
+                        resolved_return.value_return_strategy()
+                    )
+                }),
+        );
+        let wasm_return_type = wasm_return_carrier.return_type();
+        let native_return_type = native_return_carrier.return_type();
+        let safety = if self.ffi_params.is_empty() {
+            ExportSafety::Safe
+        } else {
+            ExportSafety::Unsafe
+        };
+
+        self.render_dual_platform(
+            safety,
+            ExportBody {
+                return_type: quote! { -> #wasm_return_type },
+                body: wasm_return_carrier.lower_body(encode_body.clone()),
+            },
+            ExportBody {
+                return_type: quote! { -> #native_return_type },
+                body: native_return_carrier.lower_body(encode_body),
+            },
+        )
+    }
+
+    fn render_callback_return(
+        self,
+        callback_return_plan: StaticCallbackReturnPlan<'a>,
+    ) -> proc_macro2::TokenStream {
+        let StaticCallbackReturnPlan {
+            safety,
+            wasm_params,
+            native_params,
+            wasm_return_type,
+            native_return_type,
+            wasm_body,
+            native_body,
+        } = callback_return_plan;
+
+        DualPlatformExternExport {
+            wasm: ExternExport {
+                visibility: self.visibility,
+                export_name: self.export_name,
+                safety,
+                receiver: ReceiverParameter::None,
+                params: wasm_params,
+                allow_ptr_deref: false,
+                body: ExportBody {
+                    return_type: quote! { -> #wasm_return_type },
+                    body: wasm_body,
+                },
+            },
+            native: ExternExport {
+                visibility: self.visibility,
+                export_name: self.export_name,
+                safety,
+                receiver: ReceiverParameter::None,
+                params: native_params,
+                allow_ptr_deref: false,
+                body: ExportBody {
+                    return_type: quote! { -> #native_return_type },
+                    body: native_body,
+                },
+            },
+        }
+        .render()
+    }
+}
+
+pub fn ffi_class_impl(attr: TokenStream, item: TokenStream) -> TokenStream {
+    let export_config = ClassExportConfig::from_attr(&attr);
+    let input = syn::parse_macro_input!(item as syn::ItemImpl);
+
+    if let Err(error) = export_config.validate(&input) {
+        return error.to_compile_error().into();
+    }
+
+    let crate_index = match CrateIndex::for_current_crate() {
+        Ok(crate_index) => crate_index,
         Err(error) => return error.to_compile_error().into(),
     };
-    let callback_registry = match callback_registry::registry_for_current_crate() {
-        Ok(registry) => registry,
-        Err(error) => return error.to_compile_error().into(),
-    };
-    let data_types = match data_types::registry_for_current_crate() {
-        Ok(registry) => registry,
-        Err(error) => return error.to_compile_error().into(),
-    };
+    let custom_types = crate_index.custom_types().clone();
+    let callback_registry = crate_index.callback_traits().clone();
+    let data_types = crate_index.data_types().clone();
     let return_lowering = ReturnLoweringContext::new(&custom_types, &data_types);
 
     let type_name = match impl_type_name(&input) {
@@ -92,61 +481,43 @@ pub fn ffi_class_impl(attr: TokenStream, item: TokenStream) -> TokenStream {
     let method_exports: Vec<_> = input
         .items
         .iter()
-        .filter_map(|item| {
-            if let syn::ImplItem::Fn(method) = item {
-                if method.attrs.iter().any(|a| a.path().is_ident("skip")) {
-                    return None;
-                }
-                if matches!(method.vis, syn::Visibility::Public(_)) {
-                    if let Some(item_type) = extract_ffi_stream_item(&method.attrs) {
-                        return Some(generate_stream_exports(
-                            &type_name,
-                            &type_name_str,
-                            method,
-                            &item_type,
-                        ));
-                    }
-                    if method.sig.asyncness.is_some() {
-                        return generate_async_method_export(
-                            &type_name,
-                            &type_name_str,
-                            method,
-                            &return_lowering,
-                            &callback_registry,
-                        );
-                    }
-                    return generate_method_export(
+        .filter_map(ExportableMethod::from_item)
+        .filter(|method| method.is_exported())
+        .filter_map(|exportable_method| {
+            let callable = exportable_method.callable();
+            if let Some(item_type) = exportable_method.stream_item_type() {
+                return Some(generate_stream_exports(
+                    &type_name,
+                    &type_name_str,
+                    callable,
+                    &item_type,
+                ));
+            }
+            match (callable.form(), callable.execution_kind()) {
+                (CallableForm::InstanceMethod, ExecutionKind::Sync)
+                | (CallableForm::StaticMethod, ExecutionKind::Sync) => generate_sync_method_export(
+                    callable,
+                    &type_name,
+                    &type_name_str,
+                    &return_lowering,
+                    &callback_registry,
+                ),
+                (CallableForm::InstanceMethod, ExecutionKind::Async) => {
+                    generate_async_method_export(
+                        callable,
                         &type_name,
                         &type_name_str,
-                        method,
                         &return_lowering,
                         &callback_registry,
-                    );
+                    )
                 }
+                (CallableForm::StaticMethod, ExecutionKind::Async) => None,
+                (CallableForm::Function, _) => None,
             }
-            None
         })
         .collect();
 
-    let thread_safety_assertion = if single_threaded {
-        quote! {}
-    } else {
-        let span = type_name.span();
-        quote_spanned! {span=>
-            #[allow(dead_code)]
-            const _: () = {
-                #[diagnostic::on_unimplemented(
-                    message = "BoltFFI: `{Self}` must be thread-safe (Send + Sync)",
-                    note = "exported types can be accessed from any thread in the foreign language",
-                    note = "add #[export(single_threaded)] if you guarantee single-threaded access"
-                )]
-                trait BoltFFIThreadSafe: Send + Sync {}
-                impl<T: Send + Sync> BoltFFIThreadSafe for T {}
-                fn _assert<T: BoltFFIThreadSafe>() {}
-                fn _check() { _assert::<#type_name>(); }
-            };
-        }
-    };
+    let thread_safety_assertion = export_config.thread_safety_assertion(&type_name);
 
     let expanded = quote! {
         #input
@@ -166,336 +537,14 @@ pub fn ffi_class_impl(attr: TokenStream, item: TokenStream) -> TokenStream {
     TokenStream::from(expanded)
 }
 
-fn build_instance_encoded_return_exports(
-    export_name: &syn::Ident,
-    type_name: &syn::Ident,
-    ffi_params: &[proc_macro2::TokenStream],
-    resolved_return: &ResolvedReturn,
-    encode_body: proc_macro2::TokenStream,
-) -> proc_macro2::TokenStream {
-    let wasm_return_method = resolved_return
-        .direct_buffer_return_method(ReturnInvocationContext::SyncExport, ReturnPlatform::Wasm)
-        .unwrap_or_else(|| {
-            panic!(
-                "encoded instance sync export must use a direct wasm buffer return carrier: {:?}",
-                resolved_return.value_return_strategy()
-            )
-        });
-    let native_return_method = resolved_return
-        .direct_buffer_return_method(ReturnInvocationContext::SyncExport, ReturnPlatform::Native)
-        .unwrap_or_else(|| {
-            panic!(
-                "encoded instance sync export must use a direct native buffer return carrier: {:?}",
-                resolved_return.value_return_strategy()
-            )
-        });
-    let wasm_return_type = direct_buffer_return_type(wasm_return_method);
-    let wasm_return_body = direct_buffer_return_body(wasm_return_method, encode_body.clone());
-    let native_return_type = direct_buffer_return_type(native_return_method);
-    let native_return_body = direct_buffer_return_body(native_return_method, encode_body);
-
-    match ffi_params.is_empty() {
-        true => quote! {
-            #[cfg(target_arch = "wasm32")]
-            #[unsafe(no_mangle)]
-            pub unsafe extern "C" fn #export_name(
-                handle: *mut #type_name
-            ) -> #wasm_return_type {
-                #wasm_return_body
-            }
-
-            #[cfg(not(target_arch = "wasm32"))]
-            #[unsafe(no_mangle)]
-            pub unsafe extern "C" fn #export_name(
-                handle: *mut #type_name
-            ) -> #native_return_type {
-                #native_return_body
-            }
-        },
-        false => quote! {
-            #[cfg(target_arch = "wasm32")]
-            #[unsafe(no_mangle)]
-            pub unsafe extern "C" fn #export_name(
-                handle: *mut #type_name,
-                #(#ffi_params),*
-            ) -> #wasm_return_type {
-                #wasm_return_body
-            }
-
-            #[cfg(not(target_arch = "wasm32"))]
-            #[unsafe(no_mangle)]
-            pub unsafe extern "C" fn #export_name(
-                handle: *mut #type_name,
-                #(#ffi_params),*
-            ) -> #native_return_type {
-                #native_return_body
-            }
-        },
-    }
-}
-
-fn build_static_encoded_return_exports(
-    export_name: &syn::Ident,
-    ffi_params: &[proc_macro2::TokenStream],
-    resolved_return: &ResolvedReturn,
-    encode_body: proc_macro2::TokenStream,
-) -> proc_macro2::TokenStream {
-    let wasm_return_method = resolved_return
-        .direct_buffer_return_method(ReturnInvocationContext::SyncExport, ReturnPlatform::Wasm)
-        .unwrap_or_else(|| {
-            panic!(
-                "encoded static sync export must use a direct wasm buffer return carrier: {:?}",
-                resolved_return.value_return_strategy()
-            )
-        });
-    let native_return_method = resolved_return
-        .direct_buffer_return_method(ReturnInvocationContext::SyncExport, ReturnPlatform::Native)
-        .unwrap_or_else(|| {
-            panic!(
-                "encoded static sync export must use a direct native buffer return carrier: {:?}",
-                resolved_return.value_return_strategy()
-            )
-        });
-    let wasm_return_type = direct_buffer_return_type(wasm_return_method);
-    let wasm_return_body = direct_buffer_return_body(wasm_return_method, encode_body.clone());
-    let native_return_type = direct_buffer_return_type(native_return_method);
-    let native_return_body = direct_buffer_return_body(native_return_method, encode_body);
-
-    match ffi_params.is_empty() {
-        true => quote! {
-            #[cfg(target_arch = "wasm32")]
-            #[unsafe(no_mangle)]
-            pub extern "C" fn #export_name() -> #wasm_return_type {
-                #wasm_return_body
-            }
-
-            #[cfg(not(target_arch = "wasm32"))]
-            #[unsafe(no_mangle)]
-            pub extern "C" fn #export_name() -> #native_return_type {
-                #native_return_body
-            }
-        },
-        false => quote! {
-            #[cfg(target_arch = "wasm32")]
-            #[unsafe(no_mangle)]
-            pub unsafe extern "C" fn #export_name(
-                #(#ffi_params),*
-            ) -> #wasm_return_type {
-                #wasm_return_body
-            }
-
-            #[cfg(not(target_arch = "wasm32"))]
-            #[unsafe(no_mangle)]
-            pub unsafe extern "C" fn #export_name(
-                #(#ffi_params),*
-            ) -> #native_return_type {
-                #native_return_body
-            }
-        },
-    }
-}
-
-fn direct_buffer_return_type(return_method: DirectBufferReturnMethod) -> proc_macro2::TokenStream {
-    match return_method {
-        DirectBufferReturnMethod::Packed => quote! { u64 },
-        DirectBufferReturnMethod::Descriptor => quote! { ::boltffi::__private::FfiBuf },
-    }
-}
-
-fn direct_buffer_return_body(
-    return_method: DirectBufferReturnMethod,
-    encode_body: proc_macro2::TokenStream,
-) -> proc_macro2::TokenStream {
-    match return_method {
-        DirectBufferReturnMethod::Packed => quote! {
-            let __boltffi_buf: ::boltffi::__private::FfiBuf = { #encode_body };
-            __boltffi_buf.into_packed()
-        },
-        DirectBufferReturnMethod::Descriptor => encode_body,
-    }
-}
-
-fn build_instance_void_slot_exports(
-    export_name: &syn::Ident,
-    type_name: &syn::Ident,
-    ffi_params: &[proc_macro2::TokenStream],
-    wasm_body: proc_macro2::TokenStream,
-    native_body: proc_macro2::TokenStream,
-) -> proc_macro2::TokenStream {
-    match ffi_params.is_empty() {
-        true => quote! {
-            #[cfg(target_arch = "wasm32")]
-            #[unsafe(no_mangle)]
-            pub unsafe extern "C" fn #export_name(
-                handle: *mut #type_name
-            ) {
-                #wasm_body
-            }
-
-            #[cfg(not(target_arch = "wasm32"))]
-            #[unsafe(no_mangle)]
-            pub unsafe extern "C" fn #export_name(
-                handle: *mut #type_name
-            ) -> ::boltffi::__private::FfiBuf {
-                #native_body
-            }
-        },
-        false => quote! {
-            #[cfg(target_arch = "wasm32")]
-            #[unsafe(no_mangle)]
-            pub unsafe extern "C" fn #export_name(
-                handle: *mut #type_name,
-                #(#ffi_params),*
-            ) {
-                #wasm_body
-            }
-
-            #[cfg(not(target_arch = "wasm32"))]
-            #[unsafe(no_mangle)]
-            pub unsafe extern "C" fn #export_name(
-                handle: *mut #type_name,
-                #(#ffi_params),*
-            ) -> ::boltffi::__private::FfiBuf {
-                #native_body
-            }
-        },
-    }
-}
-
-fn build_static_void_slot_exports(
-    export_name: &syn::Ident,
-    ffi_params: &[proc_macro2::TokenStream],
-    wasm_body: proc_macro2::TokenStream,
-    native_body: proc_macro2::TokenStream,
-) -> proc_macro2::TokenStream {
-    match ffi_params.is_empty() {
-        true => quote! {
-            #[cfg(target_arch = "wasm32")]
-            #[unsafe(no_mangle)]
-            pub extern "C" fn #export_name() {
-                #wasm_body
-            }
-
-            #[cfg(not(target_arch = "wasm32"))]
-            #[unsafe(no_mangle)]
-            pub extern "C" fn #export_name() -> ::boltffi::__private::FfiBuf {
-                #native_body
-            }
-        },
-        false => quote! {
-            #[cfg(target_arch = "wasm32")]
-            #[unsafe(no_mangle)]
-            pub unsafe extern "C" fn #export_name(
-                #(#ffi_params),*
-            ) {
-                #wasm_body
-            }
-
-            #[cfg(not(target_arch = "wasm32"))]
-            #[unsafe(no_mangle)]
-            pub unsafe extern "C" fn #export_name(
-                #(#ffi_params),*
-            ) -> ::boltffi::__private::FfiBuf {
-                #native_body
-            }
-        },
-    }
-}
-
-fn build_instance_f64_wasm_exports(
-    export_name: &syn::Ident,
-    type_name: &syn::Ident,
-    ffi_params: &[proc_macro2::TokenStream],
-    wasm_body: proc_macro2::TokenStream,
-    native_body: proc_macro2::TokenStream,
-) -> proc_macro2::TokenStream {
-    match ffi_params.is_empty() {
-        true => quote! {
-            #[cfg(target_arch = "wasm32")]
-            #[unsafe(no_mangle)]
-            pub unsafe extern "C" fn #export_name(
-                handle: *mut #type_name
-            ) -> f64 {
-                #wasm_body
-            }
-
-            #[cfg(not(target_arch = "wasm32"))]
-            #[unsafe(no_mangle)]
-            pub unsafe extern "C" fn #export_name(
-                handle: *mut #type_name
-            ) -> ::boltffi::__private::FfiBuf {
-                #native_body
-            }
-        },
-        false => quote! {
-            #[cfg(target_arch = "wasm32")]
-            #[unsafe(no_mangle)]
-            pub unsafe extern "C" fn #export_name(
-                handle: *mut #type_name,
-                #(#ffi_params),*
-            ) -> f64 {
-                #wasm_body
-            }
-
-            #[cfg(not(target_arch = "wasm32"))]
-            #[unsafe(no_mangle)]
-            pub unsafe extern "C" fn #export_name(
-                handle: *mut #type_name,
-                #(#ffi_params),*
-            ) -> ::boltffi::__private::FfiBuf {
-                #native_body
-            }
-        },
-    }
-}
-
-fn build_static_f64_wasm_exports(
-    export_name: &syn::Ident,
-    ffi_params: &[proc_macro2::TokenStream],
-    wasm_body: proc_macro2::TokenStream,
-    native_body: proc_macro2::TokenStream,
-) -> proc_macro2::TokenStream {
-    match ffi_params.is_empty() {
-        true => quote! {
-            #[cfg(target_arch = "wasm32")]
-            #[unsafe(no_mangle)]
-            pub extern "C" fn #export_name() -> f64 {
-                #wasm_body
-            }
-
-            #[cfg(not(target_arch = "wasm32"))]
-            #[unsafe(no_mangle)]
-            pub extern "C" fn #export_name() -> ::boltffi::__private::FfiBuf {
-                #native_body
-            }
-        },
-        false => quote! {
-            #[cfg(target_arch = "wasm32")]
-            #[unsafe(no_mangle)]
-            pub unsafe extern "C" fn #export_name(
-                #(#ffi_params),*
-            ) -> f64 {
-                #wasm_body
-            }
-
-            #[cfg(not(target_arch = "wasm32"))]
-            #[unsafe(no_mangle)]
-            pub unsafe extern "C" fn #export_name(
-                #(#ffi_params),*
-            ) -> ::boltffi::__private::FfiBuf {
-                #native_body
-            }
-        },
-    }
-}
-
 fn generate_factory_constructor_export(
+    callable: MethodCallable<'_>,
     type_name: &syn::Ident,
     class_name: &str,
-    method: &syn::ImplItemFn,
     return_lowering: &ReturnLoweringContext<'_>,
-    callback_registry: &callback_registry::CallbackTraitRegistry,
+    callback_registry: &CallbackTraitRegistry,
 ) -> Option<proc_macro2::TokenStream> {
+    let method = callable.method();
     let method_name = &method.sig.ident;
     let export_name = if method_name == "new" {
         naming::class_ffi_new(class_name)
@@ -577,41 +626,36 @@ fn generate_factory_constructor_export(
     }
 }
 
-fn generate_method_export(
+fn generate_sync_method_export(
+    callable: MethodCallable<'_>,
     type_name: &syn::Ident,
     class_name: &str,
-    method: &syn::ImplItemFn,
     return_lowering: &ReturnLoweringContext<'_>,
-    callback_registry: &callback_registry::CallbackTraitRegistry,
+    callback_registry: &CallbackTraitRegistry,
 ) -> Option<proc_macro2::TokenStream> {
     let custom_types = return_lowering.custom_types();
+    let method = callable.method();
     let method_name = &method.sig.ident;
     let export_name = syn::Ident::new(
         naming::method_ffi_name(class_name, &method_name.to_string()).as_str(),
         method_name.span(),
     );
+    let visibility: syn::Visibility = syn::parse_quote! { pub };
 
-    let has_self = method
-        .sig
-        .inputs
-        .first()
-        .map(|arg| matches!(arg, FnArg::Receiver(_)))
-        .unwrap_or(false);
-
-    if !has_self {
+    if callable.form() == CallableForm::StaticMethod {
         if is_factory_constructor(method, type_name) {
             return generate_factory_constructor_export(
+                callable,
                 type_name,
                 class_name,
-                method,
                 return_lowering,
                 callback_registry,
             );
         }
         return generate_static_method_export(
+            callable,
             type_name,
             class_name,
-            method,
             return_lowering,
             callback_registry,
         );
@@ -663,45 +707,17 @@ fn generate_method_export(
         let native_return_type = callback_return.native_ffi_return_type();
         let wasm_return_type = callback_return.wasm_ffi_return_type();
 
-        return Some(if native_ffi_params.is_empty() {
-            quote! {
-                #[cfg(target_arch = "wasm32")]
-                #[unsafe(no_mangle)]
-                pub unsafe extern "C" fn #export_name(
-                    handle: *mut #type_name
-                ) -> #wasm_return_type {
-                    #wasm_body
-                }
-
-                #[cfg(not(target_arch = "wasm32"))]
-                #[unsafe(no_mangle)]
-                pub unsafe extern "C" fn #export_name(
-                    handle: *mut #type_name
-                ) -> #native_return_type {
-                    #native_body
-                }
-            }
-        } else {
-            quote! {
-                #[cfg(target_arch = "wasm32")]
-                #[unsafe(no_mangle)]
-                pub unsafe extern "C" fn #export_name(
-                    handle: *mut #type_name,
-                    #(#wasm_ffi_params),*
-                ) -> #wasm_return_type {
-                    #wasm_body
-                }
-
-                #[cfg(not(target_arch = "wasm32"))]
-                #[unsafe(no_mangle)]
-                pub unsafe extern "C" fn #export_name(
-                    handle: *mut #type_name,
-                    #(#native_ffi_params),*
-                ) -> #native_return_type {
-                    #native_body
-                }
-            }
-        });
+        return Some(
+            InstanceMethodExport::new(&visibility, &export_name, type_name, &[])
+                .render_callback_return(
+                    &wasm_ffi_params,
+                    &native_ffi_params,
+                    quote! { #wasm_return_type },
+                    quote! { #native_return_type },
+                    wasm_body,
+                    native_body,
+                ),
+        );
     }
 
     let on_wire_record_error = return_abi.invalid_arg_early_return_statement();
@@ -778,13 +794,19 @@ fn generate_method_export(
                 ::boltffi::__private::FfiBuf::wire_encode(&#result_ident)
             };
 
-            return Some(build_instance_f64_wasm_exports(
-                &export_name,
-                type_name,
-                &ffi_params,
-                wasm_body,
-                native_body,
-            ));
+            return Some(
+                InstanceMethodExport::new(&visibility, &export_name, type_name, &ffi_params)
+                    .render_dual_platform(
+                        ExportBody {
+                            return_type: quote! { -> f64 },
+                            body: wasm_body,
+                        },
+                        ExportBody {
+                            return_type: quote! { -> ::boltffi::__private::FfiBuf },
+                            body: native_body,
+                        },
+                    ),
+            );
         }
 
         if matches!(strategy, EncodedReturnStrategy::DirectVec) {
@@ -811,13 +833,19 @@ fn generate_method_export(
                 core::mem::forget(__buf);
             };
 
-            return Some(build_instance_void_slot_exports(
-                &export_name,
-                type_name,
-                &ffi_params,
-                wasm_body,
-                native_body,
-            ));
+            return Some(
+                InstanceMethodExport::new(&visibility, &export_name, type_name, &ffi_params)
+                    .render_dual_platform(
+                        ExportBody {
+                            return_type: quote! {},
+                            body: wasm_body,
+                        },
+                        ExportBody {
+                            return_type: quote! { -> ::boltffi::__private::FfiBuf },
+                            body: native_body,
+                        },
+                    ),
+            );
         }
 
         let body = encoded_return_body(
@@ -851,50 +879,41 @@ fn generate_method_export(
     };
 
     if is_wire_encoded {
-        return Some(build_instance_encoded_return_exports(
-            &export_name,
-            type_name,
-            &ffi_params,
-            &return_abi,
-            body,
-        ));
+        return Some(
+            InstanceMethodExport::new(&visibility, &export_name, type_name, &ffi_params)
+                .render_encoded_return(&return_abi, body),
+        );
     }
 
-    if ffi_params.is_empty() {
-        Some(quote! {
-            #[unsafe(no_mangle)]
-            pub unsafe extern "C" fn #export_name(
-                handle: *mut #type_name
-            ) #return_type {
-                #body
-            }
-        })
-    } else {
-        Some(quote! {
-            #[unsafe(no_mangle)]
-            pub unsafe extern "C" fn #export_name(
-                handle: *mut #type_name,
-                #(#ffi_params),*
-            ) #return_type {
-                #body
-            }
-        })
-    }
+    Some(
+        ExternExport {
+            visibility: &visibility,
+            export_name: &export_name,
+            safety: ExportSafety::Unsafe,
+            receiver: ReceiverParameter::Handle(type_name),
+            params: &ffi_params,
+            allow_ptr_deref: false,
+            body: ExportBody { return_type, body },
+        }
+        .render(ExportCondition::Always),
+    )
 }
 
 fn generate_static_method_export(
+    callable: MethodCallable<'_>,
     type_name: &syn::Ident,
     class_name: &str,
-    method: &syn::ImplItemFn,
     return_lowering: &ReturnLoweringContext<'_>,
-    callback_registry: &callback_registry::CallbackTraitRegistry,
+    callback_registry: &CallbackTraitRegistry,
 ) -> Option<proc_macro2::TokenStream> {
     let custom_types = return_lowering.custom_types();
+    let method = callable.method();
     let method_name = &method.sig.ident;
     let export_name = syn::Ident::new(
         naming::method_ffi_name(class_name, &method_name.to_string()).as_str(),
         method_name.span(),
     );
+    let visibility: syn::Visibility = syn::parse_quote! { pub };
 
     let sync_callback_return =
         match resolve_sync_callback_return(&method.sig.output, callback_registry) {
@@ -941,40 +960,25 @@ fn generate_static_method_export(
         });
         let native_return_type = callback_return.native_ffi_return_type();
         let wasm_return_type = callback_return.wasm_ffi_return_type();
-
-        return Some(if native_ffi_params.is_empty() {
-            quote! {
-                #[cfg(target_arch = "wasm32")]
-                #[unsafe(no_mangle)]
-                pub extern "C" fn #export_name() -> #wasm_return_type {
-                    #wasm_body
-                }
-
-                #[cfg(not(target_arch = "wasm32"))]
-                #[unsafe(no_mangle)]
-                pub extern "C" fn #export_name() -> #native_return_type {
-                    #native_body
-                }
-            }
+        let safety = if native_ffi_params.is_empty() {
+            ExportSafety::Safe
         } else {
-            quote! {
-                #[cfg(target_arch = "wasm32")]
-                #[unsafe(no_mangle)]
-                pub unsafe extern "C" fn #export_name(
-                    #(#wasm_ffi_params),*
-                ) -> #wasm_return_type {
-                    #wasm_body
-                }
+            ExportSafety::Unsafe
+        };
 
-                #[cfg(not(target_arch = "wasm32"))]
-                #[unsafe(no_mangle)]
-                pub unsafe extern "C" fn #export_name(
-                    #(#native_ffi_params),*
-                ) -> #native_return_type {
-                    #native_body
-                }
-            }
-        });
+        return Some(
+            StaticMethodExport::new(&visibility, &export_name, &[]).render_callback_return(
+                StaticCallbackReturnPlan {
+                    safety,
+                    wasm_params: &wasm_ffi_params,
+                    native_params: &native_ffi_params,
+                    wasm_return_type: quote! { #wasm_return_type },
+                    native_return_type: quote! { #native_return_type },
+                    wasm_body,
+                    native_body,
+                },
+            ),
+        );
     }
 
     let on_wire_record_error = return_abi.invalid_arg_early_return_statement();
@@ -1051,12 +1055,25 @@ fn generate_static_method_export(
                 ::boltffi::__private::FfiBuf::wire_encode(&#result_ident)
             };
 
-            return Some(build_static_f64_wasm_exports(
-                &export_name,
-                &ffi_params,
-                wasm_body,
-                native_body,
-            ));
+            let safety = if ffi_params.is_empty() {
+                ExportSafety::Safe
+            } else {
+                ExportSafety::Unsafe
+            };
+            return Some(
+                StaticMethodExport::new(&visibility, &export_name, &ffi_params)
+                    .render_dual_platform(
+                        safety,
+                        ExportBody {
+                            return_type: quote! { -> f64 },
+                            body: wasm_body,
+                        },
+                        ExportBody {
+                            return_type: quote! { -> ::boltffi::__private::FfiBuf },
+                            body: native_body,
+                        },
+                    ),
+            );
         }
 
         if matches!(strategy, EncodedReturnStrategy::DirectVec) {
@@ -1083,12 +1100,25 @@ fn generate_static_method_export(
                 core::mem::forget(__buf);
             };
 
-            return Some(build_static_void_slot_exports(
-                &export_name,
-                &ffi_params,
-                wasm_body,
-                native_body,
-            ));
+            let safety = if ffi_params.is_empty() {
+                ExportSafety::Safe
+            } else {
+                ExportSafety::Unsafe
+            };
+            return Some(
+                StaticMethodExport::new(&visibility, &export_name, &ffi_params)
+                    .render_dual_platform(
+                        safety,
+                        ExportBody {
+                            return_type: quote! {},
+                            body: wasm_body,
+                        },
+                        ExportBody {
+                            return_type: quote! { -> ::boltffi::__private::FfiBuf },
+                            body: native_body,
+                        },
+                    ),
+            );
         }
 
         let body = encoded_return_body(
@@ -1122,57 +1152,49 @@ fn generate_static_method_export(
     };
 
     if is_wire_encoded {
-        return Some(build_static_encoded_return_exports(
-            &export_name,
-            &ffi_params,
-            &return_abi,
-            body,
-        ));
+        return Some(
+            StaticMethodExport::new(&visibility, &export_name, &ffi_params)
+                .render_encoded_return(&return_abi, body),
+        );
     }
 
-    if ffi_params.is_empty() {
-        Some(quote! {
-            #[unsafe(no_mangle)]
-            pub unsafe extern "C" fn #export_name() #return_type {
-                #body
-            }
-        })
-    } else {
-        Some(quote! {
-            #[unsafe(no_mangle)]
-            pub unsafe extern "C" fn #export_name(#(#ffi_params),*) #return_type {
-                #body
-            }
-        })
-    }
+    Some(
+        ExternExport {
+            visibility: &visibility,
+            export_name: &export_name,
+            safety: if ffi_params.is_empty() {
+                ExportSafety::Safe
+            } else {
+                ExportSafety::Unsafe
+            },
+            receiver: ReceiverParameter::None,
+            params: &ffi_params,
+            allow_ptr_deref: false,
+            body: ExportBody { return_type, body },
+        }
+        .render(ExportCondition::Always),
+    )
 }
 
 fn generate_async_method_export(
+    callable: MethodCallable<'_>,
     type_name: &syn::Ident,
     class_name: &str,
-    method: &syn::ImplItemFn,
     return_lowering: &ReturnLoweringContext<'_>,
-    callback_registry: &callback_registry::CallbackTraitRegistry,
+    callback_registry: &CallbackTraitRegistry,
 ) -> Option<proc_macro2::TokenStream> {
+    let method = callable.method();
     let method_name = &method.sig.ident;
     let method_name_str = method_name.to_string();
-
     let receiver = match method.sig.inputs.first() {
-        Some(FnArg::Receiver(r)) => r,
+        Some(FnArg::Receiver(receiver)) => receiver,
         _ => return None,
     };
-
     let needs_mut = receiver.mutability.is_some();
 
     let base_name = naming::method_ffi_name(class_name, &method_name_str);
-    let entry_ident = syn::Ident::new(base_name.as_str(), method_name.span());
-    let poll_ident = syn::Ident::new(&format!("{}_poll", base_name), method_name.span());
-    let poll_sync_ident = syn::Ident::new(&format!("{}_poll_sync", base_name), method_name.span());
-    let complete_ident = syn::Ident::new(&format!("{}_complete", base_name), method_name.span());
-    let panic_message_ident =
-        syn::Ident::new(&format!("{}_panic_message", base_name), method_name.span());
-    let cancel_ident = syn::Ident::new(&format!("{}_cancel", base_name), method_name.span());
-    let free_ident = syn::Ident::new(&format!("{}_free", base_name), method_name.span());
+    let export_names = AsyncExportNames::new(base_name.as_str(), method_name.span());
+    let visibility: syn::Visibility = syn::parse_quote! { pub };
 
     let other_inputs = method.sig.inputs.iter().skip(1).cloned();
     let on_wire_record_error = quote! { ::core::ptr::null() };
@@ -1211,65 +1233,29 @@ fn generate_async_method_export(
         quote! { let instance = &*handle; }
     };
 
-    let entry_fn = if ffi_params.is_empty() {
-        quote! {
-            #[unsafe(no_mangle)]
-            pub unsafe extern "C" fn #entry_ident(
-                handle: *mut #type_name
-            ) -> ::boltffi::__private::RustFutureHandle {
-                #instance_binding
-                ::boltffi::__private::rustfuture::rust_future_new(async move {
-                    #future_body
-                })
-            }
-        }
-    } else {
-        quote! {
-            #[unsafe(no_mangle)]
-            pub unsafe extern "C" fn #entry_ident(
-                handle: *mut #type_name,
-                #(#ffi_params),*
-            ) -> ::boltffi::__private::RustFutureHandle {
-                #instance_binding
-                #(#pre_spawn)*
-                #(let _ = &#move_vars;)*
-                ::boltffi::__private::rustfuture::rust_future_new(async move {
-                    #future_body
-                })
-            }
-        }
+    let entry_body = quote! {
+        #instance_binding
+        #(#pre_spawn)*
+        #(let _ = &#move_vars;)*
+        ::boltffi::__private::rustfuture::rust_future_new(async move {
+            #future_body
+        })
     };
+    let entry_fn =
+        InstanceMethodExport::new(&visibility, export_names.entry(), type_name, ffi_params)
+            .render_async_entry(entry_body);
 
-    let native_complete_fn = quote! {
-        #[cfg(not(target_arch = "wasm32"))]
-        #[unsafe(no_mangle)]
-        pub unsafe extern "C" fn #complete_ident(
-            handle: ::boltffi::__private::RustFutureHandle,
-            out_status: *mut ::boltffi::__private::FfiStatus,
-        ) -> #ffi_return_type {
-            match ::boltffi::__private::rustfuture::rust_future_complete::<#rust_return_type>(handle) {
-                Some(result) => { #complete_conversion }
-                None => {
-                    if !out_status.is_null() { *out_status = ::boltffi::__private::FfiStatus::CANCELLED; }
-                    #default_value
-                }
-            }
-        }
-    };
-
-    let wasm_complete_fn = if return_abi.is_passable_value() {
+    let wasm_complete = if return_abi.is_passable_value() {
         let rust_type = return_abi.rust_type();
-        quote! {
-            #[cfg(target_arch = "wasm32")]
-            #[unsafe(no_mangle)]
-            pub unsafe extern "C" fn #complete_ident(
-                handle: ::boltffi::__private::RustFutureHandle,
-            ) -> <#rust_type as ::boltffi::__private::Passable>::Out {
+        AsyncWasmCompleteExport {
+            params: quote! { handle: ::boltffi::__private::RustFutureHandle },
+            return_type: quote! { -> <#rust_type as ::boltffi::__private::Passable>::Out },
+            body: quote! {
                 match ::boltffi::__private::rustfuture::rust_future_complete::<#rust_return_type>(handle) {
                     Some(result) => ::boltffi::__private::Passable::pack(result),
                     None => Default::default(),
                 }
-            }
+            },
         }
     } else if let Some(strategy) = return_abi.encoded_return_strategy() {
         let rust_type = return_abi.rust_type();
@@ -1280,14 +1266,14 @@ fn generate_async_method_export(
         } else {
             encoded_return_buffer_expression(rust_type, strategy, &result_ident, registry.as_ref())
         };
-        quote! {
-            #[cfg(target_arch = "wasm32")]
-            #[unsafe(no_mangle)]
-            pub unsafe extern "C" fn #complete_ident(
+        AsyncWasmCompleteExport {
+            params: quote! {
                 out: *mut ::boltffi::__private::FfiBuf,
                 handle: ::boltffi::__private::RustFutureHandle,
-                _out_status: *mut ::boltffi::__private::FfiStatus,
-            ) {
+                _out_status: *mut ::boltffi::__private::FfiStatus
+            },
+            return_type: quote! {},
+            body: quote! {
                 if out.is_null() {
                     return;
                 }
@@ -1296,17 +1282,17 @@ fn generate_async_method_export(
                     None => ::boltffi::__private::FfiBuf::empty(),
                 };
                 out.write(buf);
-            }
+            },
         }
     } else {
-        quote! {
-            #[cfg(target_arch = "wasm32")]
-            #[unsafe(no_mangle)]
-            pub unsafe extern "C" fn #complete_ident(
+        AsyncWasmCompleteExport {
+            params: quote! {
                 out: *mut ::boltffi::__private::FfiBuf,
                 handle: ::boltffi::__private::RustFutureHandle,
-                _out_status: *mut ::boltffi::__private::FfiStatus,
-            ) {
+                _out_status: *mut ::boltffi::__private::FfiStatus
+            },
+            return_type: quote! {},
+            body: quote! {
                 if out.is_null() {
                     return;
                 }
@@ -1315,64 +1301,23 @@ fn generate_async_method_export(
                     None => ::boltffi::__private::FfiBuf::empty(),
                 };
                 out.write(buf);
-            }
+            },
         }
     };
-
-    let native_poll_fn = quote! {
-        #[cfg(not(target_arch = "wasm32"))]
-        #[unsafe(no_mangle)]
-        pub unsafe extern "C" fn #poll_ident(
-            handle: ::boltffi::__private::RustFutureHandle,
-            callback_data: u64,
-            callback: ::boltffi::__private::RustFutureContinuationCallback,
-        ) {
-            ::boltffi::__private::rustfuture::rust_future_poll::<#rust_return_type>(handle, callback, callback_data)
-        }
-    };
-
-    let wasm_poll_fn = quote! {
-        #[cfg(target_arch = "wasm32")]
-        #[unsafe(no_mangle)]
-        pub unsafe extern "C" fn #poll_sync_ident(
-            handle: ::boltffi::__private::RustFutureHandle,
-        ) -> i32 {
-            ::boltffi::__private::rust_future_poll_sync::<#rust_return_type>(handle)
-        }
-    };
-
-    let wasm_panic_message_fn = quote! {
-        #[cfg(target_arch = "wasm32")]
-        #[unsafe(no_mangle)]
-        pub unsafe extern "C" fn #panic_message_ident(
-            handle: ::boltffi::__private::RustFutureHandle,
-        ) -> ::boltffi::__private::FfiBuf {
-            match ::boltffi::__private::rust_future_panic_message::<#rust_return_type>(handle) {
-                Some(message) => ::boltffi::__private::FfiBuf::wire_encode(&message),
-                None => ::boltffi::__private::FfiBuf::empty(),
-            }
-        }
-    };
+    let runtime_exports = AsyncRuntimeExports {
+        visibility: &visibility,
+        names: &export_names,
+        rust_return_type: quote! { #rust_return_type },
+        ffi_return_type: quote! { #ffi_return_type },
+        complete_conversion,
+        default_value,
+    }
+    .render(wasm_complete);
 
     Some(quote! {
         #entry_fn
 
-        #native_poll_fn
-        #wasm_poll_fn
-        #wasm_panic_message_fn
-
-        #native_complete_fn
-        #wasm_complete_fn
-
-        #[unsafe(no_mangle)]
-        pub unsafe extern "C" fn #cancel_ident(handle: ::boltffi::__private::RustFutureHandle) {
-            ::boltffi::__private::rustfuture::rust_future_cancel::<#rust_return_type>(handle)
-        }
-
-        #[unsafe(no_mangle)]
-        pub unsafe extern "C" fn #free_ident(handle: ::boltffi::__private::RustFutureHandle) {
-            ::boltffi::__private::rustfuture::rust_future_free::<#rust_return_type>(handle)
-        }
+        #runtime_exports
     })
 }
 
@@ -1398,9 +1343,10 @@ fn extract_ffi_stream_item(attrs: &[syn::Attribute]) -> Option<syn::Type> {
 fn generate_stream_exports(
     type_name: &syn::Ident,
     class_name: &str,
-    method: &syn::ImplItemFn,
+    callable: MethodCallable<'_>,
     item_type: &syn::Type,
 ) -> proc_macro2::TokenStream {
+    let method = callable.method();
     let method_name = &method.sig.ident;
     let stream_name = method_name.to_string();
 

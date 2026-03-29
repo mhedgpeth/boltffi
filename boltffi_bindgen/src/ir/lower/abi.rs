@@ -1,4 +1,5 @@
 use super::*;
+use boltffi_ffi_rules::callable::ExecutionKind;
 
 impl<'c> Lowerer<'c> {
     pub fn to_abi_contract(&self) -> AbiContract {
@@ -41,7 +42,7 @@ impl<'c> Lowerer<'c> {
                 let method_calls = host
                     .methods()
                     .iter()
-                    .filter(|method| !method.is_async)
+                    .filter(|method| method.execution_kind() == ExecutionKind::Sync)
                     .map(|method| self.abi_call_for_value_type_method(host, method));
                 ctor_calls.chain(method_calls)
             });
@@ -220,7 +221,7 @@ impl<'c> Lowerer<'c> {
                 AbiCallbackMethod {
                     id: method.id.clone(),
                     vtable_field: naming::vtable_field_name(method.id.as_str()),
-                    is_async: method.is_async,
+                    execution_kind: method.execution_kind(),
                     params,
                     returns,
                     error,
@@ -936,7 +937,7 @@ impl<'c> Lowerer<'c> {
             .map(|param| self.lower_callback_param(param))
             .flat_map(|param| self.abi_callback_param_from_plan(param));
 
-        let out_params = self.abi_callback_out_params(&method.returns, method.is_async);
+        let out_params = self.abi_callback_out_params(&method.returns, method.execution_kind());
 
         std::iter::once(handle_param)
             .chain(method_params)
@@ -1021,9 +1022,10 @@ impl<'c> Lowerer<'c> {
     pub(super) fn abi_callback_out_params(
         &self,
         returns: &ReturnDef,
-        is_async: bool,
+        execution_kind: ExecutionKind,
     ) -> Vec<AbiParam> {
-        let has_return = !matches!(returns, ReturnDef::Void) && !is_async;
+        let has_return =
+            !matches!(returns, ReturnDef::Void) && execution_kind == ExecutionKind::Sync;
         let out_ptr_name = ParamName::new("out_ptr");
         let out_len_name = ParamName::new("out_len");
 

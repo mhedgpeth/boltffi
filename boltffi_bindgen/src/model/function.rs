@@ -1,3 +1,4 @@
+use boltffi_ffi_rules::callable::{CallableForm, ExecutionKind};
 use serde::{Deserialize, Serialize};
 
 use super::method::Parameter;
@@ -8,7 +9,7 @@ pub struct Function {
     pub name: String,
     pub inputs: Vec<Parameter>,
     pub returns: ReturnType,
-    pub is_async: bool,
+    pub execution_kind: ExecutionKind,
     pub wire_encoded: bool,
     pub doc: Option<String>,
     pub deprecated: Option<Deprecation>,
@@ -20,7 +21,7 @@ impl Function {
             name: name.into(),
             inputs: Vec::new(),
             returns: ReturnType::Void,
-            is_async: false,
+            execution_kind: ExecutionKind::Sync,
             wire_encoded: false,
             doc: None,
             deprecated: None,
@@ -48,7 +49,7 @@ impl Function {
     }
 
     pub fn make_async(mut self) -> Self {
-        self.is_async = true;
+        self.execution_kind = ExecutionKind::Async;
         self
     }
 
@@ -66,6 +67,18 @@ impl Function {
 
     pub fn maybe_async(self, is_async: bool) -> Self {
         if is_async { self.make_async() } else { self }
+    }
+
+    pub fn callable_form(&self) -> CallableForm {
+        CallableForm::Function
+    }
+
+    pub fn execution_kind(&self) -> ExecutionKind {
+        self.execution_kind
+    }
+
+    pub fn is_async(&self) -> bool {
+        self.execution_kind == ExecutionKind::Async
     }
 
     pub fn maybe_return(self, returns: Option<ReturnType>) -> Self {

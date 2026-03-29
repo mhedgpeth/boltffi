@@ -6,7 +6,7 @@ use super::ParamLoweringState;
 use super::transform::{
     ParamTransform, WireEncodedParam, WireEncodedParamKind, len_ident, ptr_ident,
 };
-use crate::registries::custom_types::{
+use crate::index::custom_types::{
     CustomTypeRegistry, contains_custom_types, from_wire_expr_owned, wire_type_for,
 };
 

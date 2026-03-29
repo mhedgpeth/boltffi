@@ -1,3 +1,4 @@
+use boltffi_ffi_rules::callable::CallableForm;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -388,8 +389,15 @@ pub enum Receiver {
 }
 
 impl Receiver {
+    pub fn callable_form(self) -> CallableForm {
+        match self {
+            Self::None => CallableForm::StaticMethod,
+            Self::Ref | Self::RefMut => CallableForm::InstanceMethod,
+        }
+    }
+
     pub fn is_static(self) -> bool {
-        matches!(self, Self::None)
+        self.callable_form() == CallableForm::StaticMethod
     }
 
     pub fn is_mutable(self) -> bool {

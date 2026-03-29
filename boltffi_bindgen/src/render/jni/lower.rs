@@ -119,7 +119,7 @@ impl<'a> JniLowerer<'a> {
             .contract
             .functions
             .iter()
-            .filter(|func| !func.is_async && self.is_primitive_only(func))
+            .filter(|func| !func.is_async() && self.is_primitive_only(func))
             .map(|func| self.lower_function(func, &prefix, &jni_prefix))
             .collect();
 
@@ -127,7 +127,7 @@ impl<'a> JniLowerer<'a> {
             .contract
             .functions
             .iter()
-            .filter(|func| !func.is_async && !self.is_primitive_only(func))
+            .filter(|func| !func.is_async() && !self.is_primitive_only(func))
             .map(|func| self.lower_wire_function(func, &jni_prefix))
             .chain(self.lower_value_type_wire_fns(&jni_prefix))
             .collect();
@@ -136,7 +136,7 @@ impl<'a> JniLowerer<'a> {
             .contract
             .functions
             .iter()
-            .filter(|func| func.is_async)
+            .filter(|func| func.is_async())
             .map(|func| self.lower_async_function(func, &jni_prefix))
             .collect();
 
@@ -498,14 +498,14 @@ impl<'a> JniLowerer<'a> {
         let wire_methods = class
             .methods
             .iter()
-            .filter(|method| !method.is_async)
+            .filter(|method| !method.is_async())
             .map(|method| self.lower_method(class, method, jni_prefix))
             .collect();
 
         let async_methods = class
             .methods
             .iter()
-            .filter(|method| method.is_async)
+            .filter(|method| method.is_async())
             .map(|method| self.lower_async_method(class, method, jni_prefix))
             .collect();
         let streams = class
@@ -1599,7 +1599,7 @@ impl<'a> JniLowerer<'a> {
         let sync_methods = callback
             .methods
             .iter()
-            .filter(|method| !method.is_async)
+            .filter(|method| !method.is_async())
             .filter(|method| self.callback_method_supported(callback, method))
             .filter_map(|method| {
                 let abi_method = abi_methods.get(&method.id)?;
@@ -1612,7 +1612,7 @@ impl<'a> JniLowerer<'a> {
                 callback
                     .methods
                     .iter()
-                    .filter(|method| !method.is_async)
+                    .filter(|method| !method.is_async())
                     .filter(|method| self.callback_method_supported(callback, method))
                     .filter_map(|method| {
                         let abi_method = abi_methods.get(&method.id)?;
@@ -1628,7 +1628,7 @@ impl<'a> JniLowerer<'a> {
         let async_methods = callback
             .methods
             .iter()
-            .filter(|method| method.is_async)
+            .filter(|method| method.is_async())
             .filter(|method| self.callback_method_supported(callback, method))
             .filter_map(|method| {
                 let abi_method = abi_methods.get(&method.id)?;
@@ -1640,7 +1640,7 @@ impl<'a> JniLowerer<'a> {
             callback
                 .methods
                 .iter()
-                .filter(|method| method.is_async)
+                .filter(|method| method.is_async())
                 .filter(|method| self.callback_method_supported(callback, method))
                 .filter_map(|method| {
                     let abi_method = abi_methods.get(&method.id)?;
@@ -2746,6 +2746,7 @@ mod tests {
         FieldDef, FieldName, MethodDef, MethodId, ParamDef, ParamName, ParamPassing, Receiver,
         RecordDef, RecordId, ReturnDef, VariantName,
     };
+    use boltffi_ffi_rules::callable::ExecutionKind;
 
     fn test_lowerer() -> JniLowerer<'static> {
         static CONTRACT: std::sync::LazyLock<FfiContract> =
@@ -3112,7 +3113,7 @@ mod tests {
                     doc: None,
                 }],
                 returns: ReturnDef::Value(TypeExpr::Record(RecordId::new("Point"))),
-                is_async: false,
+                execution_kind: ExecutionKind::Sync,
                 doc: None,
             }],
             kind,
@@ -3141,7 +3142,7 @@ mod tests {
                     doc: None,
                 }],
                 returns: ReturnDef::Value(TypeExpr::Primitive(PrimitiveType::I32)),
-                is_async: true,
+                execution_kind: ExecutionKind::Async,
                 doc: None,
             }],
             kind: CallbackKind::Trait,
@@ -3178,7 +3179,7 @@ mod tests {
                 id: MethodId::new("call"),
                 params: vec![],
                 returns,
-                is_async: false,
+                execution_kind: ExecutionKind::Sync,
                 doc: None,
             }],
             kind: CallbackKind::Closure,
@@ -3240,7 +3241,7 @@ mod tests {
                     },
                 ],
                 returns: ReturnDef::Value(TypeExpr::Primitive(PrimitiveType::I32)),
-                is_async: false,
+                execution_kind: ExecutionKind::Sync,
                 doc: None,
             }],
             kind: CallbackKind::Closure,
@@ -3372,7 +3373,7 @@ mod tests {
                 receiver: Receiver::RefSelf,
                 params: vec![],
                 returns: ReturnDef::Value(TypeExpr::Primitive(PrimitiveType::F64)),
-                is_async: false,
+                execution_kind: ExecutionKind::Sync,
                 doc: None,
                 deprecated: None,
             }],

@@ -1,5 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
+use boltffi_ffi_rules::callable::CallableForm;
 use boltffi_ffi_rules::callback as cb_naming;
 use boltffi_ffi_rules::naming::{self, snake_to_camel as camel_case};
 use boltffi_ffi_rules::transport::{
@@ -13,7 +14,7 @@ use crate::ir::abi::{
 use crate::ir::contract::FfiContract;
 use crate::ir::definitions::{
     CallbackKind, CallbackTraitDef, ClassDef, ConstructorDef, EnumDef, FunctionDef, MethodDef,
-    ParamDef, Receiver, RecordDef, ReturnDef,
+    ParamDef, RecordDef, ReturnDef,
 };
 use crate::ir::ids::{CallbackId, EnumId, FieldName, RecordId};
 use crate::ir::ops::{
@@ -424,7 +425,7 @@ impl<'a> TypeScriptLowerer<'a> {
             method_id: method_def.id.clone(),
         };
         let abi_call = index.call(self.abi, &call_id);
-        let is_static = method_def.receiver == Receiver::Static;
+        let is_static = method_def.callable_form() == CallableForm::StaticMethod;
 
         let param_defs: HashMap<&str, &ParamDef> = method_def
             .params
@@ -524,7 +525,7 @@ impl<'a> TypeScriptLowerer<'a> {
         let methods = def
             .methods
             .iter()
-            .filter(|m| !m.is_async)
+            .filter(|method| !method.is_async())
             .filter_map(|method_def| {
                 let abi_method = abi_callback
                     .methods
@@ -662,7 +663,7 @@ impl<'a> TypeScriptLowerer<'a> {
         let async_methods = def
             .methods
             .iter()
-            .filter(|m| m.is_async)
+            .filter(|method| method.is_async())
             .filter_map(|method_def| {
                 let abi_method = abi_callback
                     .methods
@@ -1858,6 +1859,7 @@ mod tests {
     use crate::ir::ids::{
         CallbackId, ClassId, EnumId, FunctionId, MethodId, ParamName, VariantName,
     };
+    use boltffi_ffi_rules::callable::ExecutionKind;
     use std::path::PathBuf;
 
     fn empty_contract() -> FfiContract {
@@ -1893,13 +1895,13 @@ mod tests {
         name: &str,
         params: Vec<ParamDef>,
         returns: ReturnDef,
-        is_async: bool,
+        execution_kind: ExecutionKind,
     ) -> FunctionDef {
         FunctionDef {
             id: FunctionId::new(name),
             params,
             returns,
-            is_async,
+            execution_kind,
             doc: None,
             deprecated: None,
         }
@@ -1958,7 +1960,7 @@ mod tests {
                     receiver: Receiver::RefSelf,
                     params: vec![primitive_param("delta", PrimitiveType::I32)],
                     returns: ReturnDef::Value(TypeExpr::Primitive(PrimitiveType::I32)),
-                    is_async: false,
+                    execution_kind: ExecutionKind::Sync,
                     doc: None,
                     deprecated: None,
                 },
@@ -1967,7 +1969,7 @@ mod tests {
                     receiver: Receiver::RefSelf,
                     params: vec![],
                     returns: ReturnDef::Value(TypeExpr::Primitive(PrimitiveType::I32)),
-                    is_async: true,
+                    execution_kind: ExecutionKind::Async,
                     doc: None,
                     deprecated: None,
                 },
@@ -1994,7 +1996,7 @@ mod tests {
             "echo_name",
             vec![primitive_param("count", PrimitiveType::I32)],
             ReturnDef::Value(TypeExpr::String),
-            false,
+            ExecutionKind::Sync,
         ));
 
         let module = lower_contract(&contract);
@@ -2020,7 +2022,7 @@ mod tests {
                 primitive_param("right", PrimitiveType::I32),
             ],
             ReturnDef::Value(TypeExpr::Primitive(PrimitiveType::I32)),
-            false,
+            ExecutionKind::Sync,
         ));
 
         let module = lower_contract(&contract);
@@ -2050,7 +2052,7 @@ mod tests {
                 id: MethodId::new("on_value"),
                 params: vec![primitive_param("value", PrimitiveType::I32)],
                 returns: ReturnDef::Value(TypeExpr::Primitive(PrimitiveType::I32)),
-                is_async: false,
+                execution_kind: ExecutionKind::Sync,
                 doc: None,
             }],
         ));
@@ -2058,7 +2060,7 @@ mod tests {
             "make_incrementing_callback",
             vec![primitive_param("delta", PrimitiveType::I32)],
             ReturnDef::Value(TypeExpr::Callback(CallbackId::new("ValueCallback"))),
-            false,
+            ExecutionKind::Sync,
         ));
 
         let module = lower_contract(&contract);
@@ -2092,7 +2094,7 @@ mod tests {
                 id: MethodId::new("on_value"),
                 params: vec![primitive_param("value", PrimitiveType::I32)],
                 returns: ReturnDef::Value(TypeExpr::Primitive(PrimitiveType::I32)),
-                is_async: false,
+                execution_kind: ExecutionKind::Sync,
                 doc: None,
             }],
         ));
@@ -2110,7 +2112,7 @@ mod tests {
                 primitive_param("input", PrimitiveType::I32),
             ],
             ReturnDef::Value(TypeExpr::Primitive(PrimitiveType::I32)),
-            false,
+            ExecutionKind::Sync,
         ));
 
         let module = lower_contract(&contract);
@@ -2187,13 +2189,13 @@ mod tests {
             "sync_value",
             vec![],
             ReturnDef::Value(TypeExpr::Primitive(PrimitiveType::I32)),
-            false,
+            ExecutionKind::Sync,
         ));
         contract.functions.push(function(
             "async_value",
             vec![],
             ReturnDef::Value(TypeExpr::String),
-            true,
+            ExecutionKind::Async,
         ));
 
         let module = lower_contract(&contract);
@@ -2210,7 +2212,7 @@ mod tests {
             "modes",
             vec![],
             ReturnDef::Value(TypeExpr::Vec(Box::new(TypeExpr::Enum(EnumId::new("Mode"))))),
-            false,
+            ExecutionKind::Sync,
         ));
 
         let module = lower_contract(&contract);
@@ -2238,7 +2240,7 @@ mod tests {
             "modes_async",
             vec![],
             ReturnDef::Value(TypeExpr::Vec(Box::new(TypeExpr::Enum(EnumId::new("Mode"))))),
-            true,
+            ExecutionKind::Async,
         ));
 
         let module = lower_contract(&contract);
@@ -2267,7 +2269,7 @@ mod tests {
             ReturnDef::Value(TypeExpr::Option(Box::new(TypeExpr::Primitive(
                 PrimitiveType::I32,
             )))),
-            false,
+            ExecutionKind::Sync,
         ));
 
         let module = lower_contract(&contract);
@@ -2293,7 +2295,7 @@ mod tests {
             ReturnDef::Value(TypeExpr::Option(Box::new(TypeExpr::Primitive(
                 PrimitiveType::F64,
             )))),
-            false,
+            ExecutionKind::Sync,
         ));
 
         let module = lower_contract(&contract);
@@ -2386,7 +2388,7 @@ mod tests {
             "process_values",
             vec![vec_param("values", PrimitiveType::I32)],
             ReturnDef::Void,
-            false,
+            ExecutionKind::Sync,
         ));
 
         let module = lower_contract(&contract);
@@ -2417,7 +2419,7 @@ mod tests {
             "process_values",
             vec![vec_param("values", PrimitiveType::I32)],
             ReturnDef::Void,
-            false,
+            ExecutionKind::Sync,
         ));
 
         let module = lower_contract(&contract);
@@ -2487,7 +2489,7 @@ mod tests {
                 doc: None,
             }],
             ReturnDef::Void,
-            false,
+            ExecutionKind::Sync,
         ));
         let module = lower_contract(&contract);
         let function = module
@@ -2524,7 +2526,7 @@ mod tests {
             "process_bytes",
             vec![vec_param("values", PrimitiveType::U8)],
             ReturnDef::Void,
-            false,
+            ExecutionKind::Sync,
         ));
 
         let module = lower_contract(&contract);
@@ -2709,7 +2711,7 @@ mod tests {
                 receiver: Receiver::Static,
                 params: vec![primitive_param("id", PrimitiveType::I32)],
                 returns: ReturnDef::Value(TypeExpr::Primitive(PrimitiveType::I32)),
-                is_async: false,
+                execution_kind: ExecutionKind::Sync,
                 doc: None,
                 deprecated: None,
             }],
@@ -2741,7 +2743,7 @@ mod tests {
                 receiver: Receiver::RefMutSelf,
                 params: vec![primitive_param("value", PrimitiveType::I32)],
                 returns: ReturnDef::Void,
-                is_async: false,
+                execution_kind: ExecutionKind::Sync,
                 doc: None,
                 deprecated: None,
             }],
@@ -2778,7 +2780,7 @@ mod tests {
                     doc: None,
                 }],
                 returns: ReturnDef::Value(TypeExpr::String),
-                is_async: true,
+                execution_kind: ExecutionKind::Async,
                 doc: None,
                 deprecated: None,
             }],
@@ -2830,7 +2832,7 @@ mod tests {
             "use_default",
             vec![primitive_param("default", PrimitiveType::I32)],
             ReturnDef::Value(TypeExpr::Primitive(PrimitiveType::I32)),
-            false,
+            ExecutionKind::Sync,
         ));
 
         let module = lower_contract(&contract);
@@ -2854,7 +2856,7 @@ mod tests {
                 receiver: Receiver::RefMutSelf,
                 params: vec![primitive_param("amount", PrimitiveType::I32)],
                 returns: ReturnDef::Value(TypeExpr::Primitive(PrimitiveType::I32)),
-                is_async: true,
+                execution_kind: ExecutionKind::Async,
                 doc: None,
                 deprecated: None,
             }],
@@ -2925,7 +2927,7 @@ mod tests {
                     doc: None,
                 }],
                 returns: ReturnDef::Void,
-                is_async: false,
+                execution_kind: ExecutionKind::Sync,
                 doc: None,
                 deprecated: None,
             }],
@@ -2994,7 +2996,7 @@ mod tests {
                 receiver: Receiver::RefSelf,
                 params: vec![],
                 returns: ReturnDef::Void,
-                is_async: false,
+                execution_kind: ExecutionKind::Sync,
                 doc: None,
                 deprecated: None,
             }],
@@ -3060,7 +3062,7 @@ mod tests {
                     doc: None,
                 }],
                 returns: ReturnDef::Void,
-                is_async: false,
+                execution_kind: ExecutionKind::Sync,
                 doc: None,
                 deprecated: None,
             }],
@@ -3123,7 +3125,7 @@ mod tests {
                 doc: None,
             }],
             ReturnDef::Value(TypeExpr::Record(crate::ir::ids::RecordId::new("Point"))),
-            false,
+            ExecutionKind::Sync,
         ));
 
         let module = lower_contract(&contract);
@@ -3166,7 +3168,7 @@ mod tests {
                 receiver: Receiver::RefSelf,
                 params: vec![],
                 returns: ReturnDef::Value(TypeExpr::Primitive(PrimitiveType::I32)),
-                is_async: false,
+                execution_kind: ExecutionKind::Sync,
                 doc: None,
                 deprecated: None,
             }],
@@ -3203,7 +3205,7 @@ mod tests {
                 receiver: Receiver::RefSelf,
                 params: vec![primitive_param("user_id", PrimitiveType::I32)],
                 returns: ReturnDef::Void,
-                is_async: false,
+                execution_kind: ExecutionKind::Sync,
                 doc: None,
                 deprecated: None,
             }],
@@ -3231,7 +3233,7 @@ mod tests {
             "process_large",
             vec![primitive_param("value", PrimitiveType::I64)],
             ReturnDef::Value(TypeExpr::Primitive(PrimitiveType::I64)),
-            false,
+            ExecutionKind::Sync,
         ));
 
         let module = lower_contract(&contract);
@@ -3256,7 +3258,7 @@ mod tests {
                 receiver: Receiver::RefSelf,
                 params: vec![],
                 returns: ReturnDef::Value(TypeExpr::String),
-                is_async: true,
+                execution_kind: ExecutionKind::Async,
                 doc: None,
                 deprecated: None,
             }],
@@ -3313,7 +3315,7 @@ mod tests {
                 receiver: Receiver::RefSelf,
                 params: vec![],
                 returns: ReturnDef::Value(TypeExpr::Primitive(PrimitiveType::I32)),
-                is_async: true,
+                execution_kind: ExecutionKind::Async,
                 doc: None,
                 deprecated: None,
             }],
@@ -3354,7 +3356,7 @@ mod tests {
                 primitive_param("b", PrimitiveType::I32),
             ],
             ReturnDef::Value(TypeExpr::Primitive(PrimitiveType::I32)),
-            true,
+            ExecutionKind::Async,
         ));
 
         let module = lower_contract(&contract);

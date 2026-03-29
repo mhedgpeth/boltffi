@@ -7,6 +7,7 @@ use crate::ir::ids::{
 use crate::ir::ops::{ReadSeq, WriteSeq};
 use crate::ir::plan::{AbiType, Mutability, Transport};
 use crate::ir::types::TypeExpr;
+use boltffi_ffi_rules::callable::ExecutionKind;
 use boltffi_ffi_rules::naming::{
     CreateFn, GlobalSymbol, Name, RegisterFn, VtableField, VtableType,
 };
@@ -324,10 +325,20 @@ pub struct AbiCallbackInvocation {
 pub struct AbiCallbackMethod {
     pub id: MethodId,
     pub vtable_field: Name<VtableField>,
-    pub is_async: bool,
+    pub execution_kind: ExecutionKind,
     pub params: Vec<AbiParam>,
     pub returns: ReturnShape,
     pub error: ErrorTransport,
+}
+
+impl AbiCallbackMethod {
+    pub fn is_async(&self) -> bool {
+        self.execution_kind == ExecutionKind::Async
+    }
+
+    pub fn execution_kind(&self) -> ExecutionKind {
+        self.execution_kind
+    }
 }
 
 impl AbiParam {

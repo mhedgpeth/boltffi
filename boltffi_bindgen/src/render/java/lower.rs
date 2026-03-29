@@ -1,5 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
+use boltffi_ffi_rules::callable::{CallableForm, ExecutionKind};
 use boltffi_ffi_rules::transport::{
     EncodedReturnStrategy, EnumTagStrategy, ReturnInvocationContext, ReturnPlatform,
     ScalarReturnStrategy, ValueReturnMethod, ValueReturnStrategy,
@@ -1463,7 +1464,7 @@ impl<'a> JavaLowerer<'a> {
         let raw_call = self.abi_call_for_method(class, method);
         let call = Self::strip_receiver(raw_call);
         let input_bindings = self.input_bindings_for_params(&call);
-        let is_static = method.receiver == Receiver::Static;
+        let is_static = method.callable_form() == CallableForm::StaticMethod;
 
         let params: Vec<JavaParam> = method
             .params
@@ -1907,7 +1908,7 @@ impl<'a> JavaLowerer<'a> {
         let sync_methods = callback
             .methods
             .iter()
-            .filter(|method| !method.is_async)
+            .filter(|method| method.execution_kind() == ExecutionKind::Sync)
             .filter_map(|method| {
                 let abi_method = abi_callback
                     .methods
@@ -1920,7 +1921,7 @@ impl<'a> JavaLowerer<'a> {
         let async_methods = callback
             .methods
             .iter()
-            .filter(|method| method.is_async)
+            .filter(|method| method.execution_kind() == ExecutionKind::Async)
             .filter_map(|method| {
                 let abi_method = abi_callback
                     .methods
@@ -2679,7 +2680,7 @@ impl JavaValueTypeMethod {
         Self {
             name: NamingConvention::method_name(method.id.as_str()),
             ffi_name: call.symbol.as_str().to_string(),
-            is_static: method.receiver == Receiver::Static,
+            is_static: method.callable_form() == CallableForm::StaticMethod,
             params,
             native_params,
             return_type,
@@ -2835,7 +2836,7 @@ mod tests {
             id: FunctionId::new(id),
             params,
             returns,
-            is_async: false,
+            execution_kind: ExecutionKind::Sync,
             doc: None,
             deprecated: None,
         }
@@ -2845,13 +2846,13 @@ mod tests {
         id: &str,
         params: Vec<ParamDef>,
         returns: ReturnDef,
-        is_async: bool,
+        execution_kind: ExecutionKind,
     ) -> CallbackMethodDef {
         CallbackMethodDef {
             id: MethodId::new(id),
             params,
             returns,
-            is_async,
+            execution_kind,
             doc: None,
         }
     }
@@ -3737,7 +3738,7 @@ mod tests {
             id: FunctionId::new("slow_op"),
             params: vec![],
             returns: ReturnDef::Void,
-            is_async: true,
+            execution_kind: ExecutionKind::Async,
             doc: None,
             deprecated: None,
         });
@@ -3789,7 +3790,7 @@ mod tests {
                 "on_value",
                 vec![param("value", TypeExpr::Primitive(PrimitiveType::I32))],
                 ReturnDef::Void,
-                false,
+                ExecutionKind::Sync,
             )],
             kind: CallbackKind::Trait,
             doc: None,
@@ -3824,7 +3825,7 @@ mod tests {
                 "on_value",
                 vec![param("value", TypeExpr::Primitive(PrimitiveType::I32))],
                 ReturnDef::Value(TypeExpr::Primitive(PrimitiveType::I32)),
-                false,
+                ExecutionKind::Sync,
             )],
             kind: CallbackKind::Trait,
             doc: None,
@@ -3860,7 +3861,7 @@ mod tests {
                 "call",
                 vec![param("value", TypeExpr::Primitive(PrimitiveType::I32))],
                 ReturnDef::Value(TypeExpr::Primitive(PrimitiveType::I32)),
-                false,
+                ExecutionKind::Sync,
             )],
             kind: CallbackKind::Closure,
             doc: None,
@@ -3898,7 +3899,7 @@ mod tests {
                 "on_value",
                 vec![param("value", TypeExpr::Primitive(PrimitiveType::I32))],
                 ReturnDef::Value(TypeExpr::Primitive(PrimitiveType::I32)),
-                true,
+                ExecutionKind::Async,
             )],
             kind: CallbackKind::Trait,
             doc: None,
@@ -3929,7 +3930,7 @@ mod tests {
                     TypeExpr::Vec(Box::new(TypeExpr::Primitive(PrimitiveType::I32))),
                 )],
                 ReturnDef::Void,
-                false,
+                ExecutionKind::Sync,
             )],
             kind: CallbackKind::Trait,
             doc: None,
@@ -3981,7 +3982,7 @@ mod tests {
                 "map_status",
                 vec![param("status", TypeExpr::Enum(EnumId::new("Status")))],
                 ReturnDef::Value(TypeExpr::Enum(EnumId::new("Status"))),
-                false,
+                ExecutionKind::Sync,
             )],
             kind: CallbackKind::Trait,
             doc: None,
@@ -4162,7 +4163,7 @@ mod tests {
             receiver: Receiver::RefSelf,
             params,
             returns,
-            is_async: false,
+            execution_kind: ExecutionKind::Sync,
             doc: None,
             deprecated: None,
         }
@@ -4174,7 +4175,7 @@ mod tests {
             receiver: Receiver::Static,
             params,
             returns,
-            is_async: false,
+            execution_kind: ExecutionKind::Sync,
             doc: None,
             deprecated: None,
         }
@@ -4365,7 +4366,7 @@ mod tests {
                     receiver: Receiver::RefSelf,
                     params: vec![],
                     returns: ReturnDef::Value(TypeExpr::Primitive(PrimitiveType::I32)),
-                    is_async: true,
+                    execution_kind: ExecutionKind::Async,
                     doc: None,
                     deprecated: None,
                 },
@@ -4556,7 +4557,7 @@ mod tests {
                     receiver: Receiver::RefMutSelf,
                     params: vec![param_def("factor", TypeExpr::Primitive(PrimitiveType::F64))],
                     returns: ReturnDef::Void,
-                    is_async: false,
+                    execution_kind: ExecutionKind::Sync,
                     doc: None,
                     deprecated: None,
                 },
@@ -4843,7 +4844,7 @@ mod tests {
             id: FunctionId::new("fetch_data"),
             params: vec![],
             returns: ReturnDef::Value(TypeExpr::String),
-            is_async: true,
+            execution_kind: ExecutionKind::Async,
             doc: None,
             deprecated: None,
         });
@@ -4865,7 +4866,7 @@ mod tests {
             id: FunctionId::new("op"),
             params: vec![],
             returns: ReturnDef::Void,
-            is_async: true,
+            execution_kind: ExecutionKind::Async,
             doc: None,
             deprecated: None,
         });
@@ -4884,7 +4885,7 @@ mod tests {
             id: FunctionId::new("fetch_data"),
             params: vec![],
             returns: ReturnDef::Value(TypeExpr::String),
-            is_async: true,
+            execution_kind: ExecutionKind::Async,
             doc: None,
             deprecated: None,
         });
@@ -4902,7 +4903,7 @@ mod tests {
             id: FunctionId::new("get_count"),
             params: vec![],
             returns: ReturnDef::Value(TypeExpr::Primitive(PrimitiveType::I32)),
-            is_async: true,
+            execution_kind: ExecutionKind::Async,
             doc: None,
             deprecated: None,
         });
@@ -4920,7 +4921,7 @@ mod tests {
             id: FunctionId::new("fire_and_forget"),
             params: vec![],
             returns: ReturnDef::Void,
-            is_async: true,
+            execution_kind: ExecutionKind::Async,
             doc: None,
             deprecated: None,
         });

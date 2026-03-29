@@ -3,7 +3,7 @@
 /// > Dispatch to the main thread if updating UI.
 public protocol {{ callback.protocol_name }}: AnyObject {
 {%- for method in callback.methods %}
-{{ self::swift_doc_block(method.doc, "    ") }}    func {{ method.swift_name }}({% for param in method.params %}{{ param.label }}: {{ param.swift_type }}{% if !loop.last %}, {% endif %}{% endfor %}){% if method.is_async %} async{% endif %}{% if method.throws() %} throws{% endif %}{% if let Some(ret) = method.return_type() %} -> {{ ret }}{% endif %}
+{{ self::swift_doc_block(method.doc, "    ") }}    func {{ method.swift_name }}({% for param in method.params %}{{ param.label }}: {{ param.swift_type }}{% if !loop.last %}, {% endif %}{% endfor %}){% if method.is_async() %} async{% endif %}{% if method.throws() %} throws{% endif %}{% if let Some(ret) = method.return_type() %} -> {{ ret }}{% endif %}
 {%- endfor %}
 }
 
@@ -33,8 +33,8 @@ private final class {{ callback.protocol_name }}Proxy: {{ callback.protocol_name
     }
 {%- for method in callback.methods %}
 
-    func {{ method.swift_name }}({% for param in method.params %}{{ param.label }}: {{ param.swift_type }}{% if !loop.last %}, {% endif %}{% endfor %}){% if method.is_async %} async{% endif %}{% if method.throws() %} throws{% endif %}{% if let Some(ret) = method.return_type() %} -> {{ ret }}{% endif %} {
-{%- if method.is_async %}
+    func {{ method.swift_name }}({% for param in method.params %}{{ param.label }}: {{ param.swift_type }}{% if !loop.last %}, {% endif %}{% endfor %}){% if method.is_async() %} async{% endif %}{% if method.throws() %} throws{% endif %}{% if let Some(ret) = method.return_type() %} -> {{ ret }}{% endif %} {
+{%- if method.is_async() %}
         fatalError("foreign callback proxies do not support async methods yet")
 {%- else %}
         guard let vtable = handle_.vtable?.assumingMemoryBound(to: {{ callback.vtable_type }}.self),
@@ -84,7 +84,7 @@ private final class {{ callback.protocol_name }}Proxy: {{ callback.protocol_name
 }
 {%- endif %}
 {% for method in callback.methods %}
-{%- if method.is_async %}
+{%- if method.is_async() %}
 
 private func _{{ callback.vtable_var }}_{{ method.swift_name }}(_ wrapper: {{ callback.wrapper_class }}, {% for param in method.params %}_ {{ param.label }}: {{ param.swift_type }}, {% endfor %}_ callback: {{ method.async_callback_c_type() }}, _ callbackData: UInt64) {
     _Concurrency.Task {
@@ -157,15 +157,15 @@ private var {{ callback.vtable_var }}: {{ callback.vtable_type }} = {
             _ = wrapper.retain()
             return handle
         }{% for method in callback.methods %},
-        {{ method.ffi_name }}: { handle{% for param in method.params %}{% for arg in param.ffi_args %}, {{ arg }}{% endfor %}{% endfor %}{% if method.has_out_param %}{% if method.wire_encoded_return() %}, outPtr, outLen{% else %}, outPtr{% endif %}{% endif %}{% if !method.is_async %}, statusPtr{% endif %}{% if method.is_async %}, callback, callbackData{% endif %} in
-            guard handle != 0 else { {% if !method.is_async %}statusPtr?.pointee = FfiStatus(code: 1); {% endif %}return }
+        {{ method.ffi_name }}: { handle{% for param in method.params %}{% for arg in param.ffi_args %}, {{ arg }}{% endfor %}{% endfor %}{% if method.has_out_param %}{% if method.wire_encoded_return() %}, outPtr, outLen{% else %}, outPtr{% endif %}{% endif %}{% if !method.is_async() %}, statusPtr{% endif %}{% if method.is_async() %}, callback, callbackData{% endif %} in
+            guard handle != 0 else { {% if !method.is_async() %}statusPtr?.pointee = FfiStatus(code: 1); {% endif %}return }
             let wrapper = Unmanaged<{{ callback.wrapper_class }}>.fromOpaque(UnsafeRawPointer(bitPattern: UInt(handle))!).takeUnretainedValue()
 {%- for param in method.params %}
 {%- match param.decode_prelude %}{% when Some with (prelude) %}
             {{ prelude }}
 {%- when None %}{% endmatch %}
 {%- endfor %}
-{%- if method.is_async %}
+{%- if method.is_async() %}
             _{{ callback.vtable_var }}_{{ method.swift_name }}(wrapper, {% for param in method.params %}{{ param.call_arg }}, {% endfor %}callback, callbackData)
 {%- else %}
 {%- if method.throws() %}

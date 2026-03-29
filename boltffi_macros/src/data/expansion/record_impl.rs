@@ -7,12 +7,12 @@ use proc_macro::TokenStream;
 use quote::quote;
 use syn::{FnArg, ReturnType, Type};
 
-use crate::callbacks::registry as callback_registry;
+use crate::index::CrateIndex;
+use crate::index::callback_traits::CallbackTraitRegistry;
+use crate::index::custom_types;
 use crate::lowering::params::{FfiParams, transform_method_params};
 use crate::lowering::returns::lower::encoded_return_body;
 use crate::lowering::returns::model::{ResolvedReturn, ReturnLoweringContext};
-use crate::registries::custom_types;
-use crate::registries::data_types;
 
 enum RecordMethodKind {
     Constructor,
@@ -21,67 +21,200 @@ enum RecordMethodKind {
     Static,
 }
 
-fn classify_record_method(method: &syn::ImplItemFn, type_name: &syn::Ident) -> RecordMethodKind {
-    match method.sig.inputs.first() {
-        Some(FnArg::Receiver(receiver)) => {
-            if receiver.mutability.is_some() {
-                RecordMethodKind::InstanceMut
-            } else {
-                RecordMethodKind::InstanceRef
+struct RecordImplExpansion {
+    input: syn::ItemImpl,
+    type_name: syn::Ident,
+    record_name: String,
+    return_lowering: ReturnLoweringContext<'static>,
+    callback_registry: CallbackTraitRegistry,
+}
+
+struct RecordMethodDescriptor {
+    kind: RecordMethodKind,
+    resolved_output: ReturnType,
+}
+
+struct RecordMethodExpansion<'a> {
+    type_name: &'a syn::Ident,
+    record_name: &'a str,
+    method: &'a syn::ImplItemFn,
+    descriptor: RecordMethodDescriptor,
+    return_lowering: &'a ReturnLoweringContext<'a>,
+    callback_registry: &'a CallbackTraitRegistry,
+}
+
+impl RecordMethodDescriptor {
+    fn from_method(method: &syn::ImplItemFn, type_name: &syn::Ident) -> Self {
+        let kind = match method.sig.inputs.first() {
+            Some(FnArg::Receiver(receiver)) => {
+                if receiver.mutability.is_some() {
+                    RecordMethodKind::InstanceMut
+                } else {
+                    RecordMethodKind::InstanceRef
+                }
+            }
+            _ => {
+                if is_factory_constructor(method, type_name) {
+                    RecordMethodKind::Constructor
+                } else {
+                    RecordMethodKind::Static
+                }
+            }
+        };
+
+        let resolved_output = Self::resolve_return_type(&method.sig.output, type_name);
+        Self {
+            kind,
+            resolved_output,
+        }
+    }
+
+    fn resolve_return_type(output: &ReturnType, type_name: &syn::Ident) -> ReturnType {
+        match output {
+            ReturnType::Default => ReturnType::Default,
+            ReturnType::Type(arrow, rust_type) => {
+                let resolved = Self::resolve_type(rust_type, type_name);
+                ReturnType::Type(*arrow, Box::new(resolved))
             }
         }
-        _ => {
-            if is_factory_constructor(method, type_name) {
-                RecordMethodKind::Constructor
-            } else {
-                RecordMethodKind::Static
+    }
+
+    fn resolve_type(rust_type: &Type, type_name: &syn::Ident) -> Type {
+        match rust_type {
+            Type::Path(type_path) => {
+                let mut resolved_path = type_path.clone();
+                resolved_path.path.segments.iter_mut().for_each(|segment| {
+                    if segment.ident == "Self" {
+                        segment.ident = type_name.clone();
+                    }
+                    if let syn::PathArguments::AngleBracketed(arguments) = &mut segment.arguments {
+                        arguments.args.iter_mut().for_each(|argument| {
+                            if let syn::GenericArgument::Type(inner_type) = argument {
+                                *inner_type = Self::resolve_type(inner_type, type_name);
+                            }
+                        });
+                    }
+                });
+                Type::Path(resolved_path)
             }
+            Type::Reference(reference) => {
+                let mut resolved_reference = reference.clone();
+                resolved_reference.elem = Box::new(Self::resolve_type(&reference.elem, type_name));
+                Type::Reference(resolved_reference)
+            }
+            Type::Tuple(tuple) => {
+                let mut resolved_tuple = tuple.clone();
+                resolved_tuple
+                    .elems
+                    .iter_mut()
+                    .for_each(|element| *element = Self::resolve_type(element, type_name));
+                Type::Tuple(resolved_tuple)
+            }
+            _ => rust_type.clone(),
         }
     }
 }
 
-fn resolve_self_in_return_type(output: &ReturnType, type_name: &syn::Ident) -> ReturnType {
-    match output {
-        ReturnType::Default => ReturnType::Default,
-        ReturnType::Type(arrow, ty) => {
-            let resolved = resolve_self_type(ty, type_name);
-            ReturnType::Type(*arrow, Box::new(resolved))
+impl RecordImplExpansion {
+    fn new(input: syn::ItemImpl) -> syn::Result<Self> {
+        let type_name = impl_type_name(&input).ok_or_else(|| {
+            syn::Error::new_spanned(&input, "#[data(impl)] requires a named type")
+        })?;
+        let crate_index = CrateIndex::for_current_crate()?;
+        let custom_types = Box::leak(Box::new(crate_index.custom_types().clone()));
+        let callback_registry = crate_index.callback_traits().clone();
+        let data_types = Box::leak(Box::new(crate_index.data_types().clone()));
+        let return_lowering = ReturnLoweringContext::new(custom_types, data_types);
+        let record_name = type_name.to_string();
+
+        Ok(Self {
+            input,
+            type_name,
+            record_name,
+            return_lowering,
+            callback_registry,
+        })
+    }
+
+    fn render(self) -> proc_macro2::TokenStream {
+        let input = self.input;
+        let original_impl = quote! { #input };
+        let method_exports = exported_methods(&input)
+            .filter_map(|method| {
+                RecordMethodExpansion::new(
+                    &self.type_name,
+                    &self.record_name,
+                    method,
+                    &self.return_lowering,
+                    &self.callback_registry,
+                )
+                .render()
+            })
+            .collect::<Vec<_>>();
+
+        quote! {
+            #original_impl
+            #(#method_exports)*
         }
     }
 }
 
-fn resolve_self_type(ty: &Type, type_name: &syn::Ident) -> Type {
-    match ty {
-        Type::Path(type_path) => {
-            let mut path = type_path.clone();
-            path.path.segments.iter_mut().for_each(|segment| {
-                if segment.ident == "Self" {
-                    segment.ident = type_name.clone();
-                }
-                if let syn::PathArguments::AngleBracketed(args) = &mut segment.arguments {
-                    args.args.iter_mut().for_each(|arg| {
-                        if let syn::GenericArgument::Type(inner) = arg {
-                            *inner = resolve_self_type(inner, type_name);
-                        }
-                    });
-                }
-            });
-            Type::Path(path)
+impl<'a> RecordMethodExpansion<'a> {
+    fn new(
+        type_name: &'a syn::Ident,
+        record_name: &'a str,
+        method: &'a syn::ImplItemFn,
+        return_lowering: &'a ReturnLoweringContext<'a>,
+        callback_registry: &'a CallbackTraitRegistry,
+    ) -> Self {
+        Self {
+            type_name,
+            record_name,
+            method,
+            descriptor: RecordMethodDescriptor::from_method(method, type_name),
+            return_lowering,
+            callback_registry,
         }
-        Type::Reference(reference) => {
-            let mut resolved = reference.clone();
-            resolved.elem = Box::new(resolve_self_type(&reference.elem, type_name));
-            Type::Reference(resolved)
+    }
+
+    fn render(&self) -> Option<proc_macro2::TokenStream> {
+        match self.descriptor.kind {
+            RecordMethodKind::Constructor => self.render_constructor(),
+            RecordMethodKind::InstanceRef => self.render_instance(false),
+            RecordMethodKind::InstanceMut => self.render_instance(true),
+            RecordMethodKind::Static => self.render_static(),
         }
-        Type::Tuple(tuple) => {
-            let mut resolved = tuple.clone();
-            resolved
-                .elems
-                .iter_mut()
-                .for_each(|elem| *elem = resolve_self_type(elem, type_name));
-            Type::Tuple(resolved)
-        }
-        _ => ty.clone(),
+    }
+
+    fn render_constructor(&self) -> Option<proc_macro2::TokenStream> {
+        generate_record_constructor_export(
+            self.type_name,
+            self.record_name,
+            self.method,
+            self.return_lowering,
+            self.callback_registry,
+        )
+    }
+
+    fn render_instance(&self, is_mut: bool) -> Option<proc_macro2::TokenStream> {
+        generate_record_instance_export(
+            self.type_name,
+            self.record_name,
+            self.method,
+            is_mut,
+            self.return_lowering,
+            self.callback_registry,
+        )
+    }
+
+    fn render_static(&self) -> Option<proc_macro2::TokenStream> {
+        generate_record_static_export(
+            self.type_name,
+            self.record_name,
+            self.method,
+            self.return_lowering,
+            self.callback_registry,
+        )
     }
 }
 
@@ -90,7 +223,7 @@ fn generate_record_constructor_export(
     record_name: &str,
     method: &syn::ImplItemFn,
     return_lowering: &ReturnLoweringContext<'_>,
-    callback_registry: &callback_registry::CallbackTraitRegistry,
+    callback_registry: &CallbackTraitRegistry,
 ) -> Option<proc_macro2::TokenStream> {
     let custom_types = return_lowering.custom_types();
     let method_name = &method.sig.ident;
@@ -101,8 +234,8 @@ fn generate_record_constructor_export(
     };
     let export_name = syn::Ident::new(export_name.as_str(), method_name.span());
 
-    let resolved_output = resolve_self_in_return_type(&method.sig.output, type_name);
-    let return_abi = return_lowering.lower_output(&resolved_output);
+    let method_descriptor = RecordMethodDescriptor::from_method(method, type_name);
+    let return_abi = return_lowering.lower_output(&method_descriptor.resolved_output);
     let on_error = return_abi.invalid_arg_early_return_statement();
 
     let inputs = method.sig.inputs.iter().cloned();
@@ -115,7 +248,7 @@ fn generate_record_constructor_export(
     let call_expr = quote! { #type_name::#method_name(#(#call_args),*) };
 
     let is_fallible = matches!(
-        &resolved_output,
+        &method_descriptor.resolved_output,
         ReturnType::Type(_, ty)
             if matches!(ty.as_ref(), Type::Path(tp) if is_result_of_self_type_path(&tp.path, type_name))
     );
@@ -137,15 +270,15 @@ fn generate_record_instance_export(
     method: &syn::ImplItemFn,
     is_mut: bool,
     return_lowering: &ReturnLoweringContext<'_>,
-    callback_registry: &callback_registry::CallbackTraitRegistry,
+    callback_registry: &CallbackTraitRegistry,
 ) -> Option<proc_macro2::TokenStream> {
     let custom_types = return_lowering.custom_types();
     let method_name = &method.sig.ident;
     let export_name = naming::method_ffi_name(record_name, &method_name.to_string());
     let export_name = syn::Ident::new(export_name.as_str(), method_name.span());
 
-    let resolved_output = resolve_self_in_return_type(&method.sig.output, type_name);
-    let return_abi = return_lowering.lower_output(&resolved_output);
+    let method_descriptor = RecordMethodDescriptor::from_method(method, type_name);
+    let return_abi = return_lowering.lower_output(&method_descriptor.resolved_output);
     let on_error = return_abi.invalid_arg_early_return_statement();
 
     let other_inputs = method.sig.inputs.iter().skip(1).cloned();
@@ -239,15 +372,15 @@ fn generate_record_static_export(
     record_name: &str,
     method: &syn::ImplItemFn,
     return_lowering: &ReturnLoweringContext<'_>,
-    callback_registry: &callback_registry::CallbackTraitRegistry,
+    callback_registry: &CallbackTraitRegistry,
 ) -> Option<proc_macro2::TokenStream> {
     let custom_types = return_lowering.custom_types();
     let method_name = &method.sig.ident;
     let export_name = naming::method_ffi_name(record_name, &method_name.to_string());
     let export_name = syn::Ident::new(export_name.as_str(), method_name.span());
 
-    let resolved_output = resolve_self_in_return_type(&method.sig.output, type_name);
-    let return_abi = return_lowering.lower_output(&resolved_output);
+    let method_descriptor = RecordMethodDescriptor::from_method(method, type_name);
+    let return_abi = return_lowering.lower_output(&method_descriptor.resolved_output);
     let on_error = return_abi.invalid_arg_early_return_statement();
 
     let all_inputs = method.sig.inputs.iter().cloned();
@@ -498,74 +631,13 @@ fn emit_encoded_ffi_function(
 }
 
 pub fn data_impl_block(item: TokenStream) -> TokenStream {
-    let input = match syn::parse::<syn::ItemImpl>(item.clone()) {
+    let input = match syn::parse::<syn::ItemImpl>(item) {
         Ok(parsed) => parsed,
         Err(error) => return error.to_compile_error().into(),
     };
 
-    let type_name = match impl_type_name(&input) {
-        Some(name) => name,
-        None => {
-            return syn::Error::new_spanned(&input, "#[data(impl)] requires a named type")
-                .to_compile_error()
-                .into();
-        }
-    };
-
-    let custom_types = match custom_types::registry_for_current_crate() {
-        Ok(registry) => registry,
-        Err(error) => return error.to_compile_error().into(),
-    };
-    let callback_registry = match callback_registry::registry_for_current_crate() {
-        Ok(registry) => registry,
-        Err(error) => return error.to_compile_error().into(),
-    };
-    let data_types = match data_types::registry_for_current_crate() {
-        Ok(registry) => registry,
-        Err(error) => return error.to_compile_error().into(),
-    };
-    let return_lowering = ReturnLoweringContext::new(&custom_types, &data_types);
-
-    let record_name = type_name.to_string();
-    let original_impl: proc_macro2::TokenStream = item.into();
-
-    let method_exports: Vec<_> = exported_methods(&input)
-        .filter_map(|method| match classify_record_method(method, &type_name) {
-            RecordMethodKind::Constructor => generate_record_constructor_export(
-                &type_name,
-                &record_name,
-                method,
-                &return_lowering,
-                &callback_registry,
-            ),
-            RecordMethodKind::InstanceRef => generate_record_instance_export(
-                &type_name,
-                &record_name,
-                method,
-                false,
-                &return_lowering,
-                &callback_registry,
-            ),
-            RecordMethodKind::InstanceMut => generate_record_instance_export(
-                &type_name,
-                &record_name,
-                method,
-                true,
-                &return_lowering,
-                &callback_registry,
-            ),
-            RecordMethodKind::Static => generate_record_static_export(
-                &type_name,
-                &record_name,
-                method,
-                &return_lowering,
-                &callback_registry,
-            ),
-        })
-        .collect();
-
-    TokenStream::from(quote! {
-        #original_impl
-        #(#method_exports)*
-    })
+    RecordImplExpansion::new(input)
+        .map(RecordImplExpansion::render)
+        .unwrap_or_else(|error| error.to_compile_error())
+        .into()
 }

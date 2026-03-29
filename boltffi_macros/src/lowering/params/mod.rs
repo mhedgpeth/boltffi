@@ -7,7 +7,7 @@ mod value;
 use self::callbacks::{AsyncCallbackParamLowerer, SyncCallbackParamLowerer, TraitObjectParamKind};
 use self::transform::{ClassifiedParamTransform, ParamTransform, ParamTransformClassifier};
 use self::value::{AsyncValueParamLowerer, SyncValueParamLowerer};
-use crate::callbacks::registry::CallbackTraitRegistry;
+use crate::index::callback_traits::CallbackTraitRegistry;
 use crate::lowering::returns::model::ReturnLoweringContext;
 use boltffi_ffi_rules::transport::ParamValueStrategy;
 
@@ -381,10 +381,10 @@ pub fn transform_method_params_async(
 #[cfg(test)]
 mod tests {
     use super::AsyncParamLowerer;
-    use crate::callbacks::registry::CallbackTraitRegistry;
+    use crate::index::callback_traits::CallbackTraitRegistry;
+    use crate::index::custom_types::CustomTypeRegistry;
+    use crate::index::data_types::DataTypeRegistry;
     use crate::lowering::returns::model::ReturnLoweringContext;
-    use crate::registries::custom_types::CustomTypeRegistry;
-    use crate::registries::data_types::DataTypeRegistry;
     use syn::parse_quote;
 
     fn async_param_lowerer() -> AsyncParamLowerer<'static> {

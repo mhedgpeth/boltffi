@@ -11,6 +11,7 @@ use crate::ir::ids::{
 };
 use crate::ir::types::{BuiltinDef, BuiltinKind, PrimitiveType, TypeExpr};
 use crate::model::{self, Module};
+use boltffi_ffi_rules::callable::ExecutionKind;
 
 pub struct ContractBuilder<'m> {
     module: &'m Module,
@@ -219,7 +220,7 @@ impl<'m> ContractBuilder<'m> {
                 .map(|p| self.convert_param(&p.name, &p.param_type))
                 .collect(),
             returns: self.convert_return_type(&func.returns),
-            is_async: func.is_async,
+            execution_kind: func.execution_kind,
             doc: func.doc.clone(),
             deprecated: func.deprecated.as_ref().map(convert_deprecation),
         }
@@ -329,7 +330,7 @@ impl<'m> ContractBuilder<'m> {
                 .map(|p| self.convert_param(&p.name, &p.param_type))
                 .collect(),
             returns: self.convert_return_type(&method.returns),
-            is_async: method.is_async,
+            execution_kind: method.execution_kind,
             doc: method.doc.clone(),
             deprecated: method.deprecated.as_ref().map(convert_deprecation),
         }
@@ -349,7 +350,7 @@ impl<'m> ContractBuilder<'m> {
                         .map(|p| self.convert_param(&p.name, &p.param_type))
                         .collect(),
                     returns: self.convert_return_type(&m.returns),
-                    is_async: m.is_async,
+                    execution_kind: m.execution_kind,
                     doc: m.doc.clone(),
                 })
                 .collect(),
@@ -401,7 +402,7 @@ impl<'m> ContractBuilder<'m> {
                 id: MethodId::new("call"),
                 params,
                 returns,
-                is_async: false,
+                execution_kind: ExecutionKind::Sync,
                 doc: None,
             }],
             kind: CallbackKind::Closure,
@@ -797,7 +798,7 @@ mod tests {
 
         assert_eq!(def.id.as_str(), "add");
         assert_eq!(def.doc.as_deref(), Some("Adds two numbers."));
-        assert!(!def.is_async);
+        assert!(!def.is_async());
         assert_eq!(def.params.len(), 2);
         assert_eq!(def.params[0].name.as_str(), "a");
         assert!(matches!(
@@ -820,7 +821,7 @@ mod tests {
 
         let def = builder(&module).convert_function(&module.functions[0]);
 
-        assert!(def.is_async);
+        assert!(def.is_async());
     }
 
     #[test]
@@ -1001,7 +1002,7 @@ mod tests {
         let fetch = &def.methods[0];
         assert_eq!(fetch.id.as_str(), "fetch");
         assert_eq!(fetch.doc.as_deref(), Some("Fetches the next batch."));
-        assert!(!fetch.is_async);
+        assert!(!fetch.is_async());
         assert_eq!(fetch.params.len(), 1);
         assert!(matches!(
             fetch.returns,
@@ -1010,7 +1011,7 @@ mod tests {
 
         let reset = &def.methods[1];
         assert_eq!(reset.id.as_str(), "reset");
-        assert!(reset.is_async);
+        assert!(reset.is_async());
         assert!(matches!(reset.returns, ReturnDef::Void));
     }
 

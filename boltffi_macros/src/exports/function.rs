@@ -1,221 +1,198 @@
+use boltffi_ffi_rules::callable::{CallableForm, ExecutionKind};
 use boltffi_ffi_rules::naming;
 use boltffi_ffi_rules::transport::EncodedReturnStrategy;
 use proc_macro::TokenStream;
 use quote::quote;
 use syn::ItemFn;
 
-use crate::callbacks::registry as callback_registry;
+use crate::exports::async_export::{
+    AsyncExportNames, AsyncRuntimeExports, AsyncWasmCompleteExport,
+};
+use crate::exports::callable::FunctionCallable;
 use crate::exports::callback_return::resolve_sync_callback_return;
+use crate::exports::extern_export::{
+    DirectBufferCarrier, DualPlatformExternExport, ExportBody, ExportCondition, ExportSafety,
+    ExternExport, ReceiverParameter,
+};
+use crate::index::callback_traits::CallbackTraitRegistry;
+use crate::index::{CrateIndex, custom_types, data_types};
 use crate::lowering::params::{FfiParams, transform_params, transform_params_async};
 use crate::lowering::returns::lower::{encoded_return_body, encoded_return_buffer_expression};
 use crate::lowering::returns::model::{
-    DirectBufferReturnMethod, ResolvedReturn, ReturnInvocationContext, ReturnLoweringContext,
-    ReturnPlatform, WasmOptionScalarEncoding,
+    ResolvedReturn, ReturnInvocationContext, ReturnLoweringContext, ReturnPlatform,
+    WasmOptionScalarEncoding,
 };
-use crate::registries::custom_types;
-use crate::registries::data_types;
 use crate::safety;
 
 fn build_encoded_return_exports(
-    input: &ItemFn,
-    fn_vis: &syn::Visibility,
+    callable: FunctionCallable<'_>,
     export_ident: &syn::Ident,
     ffi_params: &[proc_macro2::TokenStream],
     resolved_return: &ResolvedReturn,
     encode_body: proc_macro2::TokenStream,
 ) -> TokenStream {
-    let wasm_return_method = resolved_return
-        .direct_buffer_return_method(ReturnInvocationContext::SyncExport, ReturnPlatform::Wasm)
-        .unwrap_or_else(|| {
-            panic!(
-                "encoded sync export must use a direct wasm buffer return carrier: {:?}",
-                resolved_return.value_return_strategy()
+    let input = callable.item();
+    let fn_vis = &input.vis;
+    let wasm_return_carrier = DirectBufferCarrier::new(
+        resolved_return
+            .direct_buffer_return_method(ReturnInvocationContext::SyncExport, ReturnPlatform::Wasm)
+            .unwrap_or_else(|| {
+                panic!(
+                    "encoded sync export must use a direct wasm buffer return carrier: {:?}",
+                    resolved_return.value_return_strategy()
+                )
+            }),
+    );
+    let native_return_carrier = DirectBufferCarrier::new(
+        resolved_return
+            .direct_buffer_return_method(
+                ReturnInvocationContext::SyncExport,
+                ReturnPlatform::Native,
             )
-        });
-    let native_return_method = resolved_return
-        .direct_buffer_return_method(ReturnInvocationContext::SyncExport, ReturnPlatform::Native)
-        .unwrap_or_else(|| {
-            panic!(
-                "encoded sync export must use a direct native buffer return carrier: {:?}",
-                resolved_return.value_return_strategy()
-            )
-        });
-    let wasm_return_type = direct_buffer_return_type(wasm_return_method);
-    let wasm_return_body = direct_buffer_return_body(wasm_return_method, encode_body.clone());
-    let native_return_type = direct_buffer_return_type(native_return_method);
-    let native_return_body = direct_buffer_return_body(native_return_method, encode_body);
-
-    let wasm_export = match ffi_params.is_empty() {
-        true => quote! {
-            #[cfg(target_arch = "wasm32")]
-            #[unsafe(no_mangle)]
-            #fn_vis extern "C" fn #export_ident() -> #wasm_return_type {
-                #wasm_return_body
-            }
+            .unwrap_or_else(|| {
+                panic!(
+                    "encoded sync export must use a direct native buffer return carrier: {:?}",
+                    resolved_return.value_return_strategy()
+                )
+            }),
+    );
+    let wasm_return_type = wasm_return_carrier.return_type();
+    let native_return_type = native_return_carrier.return_type();
+    let safety = if ffi_params.is_empty() {
+        ExportSafety::Safe
+    } else {
+        ExportSafety::Unsafe
+    };
+    let export_pair = DualPlatformExternExport {
+        wasm: ExternExport {
+            visibility: fn_vis,
+            export_name: export_ident,
+            safety,
+            receiver: ReceiverParameter::None,
+            params: ffi_params,
+            allow_ptr_deref: false,
+            body: ExportBody {
+                return_type: quote! { -> #wasm_return_type },
+                body: wasm_return_carrier.lower_body(encode_body.clone()),
+            },
         },
-        false => quote! {
-            #[cfg(target_arch = "wasm32")]
-            #[unsafe(no_mangle)]
-            #fn_vis unsafe extern "C" fn #export_ident(
-                #(#ffi_params),*
-            ) -> #wasm_return_type {
-                #wasm_return_body
-            }
+        native: ExternExport {
+            visibility: fn_vis,
+            export_name: export_ident,
+            safety,
+            receiver: ReceiverParameter::None,
+            params: ffi_params,
+            allow_ptr_deref: false,
+            body: ExportBody {
+                return_type: quote! { -> #native_return_type },
+                body: native_return_carrier.lower_body(encode_body),
+            },
         },
     };
-
-    let non_wasm_export = match ffi_params.is_empty() {
-        true => quote! {
-            #[cfg(not(target_arch = "wasm32"))]
-            #[unsafe(no_mangle)]
-            #fn_vis extern "C" fn #export_ident() -> #native_return_type {
-                #native_return_body
-            }
-        },
-        false => quote! {
-            #[cfg(not(target_arch = "wasm32"))]
-            #[unsafe(no_mangle)]
-            #fn_vis unsafe extern "C" fn #export_ident(
-                #(#ffi_params),*
-            ) -> #native_return_type {
-                #native_return_body
-            }
-        },
-    };
+    let rendered_exports = export_pair.render();
 
     TokenStream::from(quote! {
         #input
 
-        #wasm_export
-        #non_wasm_export
+        #rendered_exports
     })
 }
 
-fn direct_buffer_return_type(return_method: DirectBufferReturnMethod) -> proc_macro2::TokenStream {
-    match return_method {
-        DirectBufferReturnMethod::Packed => quote! { u64 },
-        DirectBufferReturnMethod::Descriptor => quote! { ::boltffi::__private::FfiBuf },
-    }
-}
-
-fn direct_buffer_return_body(
-    return_method: DirectBufferReturnMethod,
-    encode_body: proc_macro2::TokenStream,
-) -> proc_macro2::TokenStream {
-    match return_method {
-        DirectBufferReturnMethod::Packed => quote! {
-            let __boltffi_buf: ::boltffi::__private::FfiBuf = { #encode_body };
-            __boltffi_buf.into_packed()
-        },
-        DirectBufferReturnMethod::Descriptor => encode_body,
-    }
-}
-
 fn build_f64_wasm_return_exports(
-    input: &ItemFn,
-    fn_vis: &syn::Visibility,
+    callable: FunctionCallable<'_>,
     export_ident: &syn::Ident,
     ffi_params: &[proc_macro2::TokenStream],
     wasm_body: proc_macro2::TokenStream,
     native_body: proc_macro2::TokenStream,
 ) -> TokenStream {
-    let wasm_export = match ffi_params.is_empty() {
-        true => quote! {
-            #[cfg(target_arch = "wasm32")]
-            #[unsafe(no_mangle)]
-            #fn_vis extern "C" fn #export_ident() -> f64 {
-                #wasm_body
-            }
+    let input = callable.item();
+    let fn_vis = &input.vis;
+    let safety = if ffi_params.is_empty() {
+        ExportSafety::Safe
+    } else {
+        ExportSafety::Unsafe
+    };
+    let export_pair = DualPlatformExternExport {
+        wasm: ExternExport {
+            visibility: fn_vis,
+            export_name: export_ident,
+            safety,
+            receiver: ReceiverParameter::None,
+            params: ffi_params,
+            allow_ptr_deref: false,
+            body: ExportBody {
+                return_type: quote! { -> f64 },
+                body: wasm_body,
+            },
         },
-        false => quote! {
-            #[cfg(target_arch = "wasm32")]
-            #[unsafe(no_mangle)]
-            #fn_vis unsafe extern "C" fn #export_ident(
-                #(#ffi_params),*
-            ) -> f64 {
-                #wasm_body
-            }
+        native: ExternExport {
+            visibility: fn_vis,
+            export_name: export_ident,
+            safety,
+            receiver: ReceiverParameter::None,
+            params: ffi_params,
+            allow_ptr_deref: false,
+            body: ExportBody {
+                return_type: quote! { -> ::boltffi::__private::FfiBuf },
+                body: native_body,
+            },
         },
     };
-
-    let non_wasm_export = match ffi_params.is_empty() {
-        true => quote! {
-            #[cfg(not(target_arch = "wasm32"))]
-            #[unsafe(no_mangle)]
-            #fn_vis extern "C" fn #export_ident() -> ::boltffi::__private::FfiBuf {
-                #native_body
-            }
-        },
-        false => quote! {
-            #[cfg(not(target_arch = "wasm32"))]
-            #[unsafe(no_mangle)]
-            #fn_vis unsafe extern "C" fn #export_ident(
-                #(#ffi_params),*
-            ) -> ::boltffi::__private::FfiBuf {
-                #native_body
-            }
-        },
-    };
+    let rendered_exports = export_pair.render();
 
     TokenStream::from(quote! {
         #input
 
-        #wasm_export
-        #non_wasm_export
+        #rendered_exports
     })
 }
 
 fn build_void_wasm_return_exports(
-    input: &ItemFn,
-    fn_vis: &syn::Visibility,
+    callable: FunctionCallable<'_>,
     export_ident: &syn::Ident,
     ffi_params: &[proc_macro2::TokenStream],
     wasm_body: proc_macro2::TokenStream,
     native_body: proc_macro2::TokenStream,
 ) -> TokenStream {
-    let wasm_export = match ffi_params.is_empty() {
-        true => quote! {
-            #[cfg(target_arch = "wasm32")]
-            #[unsafe(no_mangle)]
-            #fn_vis extern "C" fn #export_ident() {
-                #wasm_body
-            }
+    let input = callable.item();
+    let fn_vis = &input.vis;
+    let safety = if ffi_params.is_empty() {
+        ExportSafety::Safe
+    } else {
+        ExportSafety::Unsafe
+    };
+    let export_pair = DualPlatformExternExport {
+        wasm: ExternExport {
+            visibility: fn_vis,
+            export_name: export_ident,
+            safety,
+            receiver: ReceiverParameter::None,
+            params: ffi_params,
+            allow_ptr_deref: false,
+            body: ExportBody {
+                return_type: quote! {},
+                body: wasm_body,
+            },
         },
-        false => quote! {
-            #[cfg(target_arch = "wasm32")]
-            #[unsafe(no_mangle)]
-            #fn_vis unsafe extern "C" fn #export_ident(
-                #(#ffi_params),*
-            ) {
-                #wasm_body
-            }
+        native: ExternExport {
+            visibility: fn_vis,
+            export_name: export_ident,
+            safety,
+            receiver: ReceiverParameter::None,
+            params: ffi_params,
+            allow_ptr_deref: false,
+            body: ExportBody {
+                return_type: quote! { -> ::boltffi::__private::FfiBuf },
+                body: native_body,
+            },
         },
     };
-
-    let non_wasm_export = match ffi_params.is_empty() {
-        true => quote! {
-            #[cfg(not(target_arch = "wasm32"))]
-            #[unsafe(no_mangle)]
-            #fn_vis extern "C" fn #export_ident() -> ::boltffi::__private::FfiBuf {
-                #native_body
-            }
-        },
-        false => quote! {
-            #[cfg(not(target_arch = "wasm32"))]
-            #[unsafe(no_mangle)]
-            #fn_vis unsafe extern "C" fn #export_ident(
-                #(#ffi_params),*
-            ) -> ::boltffi::__private::FfiBuf {
-                #native_body
-            }
-        },
-    };
+    let rendered_exports = export_pair.render();
 
     TokenStream::from(quote! {
         #input
 
-        #wasm_export
-        #non_wasm_export
+        #rendered_exports
     })
 }
 
@@ -224,29 +201,26 @@ fn ffi_export_item_impl(input: ItemFn) -> proc_macro2::TokenStream {
     if !violations.is_empty() {
         return safety::violations_to_compile_errors(&violations);
     }
+    let callable = FunctionCallable::new(&input);
 
-    let custom_types = match custom_types::registry_for_current_crate() {
-        Ok(registry) => registry,
+    let crate_index = match CrateIndex::for_current_crate() {
+        Ok(crate_index) => crate_index,
         Err(error) => return error.to_compile_error(),
     };
-    let callback_registry = match callback_registry::registry_for_current_crate() {
-        Ok(registry) => registry,
-        Err(error) => return error.to_compile_error(),
-    };
-    let data_types = match data_types::registry_for_current_crate() {
-        Ok(registry) => registry,
-        Err(error) => return error.to_compile_error(),
-    };
+    let custom_types = crate_index.custom_types().clone();
+    let callback_registry = crate_index.callback_traits().clone();
+    let data_types = crate_index.data_types().clone();
     let return_lowering = ReturnLoweringContext::new(&custom_types, &data_types);
 
+    let input = callable.item();
+    debug_assert_eq!(callable.form(), CallableForm::Function);
     let fn_name = &input.sig.ident;
     let fn_inputs = &input.sig.inputs;
     let fn_output = &input.sig.output;
     let fn_vis = &input.vis;
-    let is_async = input.sig.asyncness.is_some();
 
-    if is_async {
-        return generate_async_export(&input, &custom_types, &callback_registry).into();
+    if callable.execution_kind() == ExecutionKind::Async {
+        return generate_async_export(callable, &custom_types, &callback_registry).into();
     }
 
     let export_name = format!("{}_{}", naming::ffi_prefix(), fn_name);
@@ -442,8 +416,7 @@ fn ffi_export_item_impl(input: ItemFn) -> proc_macro2::TokenStream {
             };
 
             return build_f64_wasm_return_exports(
-                &input,
-                fn_vis,
+                callable,
                 &export_ident,
                 &ffi_params,
                 wasm_body,
@@ -471,8 +444,7 @@ fn ffi_export_item_impl(input: ItemFn) -> proc_macro2::TokenStream {
             };
 
             return build_void_wasm_return_exports(
-                &input,
-                fn_vis,
+                callable,
                 &export_ident,
                 &ffi_params,
                 wasm_body,
@@ -491,8 +463,7 @@ fn ffi_export_item_impl(input: ItemFn) -> proc_macro2::TokenStream {
         );
 
         build_encoded_return_exports(
-            &input,
-            fn_vis,
+            callable,
             &export_ident,
             &ffi_params,
             &return_abi,
@@ -545,10 +516,11 @@ pub fn ffi_export_impl(item: TokenStream) -> TokenStream {
 }
 
 fn generate_async_export(
-    input: &ItemFn,
+    callable: FunctionCallable<'_>,
     custom_types: &custom_types::CustomTypeRegistry,
-    callback_registry: &callback_registry::CallbackTraitRegistry,
+    callback_registry: &CallbackTraitRegistry,
 ) -> TokenStream {
+    let input = callable.item();
     let fn_name = &input.sig.ident;
     let fn_inputs = &input.sig.inputs;
     let fn_output = &input.sig.output;
@@ -556,14 +528,7 @@ fn generate_async_export(
     let fn_block = &input.block;
 
     let base_name = format!("{}_{}", naming::ffi_prefix(), fn_name);
-    let entry_ident = syn::Ident::new(&base_name, fn_name.span());
-    let poll_ident = syn::Ident::new(&format!("{}_poll", base_name), fn_name.span());
-    let poll_sync_ident = syn::Ident::new(&format!("{}_poll_sync", base_name), fn_name.span());
-    let complete_ident = syn::Ident::new(&format!("{}_complete", base_name), fn_name.span());
-    let panic_message_ident =
-        syn::Ident::new(&format!("{}_panic_message", base_name), fn_name.span());
-    let cancel_ident = syn::Ident::new(&format!("{}_cancel", base_name), fn_name.span());
-    let free_ident = syn::Ident::new(&format!("{}_free", base_name), fn_name.span());
+    let export_names = AsyncExportNames::new(&base_name, fn_name.span());
     let data_types = match data_types::registry_for_current_crate() {
         Ok(registry) => registry,
         Err(error) => return error.to_compile_error().into(),
@@ -598,68 +563,35 @@ fn generate_async_export(
         #fn_name(#(#call_args),*).await
     };
 
-    let entry_fn = if ffi_params.is_empty() {
-        quote! {
-            #[unsafe(no_mangle)]
-            #fn_vis extern "C" fn #entry_ident() -> ::boltffi::__private::RustFutureHandle {
-                ::boltffi::__private::rustfuture::rust_future_new(async move {
-                    #future_body
-                })
-            }
-        }
-    } else {
-        quote! {
-            #[unsafe(no_mangle)]
-            #fn_vis extern "C" fn #entry_ident(#(#ffi_params),*) -> ::boltffi::__private::RustFutureHandle {
-                #(#pre_spawn)*
-                #(let _ = &#move_vars;)*
-                ::boltffi::__private::rustfuture::rust_future_new(async move {
-                    #future_body
-                })
-            }
-        }
+    let entry_body = quote! {
+        #(#pre_spawn)*
+        #(let _ = &#move_vars;)*
+        ::boltffi::__private::rustfuture::rust_future_new(async move {
+            #future_body
+        })
     };
+    let entry_fn = ExternExport::async_entry(fn_vis, export_names.entry(), ffi_params, entry_body)
+        .render(ExportCondition::Always);
 
-    let native_complete_fn = quote! {
-        #[cfg(not(target_arch = "wasm32"))]
-        #[unsafe(no_mangle)]
-        #fn_vis unsafe extern "C" fn #complete_ident(
-            handle: ::boltffi::__private::RustFutureHandle,
-            out_status: *mut ::boltffi::__private::FfiStatus,
-        ) -> #ffi_return_type {
-            match ::boltffi::__private::rustfuture::rust_future_complete::<#rust_return_type>(handle) {
-                Some(result) => { #complete_conversion }
-                None => {
-                    if !out_status.is_null() { *out_status = ::boltffi::__private::FfiStatus::CANCELLED; }
-                    #default_value
-                }
-            }
-        }
-    };
-
-    let wasm_complete_fn = if return_abi.is_primitive_scalar() {
+    let wasm_complete = if return_abi.is_primitive_scalar() {
         let rust_type = return_abi.rust_type();
-        quote! {
-            #[cfg(target_arch = "wasm32")]
-            #[unsafe(no_mangle)]
-            #fn_vis unsafe extern "C" fn #complete_ident(
-                handle: ::boltffi::__private::RustFutureHandle,
-            ) -> #rust_type {
+        AsyncWasmCompleteExport {
+            params: quote! { handle: ::boltffi::__private::RustFutureHandle },
+            return_type: quote! { -> #rust_type },
+            body: quote! {
                 match ::boltffi::__private::rustfuture::rust_future_complete::<#rust_return_type>(handle) {
                     Some(result) => result,
                     None => Default::default(),
                 }
-            }
+            },
         }
     } else if return_abi.is_unit() {
-        quote! {
-            #[cfg(target_arch = "wasm32")]
-            #[unsafe(no_mangle)]
-            #fn_vis unsafe extern "C" fn #complete_ident(
-                handle: ::boltffi::__private::RustFutureHandle,
-            ) {
+        AsyncWasmCompleteExport {
+            params: quote! { handle: ::boltffi::__private::RustFutureHandle },
+            return_type: quote! {},
+            body: quote! {
                 let _ = ::boltffi::__private::rustfuture::rust_future_complete::<#rust_return_type>(handle);
-            }
+            },
         }
     } else if let Some(strategy) = return_abi.encoded_return_strategy() {
         let rust_type = return_abi.rust_type();
@@ -670,14 +602,14 @@ fn generate_async_export(
         } else {
             encoded_return_buffer_expression(rust_type, strategy, &result_ident, registry.as_ref())
         };
-        quote! {
-            #[cfg(target_arch = "wasm32")]
-            #[unsafe(no_mangle)]
-            #fn_vis unsafe extern "C" fn #complete_ident(
+        AsyncWasmCompleteExport {
+            params: quote! {
                 out: *mut ::boltffi::__private::FfiBuf,
                 handle: ::boltffi::__private::RustFutureHandle,
-                _out_status: *mut ::boltffi::__private::FfiStatus,
-            ) {
+                _out_status: *mut ::boltffi::__private::FfiStatus
+            },
+            return_type: quote! {},
+            body: quote! {
                 if out.is_null() {
                     return;
                 }
@@ -686,21 +618,19 @@ fn generate_async_export(
                     None => ::boltffi::__private::FfiBuf::empty(),
                 };
                 out.write(buf);
-            }
+            },
         }
     } else if return_abi.is_passable_value() {
         let rust_type = return_abi.rust_type();
-        quote! {
-            #[cfg(target_arch = "wasm32")]
-            #[unsafe(no_mangle)]
-            #fn_vis unsafe extern "C" fn #complete_ident(
-                handle: ::boltffi::__private::RustFutureHandle,
-            ) -> <#rust_type as ::boltffi::__private::Passable>::Out {
+        AsyncWasmCompleteExport {
+            params: quote! { handle: ::boltffi::__private::RustFutureHandle },
+            return_type: quote! { -> <#rust_type as ::boltffi::__private::Passable>::Out },
+            body: quote! {
                 match ::boltffi::__private::rustfuture::rust_future_complete::<#rust_return_type>(handle) {
                     Some(result) => ::boltffi::__private::Passable::pack(result),
                     None => Default::default(),
                 }
-            }
+            },
         }
     } else {
         unreachable!(
@@ -708,63 +638,22 @@ fn generate_async_export(
             return_abi.value_return_strategy()
         )
     };
-
-    let native_poll_fn = quote! {
-        #[cfg(not(target_arch = "wasm32"))]
-        #[unsafe(no_mangle)]
-        #fn_vis unsafe extern "C" fn #poll_ident(
-            handle: ::boltffi::__private::RustFutureHandle,
-            callback_data: u64,
-            callback: ::boltffi::__private::RustFutureContinuationCallback,
-        ) {
-            ::boltffi::__private::rustfuture::rust_future_poll::<#rust_return_type>(handle, callback, callback_data)
-        }
-    };
-
-    let wasm_poll_fn = quote! {
-        #[cfg(target_arch = "wasm32")]
-        #[unsafe(no_mangle)]
-        #fn_vis unsafe extern "C" fn #poll_sync_ident(
-            handle: ::boltffi::__private::RustFutureHandle,
-        ) -> i32 {
-            ::boltffi::__private::rust_future_poll_sync::<#rust_return_type>(handle)
-        }
-    };
-
-    let wasm_panic_message_fn = quote! {
-        #[cfg(target_arch = "wasm32")]
-        #[unsafe(no_mangle)]
-        #fn_vis unsafe extern "C" fn #panic_message_ident(
-            handle: ::boltffi::__private::RustFutureHandle,
-        ) -> ::boltffi::__private::FfiBuf {
-            match ::boltffi::__private::rust_future_panic_message::<#rust_return_type>(handle) {
-                Some(message) => ::boltffi::__private::FfiBuf::wire_encode(&message),
-                None => ::boltffi::__private::FfiBuf::empty(),
-            }
-        }
-    };
+    let runtime_exports = AsyncRuntimeExports {
+        visibility: fn_vis,
+        names: &export_names,
+        rust_return_type: quote! { #rust_return_type },
+        ffi_return_type: quote! { #ffi_return_type },
+        complete_conversion,
+        default_value,
+    }
+    .render(wasm_complete);
 
     let expanded = quote! {
         #fn_vis async fn #fn_name(#fn_inputs) #fn_output #fn_block
 
         #entry_fn
 
-        #native_poll_fn
-        #wasm_poll_fn
-        #wasm_panic_message_fn
-
-        #native_complete_fn
-        #wasm_complete_fn
-
-        #[unsafe(no_mangle)]
-        #fn_vis unsafe extern "C" fn #cancel_ident(handle: ::boltffi::__private::RustFutureHandle) {
-            ::boltffi::__private::rustfuture::rust_future_cancel::<#rust_return_type>(handle)
-        }
-
-        #[unsafe(no_mangle)]
-        #fn_vis unsafe extern "C" fn #free_ident(handle: ::boltffi::__private::RustFutureHandle) {
-            ::boltffi::__private::rustfuture::rust_future_free::<#rust_return_type>(handle)
-        }
+        #runtime_exports
     };
 
     TokenStream::from(expanded)

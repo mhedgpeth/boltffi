@@ -1,3 +1,4 @@
+pub mod callable;
 pub mod primitive;
 
 pub const FFI_PREFIX: &str = "boltffi";

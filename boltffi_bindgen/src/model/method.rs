@@ -1,3 +1,4 @@
+use boltffi_ffi_rules::callable::{CallableForm, ExecutionKind};
 use serde::{Deserialize, Serialize};
 
 use super::types::{Deprecation, Receiver, ReturnType, Type};
@@ -8,7 +9,7 @@ pub struct Method {
     pub receiver: Receiver,
     pub inputs: Vec<Parameter>,
     pub returns: ReturnType,
-    pub is_async: bool,
+    pub execution_kind: ExecutionKind,
     pub doc: Option<String>,
     pub deprecated: Option<Deprecation>,
 }
@@ -20,7 +21,7 @@ impl Method {
             receiver,
             inputs: Vec::new(),
             returns: ReturnType::Void,
-            is_async: false,
+            execution_kind: ExecutionKind::Sync,
             doc: None,
             deprecated: None,
         }
@@ -42,7 +43,7 @@ impl Method {
     }
 
     pub fn make_async(mut self) -> Self {
-        self.is_async = true;
+        self.execution_kind = ExecutionKind::Async;
         self
     }
 
@@ -62,6 +63,18 @@ impl Method {
         if is_async { self.make_async() } else { self }
     }
 
+    pub fn callable_form(&self) -> CallableForm {
+        self.receiver.callable_form()
+    }
+
+    pub fn execution_kind(&self) -> ExecutionKind {
+        self.execution_kind
+    }
+
+    pub fn is_async(&self) -> bool {
+        self.execution_kind == ExecutionKind::Async
+    }
+
     pub fn maybe_return(self, returns: Option<ReturnType>) -> Self {
         match returns {
             Some(r) => self.with_return(r),
@@ -79,7 +92,7 @@ impl Method {
     }
 
     pub fn is_static(&self) -> bool {
-        self.receiver.is_static()
+        self.callable_form() == CallableForm::StaticMethod
     }
 
     pub fn is_mutating(&self) -> bool {

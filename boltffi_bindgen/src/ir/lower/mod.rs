@@ -218,6 +218,7 @@ mod tests {
         VariantName,
     };
     use crate::ir::types::{PrimitiveType, TypeExpr};
+    use boltffi_ffi_rules::callable::ExecutionKind;
     use boltffi_ffi_rules::naming;
 
     fn test_contract() -> FfiContract {
@@ -554,7 +555,7 @@ mod tests {
                 doc: None,
             }],
             returns: ReturnDef::Value(TypeExpr::String),
-            is_async: false,
+            execution_kind: ExecutionKind::Sync,
             doc: None,
             deprecated: None,
         };
@@ -578,7 +579,7 @@ mod tests {
             id: FunctionId::new("fetch"),
             params: vec![],
             returns: ReturnDef::Value(TypeExpr::String),
-            is_async: true,
+            execution_kind: ExecutionKind::Async,
             doc: None,
             deprecated: None,
         };
@@ -609,7 +610,7 @@ mod tests {
             receiver: Receiver::RefSelf,
             params: vec![],
             returns: ReturnDef::Void,
-            is_async: false,
+            execution_kind: ExecutionKind::Sync,
             doc: None,
             deprecated: None,
         };
@@ -648,7 +649,7 @@ mod tests {
             receiver: Receiver::Static,
             params: vec![],
             returns: ReturnDef::Void,
-            is_async: false,
+            execution_kind: ExecutionKind::Sync,
             doc: None,
             deprecated: None,
         };
@@ -740,7 +741,7 @@ mod tests {
                 id: MethodId::new("on_event"),
                 params: vec![],
                 returns: ReturnDef::Void,
-                is_async: false,
+                execution_kind: ExecutionKind::Sync,
                 doc: None,
             }],
             kind: CallbackKind::Trait,
@@ -772,7 +773,7 @@ mod tests {
                     doc: None,
                 }],
                 returns: ReturnDef::Void,
-                is_async: false,
+                execution_kind: ExecutionKind::Sync,
                 doc: None,
             }],
             kind: CallbackKind::Trait,
@@ -1156,7 +1157,7 @@ mod tests {
                 doc: None,
             }],
             returns: ReturnDef::Void,
-            is_async: false,
+            execution_kind: ExecutionKind::Sync,
             doc: None,
             deprecated: None,
         });
@@ -1252,7 +1253,7 @@ mod tests {
                 id: MethodId::new("invoke"),
                 params: vec![],
                 returns: ReturnDef::Void,
-                is_async: false,
+                execution_kind: ExecutionKind::Sync,
                 doc: None,
             }],
             kind: CallbackKind::Trait,
@@ -1320,7 +1321,7 @@ mod tests {
             receiver: Receiver::RefMutSelf,
             params: vec![],
             returns: ReturnDef::Void,
-            is_async: false,
+            execution_kind: ExecutionKind::Sync,
             doc: None,
             deprecated: None,
         };
@@ -1455,7 +1456,7 @@ mod tests {
                 doc: None,
             }],
             returns: ReturnDef::Void,
-            is_async: false,
+            execution_kind: ExecutionKind::Sync,
             doc: None,
             deprecated: None,
         };
@@ -1517,7 +1518,7 @@ mod tests {
                 doc: None,
             }],
             returns: ReturnDef::Void,
-            is_async: false,
+            execution_kind: ExecutionKind::Sync,
             doc: None,
             deprecated: None,
         };
@@ -1589,7 +1590,7 @@ mod tests {
                 id: MethodId::new("call"),
                 params,
                 returns,
-                is_async: false,
+                execution_kind: ExecutionKind::Sync,
                 doc: None,
             }],
             kind: CallbackKind::Closure,
@@ -1756,7 +1757,7 @@ mod tests {
             receiver: Receiver::RefSelf,
             params: vec![],
             returns: ReturnDef::Value(TypeExpr::Primitive(PrimitiveType::F64)),
-            is_async: false,
+            execution_kind: ExecutionKind::Sync,
             doc: None,
             deprecated: None,
         };
@@ -1783,7 +1784,7 @@ mod tests {
             receiver: Receiver::Static,
             params: vec![],
             returns: ReturnDef::Value(TypeExpr::Primitive(PrimitiveType::F64)),
-            is_async: false,
+            execution_kind: ExecutionKind::Sync,
             doc: None,
             deprecated: None,
         };
@@ -1805,7 +1806,7 @@ mod tests {
             receiver: Receiver::RefSelf,
             params: vec![],
             returns: ReturnDef::Value(TypeExpr::String),
-            is_async: false,
+            execution_kind: ExecutionKind::Sync,
             doc: None,
             deprecated: None,
         };
@@ -1892,7 +1893,7 @@ mod tests {
             receiver: Receiver::RefSelf,
             params: vec![],
             returns: ReturnDef::Value(TypeExpr::Primitive(PrimitiveType::F64)),
-            is_async: false,
+            execution_kind: ExecutionKind::Sync,
             doc: None,
             deprecated: None,
         }];
@@ -1941,7 +1942,7 @@ mod tests {
                 receiver: Receiver::RefSelf,
                 params: vec![],
                 returns: ReturnDef::Value(TypeExpr::Primitive(PrimitiveType::F64)),
-                is_async: false,
+                execution_kind: ExecutionKind::Sync,
                 doc: None,
                 deprecated: None,
             },
@@ -1950,7 +1951,7 @@ mod tests {
                 receiver: Receiver::RefSelf,
                 params: vec![],
                 returns: ReturnDef::Value(TypeExpr::Primitive(PrimitiveType::F64)),
-                is_async: true,
+                execution_kind: ExecutionKind::Async,
                 doc: None,
                 deprecated: None,
             },
@@ -1985,7 +1986,7 @@ mod tests {
             receiver: Receiver::RefMutSelf,
             params: vec![],
             returns: ReturnDef::Void,
-            is_async: false,
+            execution_kind: ExecutionKind::Sync,
             doc: None,
             deprecated: None,
         };
@@ -2008,7 +2009,7 @@ mod tests {
             receiver: Receiver::RefMutSelf,
             params: vec![],
             returns: ReturnDef::Void,
-            is_async: false,
+            execution_kind: ExecutionKind::Sync,
             doc: None,
             deprecated: None,
         };
@@ -2035,7 +2036,7 @@ mod tests {
             receiver: Receiver::RefSelf,
             params: vec![],
             returns: ReturnDef::Void,
-            is_async: false,
+            execution_kind: ExecutionKind::Sync,
             doc: None,
             deprecated: None,
         };
@@ -2076,7 +2077,7 @@ mod tests {
                 receiver: Receiver::RefSelf,
                 params: vec![],
                 returns: ReturnDef::Value(TypeExpr::Primitive(PrimitiveType::I32)),
-                is_async: false,
+                execution_kind: ExecutionKind::Sync,
                 doc: None,
                 deprecated: None,
             }],
@@ -2160,7 +2161,7 @@ mod tests {
                     doc: None,
                 }],
                 returns: ReturnDef::Value(TypeExpr::Enum(EnumId::new("Direction"))),
-                is_async: false,
+                execution_kind: ExecutionKind::Sync,
                 doc: None,
             }],
             kind: CallbackKind::Trait,

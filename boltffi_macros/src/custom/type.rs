@@ -13,6 +13,10 @@ struct CustomTypeSpec {
     try_from_ffi: syn::Expr,
 }
 
+struct CustomTypeExpansion {
+    spec: CustomTypeSpec,
+}
+
 impl Parse for CustomTypeSpec {
     fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
         let visibility: syn::Visibility = input.parse()?;
@@ -77,30 +81,39 @@ impl Parse for CustomTypeSpec {
 
 pub fn custom_type_impl(item: TokenStream) -> TokenStream {
     let spec = syn::parse_macro_input!(item as CustomTypeSpec);
+    CustomTypeExpansion::new(spec).render().into()
+}
 
-    let CustomTypeSpec {
-        visibility,
-        name,
-        remote,
-        repr,
-        error,
-        into_ffi,
-        try_from_ffi,
-    } = spec;
+impl CustomTypeExpansion {
+    fn new(spec: CustomTypeSpec) -> Self {
+        Self { spec }
+    }
 
-    let snake = naming::to_snake_case(&name.to_string());
-    let into_fn_name = format_ident!("__boltffi_custom_type_{}_into_ffi", snake);
-    let try_from_fn_name = format_ident!("__boltffi_custom_type_{}_try_from_ffi", snake);
+    fn render(self) -> proc_macro2::TokenStream {
+        let CustomTypeSpec {
+            visibility,
+            name,
+            remote,
+            repr,
+            error,
+            into_ffi,
+            try_from_ffi,
+        } = self.spec;
 
-    TokenStream::from(quote! {
-        #[doc(hidden)]
-        #visibility fn #into_fn_name(value: &#remote) -> #repr {
-            (#into_ffi)(value)
+        let snake = naming::to_snake_case(&name.to_string());
+        let into_fn_name = format_ident!("__boltffi_custom_type_{}_into_ffi", snake);
+        let try_from_fn_name = format_ident!("__boltffi_custom_type_{}_try_from_ffi", snake);
+
+        quote! {
+            #[doc(hidden)]
+            #visibility fn #into_fn_name(value: &#remote) -> #repr {
+                (#into_ffi)(value)
+            }
+
+            #[doc(hidden)]
+            #visibility fn #try_from_fn_name(value: #repr) -> ::core::result::Result<#remote, #error> {
+                (#try_from_ffi)(value)
+            }
         }
-
-        #[doc(hidden)]
-        #visibility fn #try_from_fn_name(value: #repr) -> ::core::result::Result<#remote, #error> {
-            (#try_from_ffi)(value)
-        }
-    })
+    }
 }

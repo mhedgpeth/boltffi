@@ -1,5 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
+use boltffi_ffi_rules::callable::{CallableForm, ExecutionKind};
 use boltffi_ffi_rules::transport::{EnumTagStrategy, ScalarReturnStrategy, ValueReturnStrategy};
 
 use crate::ir::abi::{
@@ -168,11 +169,12 @@ impl<'a> KotlinLowerer<'a> {
             .into_iter()
             .filter_map(|id| self.builtin_import(&id))
             .collect::<Vec<_>>();
-        let has_async_callbacks = self
-            .contract
-            .catalog
-            .all_callbacks()
-            .any(|callback| callback.methods.iter().any(|method| method.is_async));
+        let has_async_callbacks = self.contract.catalog.all_callbacks().any(|callback| {
+            callback
+                .methods
+                .iter()
+                .any(|method| method.execution_kind() == ExecutionKind::Async)
+        });
         let coroutine_imports = if has_async_callbacks || has_streams {
             vec![
                 "kotlinx.coroutines.CoroutineScope".to_string(),
@@ -1335,7 +1337,7 @@ impl<'a> KotlinLowerer<'a> {
         let ffi_name = call.symbol.as_str().to_string();
         let include_handle = method.receiver != Receiver::Static;
         let err_type = self.error_type_name(&method.returns);
-        let rendered = if method.is_async {
+        let rendered = if method.execution_kind() == ExecutionKind::Async {
             let async_call = self.async_call_for_method(class, method, call);
             AsyncMethodTemplate {
                 method_name: &NamingConvention::method_name(method.id.as_str()),
@@ -1385,12 +1387,12 @@ impl<'a> KotlinLowerer<'a> {
             .unwrap()
         };
         KotlinMethod {
-            impl_: if method.is_async {
+            impl_: if method.execution_kind() == ExecutionKind::Async {
                 KotlinMethodImpl::AsyncMethod(rendered)
             } else {
                 KotlinMethodImpl::SyncMethod(rendered)
             },
-            is_static: method.receiver == Receiver::Static,
+            is_static: method.callable_form() == CallableForm::StaticMethod,
         }
     }
 
@@ -1463,7 +1465,7 @@ impl<'a> KotlinLowerer<'a> {
 
         KotlinMethod {
             impl_: KotlinMethodImpl::SyncMethod(rendered),
-            is_static: method.receiver == Receiver::Static,
+            is_static: method.callable_form() == CallableForm::StaticMethod,
         }
     }
 
@@ -1738,24 +1740,27 @@ impl<'a> KotlinLowerer<'a> {
         let callbacks_object = format!("{}Callbacks", interface_name);
         let bridge_name = format!("{}Bridge", interface_name);
         let proxy_class_name = format!("{}Proxy", interface_name);
-        let supports_proxy_wrap = callback.methods.iter().all(|method| !method.is_async);
+        let supports_proxy_wrap = callback
+            .methods
+            .iter()
+            .all(|method| method.execution_kind() == ExecutionKind::Sync);
         let sync_methods = callback
             .methods
             .iter()
-            .filter(|method| !method.is_async)
+            .filter(|method| method.execution_kind() == ExecutionKind::Sync)
             .map(|method| self.lower_callback_method(callback, method))
             .collect();
         let async_methods = callback
             .methods
             .iter()
-            .filter(|method| method.is_async)
+            .filter(|method| method.execution_kind() == ExecutionKind::Async)
             .map(|method| self.lower_async_callback_method(callback, method))
             .collect();
         let proxy_methods = if supports_proxy_wrap {
             callback
                 .methods
                 .iter()
-                .filter(|method| !method.is_async)
+                .filter(|method| method.execution_kind() == ExecutionKind::Sync)
                 .map(|method| self.render_callback_proxy_method(callback, method))
                 .collect()
         } else {
@@ -1765,7 +1770,7 @@ impl<'a> KotlinLowerer<'a> {
             callback
                 .methods
                 .iter()
-                .filter(|method| !method.is_async)
+                .filter(|method| method.execution_kind() == ExecutionKind::Sync)
                 .map(|method| self.lower_callback_proxy_native_method(callback, method))
                 .collect()
         } else {
@@ -2464,7 +2469,7 @@ impl<'a> KotlinLowerer<'a> {
                 callback
                     .methods
                     .iter()
-                    .filter(|method| method.is_async)
+                    .filter(|method| method.execution_kind() == ExecutionKind::Async)
                     .map(|method| {
                         let abi_method = self.abi_callback_method(&callback.id, &method.id);
                         let return_info = self.callback_return_info(
@@ -2554,7 +2559,7 @@ impl<'a> KotlinLowerer<'a> {
         let async_methods = class
             .methods
             .iter()
-            .filter(|m| m.is_async)
+            .filter(|method| method.is_async())
             .map(|method| {
                 let call = Self::strip_receiver(self.abi_call_for_method(class, method));
                 let async_call = match &call.mode {
@@ -2583,7 +2588,7 @@ impl<'a> KotlinLowerer<'a> {
         let sync_methods = class
             .methods
             .iter()
-            .filter(|m| !m.is_async)
+            .filter(|method| !method.is_async())
             .map(|method| {
                 let call = Self::strip_receiver(self.abi_call_for_method(class, method));
                 KotlinNativeSyncMethod {

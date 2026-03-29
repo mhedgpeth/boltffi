@@ -1,5 +1,6 @@
 use super::codec::compute_blittable_layout;
 use super::*;
+use boltffi_ffi_rules::callable::{CallableForm, ExecutionKind};
 
 #[derive(Debug, Clone)]
 pub(super) struct AbiCallbackParamPlan {
@@ -22,14 +23,13 @@ impl<'c> Lowerer<'c> {
             .map(|param| self.lower_param(param))
             .collect();
 
-        let kind = if func.is_async {
-            CallPlanKind::Async {
+        let kind = match func.execution_kind() {
+            ExecutionKind::Async => CallPlanKind::Async {
                 async_plan: self.build_async_plan(&func.returns),
-            }
-        } else {
-            CallPlanKind::Sync {
+            },
+            ExecutionKind::Sync => CallPlanKind::Sync {
                 returns: self.lower_return(&func.returns),
-            }
+            },
         };
 
         CallPlan {
@@ -46,7 +46,7 @@ impl<'c> Lowerer<'c> {
             .map(|param| self.lower_param(param))
             .collect();
 
-        if method.receiver != Receiver::Static {
+        if method.callable_form() == CallableForm::InstanceMethod {
             params.insert(
                 0,
                 ParamPlan {
@@ -64,14 +64,13 @@ impl<'c> Lowerer<'c> {
             );
         }
 
-        let kind = if method.is_async {
-            CallPlanKind::Async {
+        let kind = match method.execution_kind() {
+            ExecutionKind::Async => CallPlanKind::Async {
                 async_plan: self.build_async_plan(&method.returns),
-            }
-        } else {
-            CallPlanKind::Sync {
+            },
+            ExecutionKind::Sync => CallPlanKind::Sync {
                 returns: self.lower_return(&method.returns),
-            }
+            },
         };
 
         CallPlan {
@@ -225,14 +224,13 @@ impl<'c> Lowerer<'c> {
                     },
                 );
 
-                let kind = if method.is_async {
-                    CallPlanKind::Async {
+                let kind = match method.execution_kind() {
+                    ExecutionKind::Async => CallPlanKind::Async {
                         async_plan: self.build_async_plan(&method.returns),
-                    }
-                } else {
-                    CallPlanKind::Sync {
+                    },
+                    ExecutionKind::Sync => CallPlanKind::Sync {
                         returns: self.lower_return(&method.returns),
-                    }
+                    },
                 };
 
                 CallPlan {

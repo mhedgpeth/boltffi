@@ -8,12 +8,12 @@ use boltffi_ffi_rules::transport::{ReturnInvocationContext, ReturnPlatform, Valu
 
 use super::ParamLoweringState;
 use super::transform::is_primitive_vec_inner;
-use crate::callbacks::aliases::foreign_trait_path;
-use crate::callbacks::registry::CallbackTraitRegistry;
-use crate::lowering::returns::model::{ResolvedReturn, ReturnLoweringContext, ValueReturnStrategy};
-use crate::registries::custom_types::{
+use crate::index::CrateIndex;
+use crate::index::callback_traits::CallbackTraitRegistry;
+use crate::index::custom_types::{
     contains_custom_types, from_wire_expr_owned, to_wire_expr_owned, wire_type_for,
 };
+use crate::lowering::returns::model::{ResolvedReturn, ReturnLoweringContext, ValueReturnStrategy};
 
 struct CallbackBindingBuilder<'a> {
     return_lowering: &'a ReturnLoweringContext<'a>,
@@ -36,6 +36,122 @@ struct CallbackArgLowering {
     ffi_arg_types: Vec<proc_macro2::TokenStream>,
     prelude: proc_macro2::TokenStream,
     call_args: Vec<proc_macro2::TokenStream>,
+}
+
+enum CallbackTypeDescriptor {
+    Void,
+    String,
+    Primitive(Primitive),
+    Vec(Box<CallbackTypeDescriptor>),
+    Option(Box<CallbackTypeDescriptor>),
+    Result {
+        ok: Box<CallbackTypeDescriptor>,
+        err: Box<CallbackTypeDescriptor>,
+    },
+    Slice(Box<CallbackTypeDescriptor>),
+    Named(String),
+}
+
+impl CallbackTypeDescriptor {
+    fn parse(rust_type: &syn::Type) -> Self {
+        match rust_type {
+            syn::Type::Tuple(tuple) if tuple.elems.is_empty() => Self::Void,
+            syn::Type::Reference(reference) => Self::parse_reference(reference),
+            syn::Type::Slice(slice) => Self::Slice(Box::new(Self::parse(&slice.elem))),
+            syn::Type::Path(type_path) => Self::parse_path(&type_path.path),
+            _ => Self::Named(quote!(#rust_type).to_string().replace(' ', "")),
+        }
+    }
+
+    fn parse_reference(reference: &syn::TypeReference) -> Self {
+        match reference.elem.as_ref() {
+            syn::Type::Path(type_path)
+                if Self::path_last_segment_name(&type_path.path).as_deref() == Some("str") =>
+            {
+                Self::String
+            }
+            syn::Type::Slice(slice) => Self::Slice(Box::new(Self::parse(&slice.elem))),
+            other => Self::parse(other),
+        }
+    }
+
+    fn parse_path(type_path: &syn::Path) -> Self {
+        let Some(last_segment) = type_path.segments.last() else {
+            return Self::Named(String::new());
+        };
+
+        let type_name = last_segment.ident.to_string();
+        if let Ok(primitive) = type_name.parse::<Primitive>() {
+            return Self::Primitive(primitive);
+        }
+
+        match type_name.as_str() {
+            "String" => Self::String,
+            "Vec" => Self::parse_single_argument(last_segment)
+                .map(|inner| Self::Vec(Box::new(inner)))
+                .unwrap_or_else(|| Self::Named(type_name)),
+            "Option" => Self::parse_single_argument(last_segment)
+                .map(|inner| Self::Option(Box::new(inner)))
+                .unwrap_or_else(|| Self::Named(type_name)),
+            "Result" => {
+                Self::parse_result_arguments(last_segment).unwrap_or(Self::Named(type_name))
+            }
+            _ => Self::Named(type_name),
+        }
+    }
+
+    fn parse_single_argument(segment: &syn::PathSegment) -> Option<Self> {
+        Self::generic_type_arguments(segment)
+            .and_then(|mut arguments| (arguments.len() == 1).then(|| arguments.remove(0)))
+            .map(|rust_type| Self::parse(&rust_type))
+    }
+
+    fn parse_result_arguments(segment: &syn::PathSegment) -> Option<Self> {
+        let mut arguments = Self::generic_type_arguments(segment)?;
+        (arguments.len() == 2).then(|| Self::Result {
+            ok: Box::new(Self::parse(&arguments.remove(0))),
+            err: Box::new(Self::parse(&arguments.remove(0))),
+        })
+    }
+
+    fn generic_type_arguments(segment: &syn::PathSegment) -> Option<Vec<syn::Type>> {
+        match &segment.arguments {
+            syn::PathArguments::AngleBracketed(arguments) => Some(
+                arguments
+                    .args
+                    .iter()
+                    .filter_map(|argument| match argument {
+                        syn::GenericArgument::Type(rust_type) => Some(rust_type.clone()),
+                        _ => None,
+                    })
+                    .collect(),
+            ),
+            _ => None,
+        }
+    }
+
+    fn path_last_segment_name(type_path: &syn::Path) -> Option<String> {
+        type_path
+            .segments
+            .last()
+            .map(|segment| segment.ident.to_string())
+    }
+
+    fn into_type_id(self) -> callback_naming::TypeId {
+        match self {
+            Self::Void => callback_naming::TypeId::Void,
+            Self::String => callback_naming::TypeId::String,
+            Self::Primitive(primitive) => callback_naming::TypeId::Primitive(primitive),
+            Self::Vec(inner) => callback_naming::TypeId::Vec(Box::new(inner.into_type_id())),
+            Self::Option(inner) => callback_naming::TypeId::Option(Box::new(inner.into_type_id())),
+            Self::Result { ok, err } => callback_naming::TypeId::Result {
+                ok: Box::new(ok.into_type_id()),
+                err: Box::new(err.into_type_id()),
+            },
+            Self::Slice(inner) => callback_naming::TypeId::Slice(Box::new(inner.into_type_id())),
+            Self::Named(name) => callback_naming::TypeId::Named(name),
+        }
+    }
 }
 
 impl<'a> CallbackBindingBuilder<'a> {
@@ -124,11 +240,11 @@ impl<'a> CallbackBindingBuilder<'a> {
     ) -> proc_macro2::TokenStream {
         let type_ids: Vec<callback_naming::TypeId> = arg_types
             .iter()
-            .map(callback_type_id_from_syn_type)
+            .map(|arg_type| CallbackTypeDescriptor::parse(arg_type).into_type_id())
             .collect();
 
         let return_type_id = returns
-            .map(callback_type_id_from_syn_type)
+            .map(|return_type| CallbackTypeDescriptor::parse(return_type).into_type_id())
             .unwrap_or(callback_naming::TypeId::Void);
 
         let callback_id_snake =
@@ -284,7 +400,18 @@ impl<'a> CallbackBindingBuilder<'a> {
             };
         }
 
-        let foreign_path = foreign_trait_path(trait_path);
+        let foreign_path = CrateIndex::for_current_crate()
+            .map(|crate_index| crate_index.path_resolver().resolve_foreign_path(trait_path))
+            .unwrap_or_else(|_| {
+                let mut unresolved_foreign_path = trait_path.clone();
+                if let Some(last_segment) = unresolved_foreign_path.segments.last_mut() {
+                    last_segment.ident = syn::Ident::new(
+                        &format!("Foreign{}", last_segment.ident),
+                        last_segment.ident.span(),
+                    );
+                }
+                unresolved_foreign_path
+            });
         let trait_name = quote!(#trait_path).to_string();
         let message = format!(
             "boltffi: cannot resolve callback trait `impl {}`. If this is a cross-crate async callback, use the full module path or make the trait object-safe with #[async_trait], e.g. `impl crate::path::to::{}` or `Box<dyn {}>`.",
@@ -587,93 +714,6 @@ impl<'a> SyncCallbackParamLowerer<'a> {
 
 fn is_passable_return(resolved_return: &ResolvedReturn) -> bool {
     resolved_return.is_passable_value()
-}
-
-fn callback_type_id_from_syn_type(rust_type: &syn::Type) -> callback_naming::TypeId {
-    match rust_type {
-        syn::Type::Tuple(tuple) if tuple.elems.is_empty() => callback_naming::TypeId::Void,
-        syn::Type::Reference(reference) => match reference.elem.as_ref() {
-            syn::Type::Path(type_path)
-                if path_last_segment_name(&type_path.path).as_deref() == Some("str") =>
-            {
-                callback_naming::TypeId::String
-            }
-            syn::Type::Slice(slice) => callback_naming::TypeId::Slice(Box::new(
-                callback_type_id_from_syn_type(&slice.elem),
-            )),
-            other => callback_type_id_from_syn_type(other),
-        },
-        syn::Type::Slice(slice) => {
-            callback_naming::TypeId::Slice(Box::new(callback_type_id_from_syn_type(&slice.elem)))
-        }
-        syn::Type::Path(type_path) => callback_type_id_from_path(&type_path.path),
-        _ => {
-            let type_name = quote!(#rust_type).to_string().replace(' ', "");
-            callback_naming::TypeId::Named(type_name)
-        }
-    }
-}
-
-fn callback_type_id_from_path(type_path: &syn::Path) -> callback_naming::TypeId {
-    let Some(last_segment) = type_path.segments.last() else {
-        return callback_naming::TypeId::Named(String::new());
-    };
-
-    let type_name = last_segment.ident.to_string();
-    if let Ok(primitive) = type_name.parse::<Primitive>() {
-        return callback_naming::TypeId::Primitive(primitive);
-    }
-
-    match type_name.as_str() {
-        "String" => callback_naming::TypeId::String,
-        "Vec" => single_generic_type_id(last_segment)
-            .map(|inner| callback_naming::TypeId::Vec(Box::new(inner)))
-            .unwrap_or_else(|| callback_naming::TypeId::Named(type_name)),
-        "Option" => single_generic_type_id(last_segment)
-            .map(|inner| callback_naming::TypeId::Option(Box::new(inner)))
-            .unwrap_or_else(|| callback_naming::TypeId::Named(type_name)),
-        "Result" => {
-            result_type_id(last_segment).unwrap_or(callback_naming::TypeId::Named(type_name))
-        }
-        _ => callback_naming::TypeId::Named(type_name),
-    }
-}
-
-fn single_generic_type_id(segment: &syn::PathSegment) -> Option<callback_naming::TypeId> {
-    generic_type_arguments(segment)
-        .and_then(|mut arguments| (arguments.len() == 1).then(|| arguments.remove(0)))
-        .map(|rust_type| callback_type_id_from_syn_type(&rust_type))
-}
-
-fn result_type_id(segment: &syn::PathSegment) -> Option<callback_naming::TypeId> {
-    let mut arguments = generic_type_arguments(segment)?;
-    (arguments.len() == 2).then(|| callback_naming::TypeId::Result {
-        ok: Box::new(callback_type_id_from_syn_type(&arguments.remove(0))),
-        err: Box::new(callback_type_id_from_syn_type(&arguments.remove(0))),
-    })
-}
-
-fn generic_type_arguments(segment: &syn::PathSegment) -> Option<Vec<syn::Type>> {
-    match &segment.arguments {
-        syn::PathArguments::AngleBracketed(arguments) => Some(
-            arguments
-                .args
-                .iter()
-                .filter_map(|argument| match argument {
-                    syn::GenericArgument::Type(rust_type) => Some(rust_type.clone()),
-                    _ => None,
-                })
-                .collect(),
-        ),
-        _ => None,
-    }
-}
-
-fn path_last_segment_name(type_path: &syn::Path) -> Option<String> {
-    type_path
-        .segments
-        .last()
-        .map(|segment| segment.ident.to_string())
 }
 
 pub(super) struct AsyncCallbackParamLowerer<'a> {

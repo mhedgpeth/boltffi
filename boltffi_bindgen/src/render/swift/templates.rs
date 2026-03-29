@@ -310,6 +310,7 @@ mod tests {
         SwiftConstructor, SwiftConversion, SwiftEnumStyle, SwiftFunction, SwiftMethod, SwiftParam,
         SwiftReturn, SwiftStream, SwiftStreamMode, SwiftVariantPayload,
     };
+    use boltffi_ffi_rules::callable::ExecutionKind;
 
     fn val(name: &str) -> ValueExpr {
         ValueExpr::Var(name.to_string())
@@ -1035,7 +1036,7 @@ mod tests {
                     ),
                 }],
                 returns: SwiftReturn::Void,
-                is_async: false,
+                execution_kind: ExecutionKind::Sync,
                 has_out_param: false,
                 doc: None,
             }],
@@ -1071,7 +1072,7 @@ mod tests {
                 returns: SwiftReturn::Direct {
                     swift_type: "Bool".to_string(),
                 },
-                is_async: false,
+                execution_kind: ExecutionKind::Sync,
                 has_out_param: true,
                 doc: None,
             }],
@@ -1353,7 +1354,7 @@ mod tests {
                     ),
                 }],
                 returns: SwiftReturn::Void,
-                is_async: true,
+                execution_kind: ExecutionKind::Async,
                 has_out_param: false,
                 doc: None,
             }],

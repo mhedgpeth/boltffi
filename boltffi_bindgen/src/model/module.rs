@@ -2,6 +2,8 @@ use std::collections::{HashMap, HashSet};
 
 use serde::{Deserialize, Serialize};
 
+use boltffi_ffi_rules::callable::ExecutionKind;
+
 use super::callback_trait::CallbackTrait;
 use super::class::Class;
 use super::custom_type::CustomType;
@@ -107,15 +109,21 @@ impl Module {
     }
 
     pub fn has_async(&self) -> bool {
-        self.functions.iter().any(|f| f.is_async)
-            || self
-                .classes
-                .iter()
-                .any(|c| c.methods.iter().any(|m| m.is_async))
-            || self
-                .records
-                .iter()
-                .any(|r| r.methods.iter().any(|m| m.is_async))
+        self.functions
+            .iter()
+            .any(|function| function.execution_kind == ExecutionKind::Async)
+            || self.classes.iter().any(|class| {
+                class
+                    .methods
+                    .iter()
+                    .any(|method| method.execution_kind == ExecutionKind::Async)
+            })
+            || self.records.iter().any(|record| {
+                record
+                    .methods
+                    .iter()
+                    .any(|method| method.execution_kind == ExecutionKind::Async)
+            })
     }
 
     pub fn has_streams(&self) -> bool {

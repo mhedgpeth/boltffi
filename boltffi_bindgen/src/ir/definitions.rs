@@ -1,3 +1,4 @@
+use boltffi_ffi_rules::callable::{CallableForm, ExecutionKind};
 use boltffi_ffi_rules::classification::{self, FieldPrimitive, PassableCategory};
 
 use crate::ir::abi::CallId;
@@ -183,9 +184,23 @@ pub struct FunctionDef {
     pub id: FunctionId,
     pub params: Vec<ParamDef>,
     pub returns: ReturnDef,
-    pub is_async: bool,
+    pub execution_kind: ExecutionKind,
     pub doc: Option<String>,
     pub deprecated: Option<DeprecationInfo>,
+}
+
+impl FunctionDef {
+    pub fn is_async(&self) -> bool {
+        self.execution_kind == ExecutionKind::Async
+    }
+
+    pub fn callable_form(&self) -> CallableForm {
+        CallableForm::Function
+    }
+
+    pub fn execution_kind(&self) -> ExecutionKind {
+        self.execution_kind
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -316,9 +331,23 @@ pub struct MethodDef {
     pub receiver: Receiver,
     pub params: Vec<ParamDef>,
     pub returns: ReturnDef,
-    pub is_async: bool,
+    pub execution_kind: ExecutionKind,
     pub doc: Option<String>,
     pub deprecated: Option<DeprecationInfo>,
+}
+
+impl MethodDef {
+    pub fn is_async(&self) -> bool {
+        self.execution_kind == ExecutionKind::Async
+    }
+
+    pub fn callable_form(&self) -> CallableForm {
+        self.receiver.callable_form()
+    }
+
+    pub fn execution_kind(&self) -> ExecutionKind {
+        self.execution_kind
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -327,6 +356,15 @@ pub enum Receiver {
     RefSelf,
     RefMutSelf,
     OwnedSelf,
+}
+
+impl Receiver {
+    pub fn callable_form(self) -> CallableForm {
+        match self {
+            Self::Static => CallableForm::StaticMethod,
+            Self::RefSelf | Self::RefMutSelf | Self::OwnedSelf => CallableForm::InstanceMethod,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -348,8 +386,18 @@ pub struct CallbackMethodDef {
     pub id: MethodId,
     pub params: Vec<ParamDef>,
     pub returns: ReturnDef,
-    pub is_async: bool,
+    pub execution_kind: ExecutionKind,
     pub doc: Option<String>,
+}
+
+impl CallbackMethodDef {
+    pub fn is_async(&self) -> bool {
+        self.execution_kind == ExecutionKind::Async
+    }
+
+    pub fn execution_kind(&self) -> ExecutionKind {
+        self.execution_kind
+    }
 }
 
 #[derive(Debug, Clone)]

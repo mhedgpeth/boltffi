@@ -696,6 +696,7 @@ mod tests {
     use crate::ir::ids::{CallbackId, ClassId, FunctionId, MethodId, ParamName};
     use crate::ir::types::{PrimitiveType, TypeExpr};
     use crate::render::java::JavaVersion;
+    use boltffi_ffi_rules::callable::ExecutionKind;
     use std::env;
     use std::fs;
     use std::process::Command;
@@ -748,7 +749,7 @@ mod tests {
             receiver: Receiver::RefSelf,
             params,
             returns,
-            is_async: false,
+            execution_kind: ExecutionKind::Sync,
             doc: None,
             deprecated: None,
         }
@@ -763,7 +764,7 @@ mod tests {
             id: MethodId::from(name),
             params,
             returns,
-            is_async: true,
+            execution_kind: ExecutionKind::Async,
             doc: None,
         }
     }
@@ -905,7 +906,7 @@ mod tests {
                 id: MethodId::from("on_value"),
                 params: vec![param("value", TypeExpr::Primitive(PrimitiveType::I32))],
                 returns: ReturnDef::Value(TypeExpr::Primitive(PrimitiveType::I32)),
-                is_async: false,
+                execution_kind: ExecutionKind::Sync,
                 doc: None,
             }],
             kind: CallbackKind::Trait,
@@ -915,7 +916,7 @@ mod tests {
             id: FunctionId::new("next_listener"),
             params: vec![],
             returns: ReturnDef::Value(TypeExpr::Callback(CallbackId::new("Listener"))),
-            is_async: false,
+            execution_kind: ExecutionKind::Sync,
             doc: None,
             deprecated: None,
         });
@@ -961,7 +962,7 @@ mod tests {
             id: FunctionId::new(name),
             params,
             returns,
-            is_async: true,
+            execution_kind: ExecutionKind::Async,
             doc: None,
             deprecated: None,
         }
@@ -973,7 +974,7 @@ mod tests {
             receiver: Receiver::RefSelf,
             params,
             returns,
-            is_async: true,
+            execution_kind: ExecutionKind::Async,
             doc: None,
             deprecated: None,
         }
@@ -985,7 +986,7 @@ mod tests {
             receiver: Receiver::Static,
             params,
             returns,
-            is_async: false,
+            execution_kind: ExecutionKind::Sync,
             doc: None,
             deprecated: None,
         }
