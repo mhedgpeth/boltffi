@@ -3,7 +3,7 @@ use proc_macro2::Span;
 use quote::quote;
 use syn::Type;
 
-use crate::registries::custom_types::{self, CustomTypeRegistry};
+use crate::index::custom_types::{self, CustomTypeRegistry};
 
 use super::classify::ReturnTypeDescriptor;
 use super::model::{

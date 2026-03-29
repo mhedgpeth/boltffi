@@ -5,9 +5,9 @@ pub use boltffi_ffi_rules::transport::{
 };
 use syn::{ReturnType, Type};
 
+use crate::index::custom_types::CustomTypeRegistry;
+use crate::index::data_types::DataTypeRegistry;
 use crate::lowering::transport::NamedTypeTransportClassifier;
-use crate::registries::custom_types::CustomTypeRegistry;
-use crate::registries::data_types::DataTypeRegistry;
 
 use super::classify::classify_value_return_strategy;
 

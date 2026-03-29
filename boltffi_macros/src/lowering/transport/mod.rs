@@ -1,7 +1,7 @@
 use syn::Type;
 
-use crate::registries::custom_types::{CustomTypeRegistry, contains_custom_types};
-use crate::registries::data_types::{DataTypeCategory, DataTypeRegistry};
+use crate::index::custom_types::{CustomTypeRegistry, contains_custom_types};
+use crate::index::data_types::{DataTypeCategory, DataTypeRegistry};
 
 mod type_shape;
 

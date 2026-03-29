@@ -13,9 +13,8 @@ use self::native::NativeCallbackMethodExpander;
 use self::wasm::{WasmCallbackMethodExpander, WasmMethodExpansion};
 
 use crate::callbacks::snake_case_ident;
+use crate::index::CrateIndex;
 use crate::lowering::returns::model::ReturnLoweringContext;
-use crate::registries::custom_types;
-use crate::registries::data_types;
 
 pub(super) struct CallbackReturnType<'a> {
     rust_type: &'a Type,
@@ -66,8 +65,9 @@ pub fn ffi_trait_impl(item: TokenStream) -> TokenStream {
 }
 
 fn expand_ffi_trait(item_trait: syn::ItemTrait) -> Result<proc_macro2::TokenStream, syn::Error> {
-    let custom_types = custom_types::registry_for_current_crate()?;
-    let data_types = data_types::registry_for_current_crate()?;
+    let crate_index = CrateIndex::for_current_crate()?;
+    let custom_types = crate_index.custom_types().clone();
+    let data_types = crate_index.data_types().clone();
     let return_lowering = ReturnLoweringContext::new(&custom_types, &data_types);
     let trait_name = &item_trait.ident;
     let trait_name_snake = snake_case_ident(trait_name);

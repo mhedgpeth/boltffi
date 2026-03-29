@@ -1,9 +1,9 @@
 use syn::Type;
 
+use crate::index::data_types::DataTypeCategory;
 use crate::lowering::transport::{
     NamedTypeTransport, RustTypeShape, StandardContainer, TypeDescriptor,
 };
-use crate::registries::data_types::DataTypeCategory;
 
 use super::model::{
     EncodedReturnStrategy, ReturnLoweringContext, ScalarReturnStrategy, ValueReturnStrategy,

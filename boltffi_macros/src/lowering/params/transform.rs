@@ -7,10 +7,10 @@ use boltffi_ffi_rules::transport::{
 use quote::quote;
 use syn::Type;
 
+use crate::index::data_types::DataTypeCategory;
 use crate::lowering::transport::{
     NamedTypeTransport, NamedTypeTransportClassifier, StandardContainer, TypeShapeExt,
 };
-use crate::registries::data_types::DataTypeCategory;
 
 pub(super) fn ptr_ident(base: &syn::Ident) -> syn::Ident {
     syn::Ident::new(

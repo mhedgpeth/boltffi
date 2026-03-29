@@ -5,12 +5,12 @@ use quote::{format_ident, quote};
 use super::CallbackReturnType;
 use super::lowered_return::LoweredCallbackReturn;
 use crate::callbacks::snake_case_ident;
+use crate::index::custom_types::CustomTypeRegistry;
+use crate::index::custom_types::{contains_custom_types, from_wire_expr_owned, wire_type_for};
 use crate::lowering::returns::lower::encoded_return_buffer_expression;
 use crate::lowering::returns::model::{
     ReturnLoweringContext, ScalarReturnStrategy, ValueReturnStrategy,
 };
-use crate::registries::custom_types::CustomTypeRegistry;
-use crate::registries::custom_types::{contains_custom_types, from_wire_expr_owned, wire_type_for};
 
 const WASM_FOREIGN_CALLBACK_HANDLE_START: u32 = 0x8000_0000;
 

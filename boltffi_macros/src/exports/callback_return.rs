@@ -2,7 +2,7 @@ use proc_macro2::TokenStream;
 use quote::quote;
 use syn::{ReturnType, Type};
 
-use crate::callbacks::registry::CallbackTraitRegistry;
+use crate::index::callback_traits::CallbackTraitRegistry;
 use crate::lowering::transport::{StandardContainer, TypeShapeExt};
 
 #[derive(Clone)]

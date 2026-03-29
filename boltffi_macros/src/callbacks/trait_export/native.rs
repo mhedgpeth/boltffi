@@ -5,8 +5,8 @@ use quote::quote;
 use super::CallbackReturnType;
 use super::lowered_return::LoweredCallbackReturn;
 use crate::callbacks::snake_case_ident;
+use crate::index::custom_types;
 use crate::lowering::returns::model::{ReturnLoweringContext, ValueReturnStrategy};
-use crate::registries::custom_types;
 
 pub(super) struct NativeCallbackMethodExpander<'a> {
     method: &'a syn::TraitItemFn,
