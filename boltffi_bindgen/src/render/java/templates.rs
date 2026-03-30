@@ -99,7 +99,8 @@ mod tests {
     use crate::render::java::JavaVersion;
     use crate::render::java::plan::{
         JavaAsyncMode, JavaClassMethod, JavaConstructor, JavaConstructorKind, JavaFunction,
-        JavaInputBindings, JavaParam, JavaReturnPlan, JavaReturnRender, JavaWireWriter,
+        JavaInputBindings, JavaParam, JavaReturnPlan, JavaReturnRender, JavaStream, JavaStreamMode,
+        JavaWireWriter,
     };
 
     fn java_param(name: &str, java_type: &str, native_type: &str, native_expr: &str) -> JavaParam {
@@ -327,5 +328,103 @@ mod tests {
         assert!(source.contains("static native long boltffi_counter_new();"));
         assert!(source.contains("static native int boltffi_counter_global_count();"));
         assert!(source.contains("static native int boltffi_counter_get(long handle);"));
+    }
+
+    #[test]
+    fn class_template_uses_single_stream_subscription_for_all_stream_modes() {
+        let class = JavaClass {
+            class_name: "EventBus".to_string(),
+            ffi_free: "boltffi_event_bus_free".to_string(),
+            constructors: vec![],
+            methods: vec![],
+            streams: vec![
+                JavaStream {
+                    name: "subscribeValues".to_string(),
+                    item_type: "Integer".to_string(),
+                    pop_batch_items_expr: "WireReader.readPackedInts(_bytes)".to_string(),
+                    subscribe: "boltffi_event_bus_subscribe_values".to_string(),
+                    poll: "boltffi_event_bus_subscribe_values_poll".to_string(),
+                    pop_batch: "boltffi_event_bus_subscribe_values_pop_batch".to_string(),
+                    wait: "boltffi_event_bus_subscribe_values_wait".to_string(),
+                    unsubscribe: "boltffi_event_bus_subscribe_values_unsubscribe".to_string(),
+                    free: "boltffi_event_bus_subscribe_values_free".to_string(),
+                    mode: JavaStreamMode::Async,
+                },
+                JavaStream {
+                    name: "subscribeValuesBatch".to_string(),
+                    item_type: "Integer".to_string(),
+                    pop_batch_items_expr: "WireReader.readPackedInts(_bytes)".to_string(),
+                    subscribe: "boltffi_event_bus_subscribe_values_batch".to_string(),
+                    poll: "boltffi_event_bus_subscribe_values_batch_poll".to_string(),
+                    pop_batch: "boltffi_event_bus_subscribe_values_batch_pop_batch".to_string(),
+                    wait: "boltffi_event_bus_subscribe_values_batch_wait".to_string(),
+                    unsubscribe: "boltffi_event_bus_subscribe_values_batch_unsubscribe".to_string(),
+                    free: "boltffi_event_bus_subscribe_values_batch_free".to_string(),
+                    mode: JavaStreamMode::Batch,
+                },
+                JavaStream {
+                    name: "subscribeValuesCallback".to_string(),
+                    item_type: "Integer".to_string(),
+                    pop_batch_items_expr: "WireReader.readPackedInts(_bytes)".to_string(),
+                    subscribe: "boltffi_event_bus_subscribe_values_callback".to_string(),
+                    poll: "boltffi_event_bus_subscribe_values_callback_poll".to_string(),
+                    pop_batch: "boltffi_event_bus_subscribe_values_callback_pop_batch".to_string(),
+                    wait: "boltffi_event_bus_subscribe_values_callback_wait".to_string(),
+                    unsubscribe: "boltffi_event_bus_subscribe_values_callback_unsubscribe"
+                        .to_string(),
+                    free: "boltffi_event_bus_subscribe_values_callback_free".to_string(),
+                    mode: JavaStreamMode::Callback,
+                },
+            ],
+        };
+
+        let source = ClassTemplate {
+            class: &class,
+            package_name: "com.test",
+            async_mode: &JavaAsyncMode::CompletableFuture,
+        }
+        .render()
+        .expect("class template should render");
+
+        assert!(source.contains("public StreamSubscription<Integer> subscribeValues(java.util.function.Consumer<Integer> callback)"));
+        assert!(source.contains("public StreamSubscription<Integer> subscribeValuesBatch()"));
+        assert!(source.contains("public StreamSubscription<Integer> subscribeValuesCallback(java.util.function.Consumer<Integer> callback)"));
+    }
+
+    #[test]
+    fn preamble_template_renders_live_stream_publisher() {
+        let class = JavaClass {
+            class_name: "EventBus".to_string(),
+            ffi_free: "boltffi_event_bus_free".to_string(),
+            constructors: vec![],
+            methods: vec![],
+            streams: vec![JavaStream {
+                name: "subscribeValuesBatch".to_string(),
+                item_type: "Integer".to_string(),
+                pop_batch_items_expr: "WireReader.readPackedInts(_bytes)".to_string(),
+                subscribe: "boltffi_event_bus_subscribe_values_batch".to_string(),
+                poll: "boltffi_event_bus_subscribe_values_batch_poll".to_string(),
+                pop_batch: "boltffi_event_bus_subscribe_values_batch_pop_batch".to_string(),
+                wait: "boltffi_event_bus_subscribe_values_batch_wait".to_string(),
+                unsubscribe: "boltffi_event_bus_subscribe_values_batch_unsubscribe".to_string(),
+                free: "boltffi_event_bus_subscribe_values_batch_free".to_string(),
+                mode: JavaStreamMode::Batch,
+            }],
+        };
+        let module = java_module(vec![class]);
+
+        let source = PreambleTemplate { module: &module }
+            .render()
+            .expect("preamble template should render");
+
+        assert!(source.contains("final class StreamSubscription<T> implements AutoCloseable"));
+        assert!(
+            source.contains("static <T> StreamSubscription<T> callback(Runnable cancelAction)")
+        );
+        assert!(source.contains("static <T> StreamSubscription<T> batch("));
+        assert!(source.contains("requireBatchMode(\"toPublisher\")"));
+        assert!(source.contains("if (!publisherAttached.compareAndSet(false, true))"));
+        assert!(source.contains("int waitResult = waitFn.apply(handle, WAIT_TIMEOUT_MILLIS);"));
+        assert!(source.contains("subscriber.onComplete();"));
     }
 }

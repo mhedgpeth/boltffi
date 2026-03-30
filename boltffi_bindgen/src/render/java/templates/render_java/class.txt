@@ -398,7 +398,7 @@ public final class {{ class.class_name }} implements AutoCloseable {
 
     public StreamSubscription<{{ stream.item_type }}> {{ stream.name }}(java.util.function.Consumer<{{ stream.item_type }}> callback) {
         long subscription = Native.{{ stream.subscribe }}(handle);
-        if (subscription == 0L) return new StreamSubscription<>(0L, null, null, null, _h -> {}, _h -> {}, _bytes -> java.util.Collections.emptyList());
+        if (subscription == 0L) return StreamSubscription.callback(() -> {});
         BoltFFIStreamContext context = new BoltFFIStreamContext(
             subscription, 16L,
             Native::{{ stream.pop_batch }},
@@ -409,16 +409,13 @@ public final class {{ class.class_name }} implements AutoCloseable {
             () -> {}
         );
         context.start();
-        return new StreamSubscription<>(subscription, context,
-            Native::{{ stream.pop_batch }}, null,
-            Native::{{ stream.unsubscribe }}, Native::{{ stream.free }},
-            _bytes -> {{ stream.pop_batch_items_expr }});
+        return StreamSubscription.callback(context::requestTermination);
     }
 {%- when crate::render::java::plan::JavaStreamMode::Batch %}
 
     public StreamSubscription<{{ stream.item_type }}> {{ stream.name }}() {
-        return new StreamSubscription<>(
-            Native.{{ stream.subscribe }}(handle), null,
+        return StreamSubscription.batch(
+            Native.{{ stream.subscribe }}(handle),
             Native::{{ stream.pop_batch }},
             Native::{{ stream.wait }},
             Native::{{ stream.unsubscribe }},
@@ -430,7 +427,7 @@ public final class {{ class.class_name }} implements AutoCloseable {
 
     public StreamSubscription<{{ stream.item_type }}> {{ stream.name }}(java.util.function.Consumer<{{ stream.item_type }}> callback) {
         long subscription = Native.{{ stream.subscribe }}(handle);
-        if (subscription == 0L) return new StreamSubscription<>(0L, null, null, null, _h -> {}, _h -> {}, _bytes -> java.util.Collections.emptyList());
+        if (subscription == 0L) return StreamSubscription.callback(() -> {});
         BoltFFIStreamContext context = new BoltFFIStreamContext(
             subscription, 16L,
             Native::{{ stream.pop_batch }},
@@ -441,12 +438,8 @@ public final class {{ class.class_name }} implements AutoCloseable {
             () -> {}
         );
         context.start();
-        return new StreamSubscription<>(subscription, context,
-            Native::{{ stream.pop_batch }}, null,
-            Native::{{ stream.unsubscribe }}, Native::{{ stream.free }},
-            _bytes -> {{ stream.pop_batch_items_expr }});
+        return StreamSubscription.callback(context::requestTermination);
     }
 {%- endmatch %}
 {%- endfor %}
 }
-

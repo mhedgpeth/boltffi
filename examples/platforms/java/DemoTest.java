@@ -954,7 +954,7 @@ public final class DemoTest {
             java.util.concurrent.CopyOnWriteArrayList<Integer> received = new java.util.concurrent.CopyOnWriteArrayList<>();
 
             EventBus bus = new EventBus();
-            StreamSubscription<Integer> cancellable = bus.subscribeValues(value -> {
+            StreamSubscription<Integer> subscription = bus.subscribeValues(value -> {
                 received.add(value);
                 latch.countDown();
             });
@@ -970,7 +970,7 @@ public final class DemoTest {
             assert received.contains(20) : "async stream should contain 20";
             assert received.contains(30) : "async stream should contain 30";
 
-            cancellable.close();
+            subscription.close();
             bus.close();
         } catch (Exception e) {
             throw new RuntimeException("async stream test failed", e);
@@ -980,7 +980,7 @@ public final class DemoTest {
         System.out.println("Testing streams (batch mode)...");
         try {
             EventBus bus = new EventBus();
-            StreamSubscription<Integer> sub = bus.subscribeValuesBatch();
+            StreamSubscription<Integer> subscription = bus.subscribeValuesBatch();
 
             bus.emitValue(100);
             bus.emitValue(200);
@@ -988,13 +988,13 @@ public final class DemoTest {
 
             Thread.sleep(100);
 
-            java.util.List<Integer> batch = sub.popBatch(16);
+            java.util.List<Integer> batch = subscription.popBatch(16);
             assert batch.size() >= 3 : "batch stream should have at least 3 items, got " + batch.size();
             assert batch.contains(100) : "batch should contain 100";
             assert batch.contains(200) : "batch should contain 200";
             assert batch.contains(300) : "batch should contain 300";
 
-            sub.close();
+            subscription.close();
             bus.close();
         } catch (Exception e) {
             throw new RuntimeException("batch stream test failed", e);
@@ -1007,7 +1007,7 @@ public final class DemoTest {
             java.util.concurrent.CopyOnWriteArrayList<Integer> received = new java.util.concurrent.CopyOnWriteArrayList<>();
 
             EventBus bus = new EventBus();
-            StreamSubscription<Integer> cancellable = bus.subscribeValuesCallback(value -> {
+            StreamSubscription<Integer> subscription = bus.subscribeValuesCallback(value -> {
                 received.add(value);
                 latch.countDown();
             });
@@ -1023,7 +1023,7 @@ public final class DemoTest {
             assert received.contains(2000) : "callback stream should contain 2000";
             assert received.contains(3000) : "callback stream should contain 3000";
 
-            cancellable.close();
+            subscription.close();
             bus.close();
         } catch (Exception e) {
             throw new RuntimeException("callback stream test failed", e);
