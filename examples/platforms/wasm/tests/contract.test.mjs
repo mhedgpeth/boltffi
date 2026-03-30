@@ -15,41 +15,84 @@ const unsupportedTopLevelFunctions = new Set();
 const unsupportedTypeMembers = new Set([
   "classes/streams.rs::EventBus::subscribeValues",
   "classes/streams.rs::EventBus::subscribePoints",
-  "enums/c_style.rs::Direction::new",
-  "enums/c_style.rs::Direction::cardinal",
-  "enums/c_style.rs::Direction::fromDegrees",
-  "enums/c_style.rs::Direction::opposite",
-  "enums/c_style.rs::Direction::isHorizontal",
-  "enums/c_style.rs::Direction::label",
-  "enums/c_style.rs::Direction::count",
-  "enums/data_enum.rs::Shape::new",
-  "enums/data_enum.rs::Shape::unitCircle",
-  "enums/data_enum.rs::Shape::square",
-  "enums/data_enum.rs::Shape::tryCircle",
-  "enums/data_enum.rs::Shape::area",
-  "enums/data_enum.rs::Shape::describe",
-  "enums/data_enum.rs::Shape::variantCount",
-  "records/blittable.rs::Point::new",
-  "records/blittable.rs::Point::origin",
-  "records/blittable.rs::Point::fromPolar",
-  "records/blittable.rs::Point::tryUnit",
-  "records/blittable.rs::Point::checkedUnit",
-  "records/blittable.rs::Point::distance",
-  "records/blittable.rs::Point::scale",
-  "records/blittable.rs::Point::add",
-  "records/blittable.rs::Point::dimensions",
+]);
+
+const tsKeywords = new Set([
+  "break",
+  "case",
+  "catch",
+  "class",
+  "const",
+  "continue",
+  "debugger",
+  "default",
+  "delete",
+  "do",
+  "else",
+  "enum",
+  "export",
+  "extends",
+  "false",
+  "finally",
+  "for",
+  "function",
+  "if",
+  "import",
+  "in",
+  "instanceof",
+  "new",
+  "null",
+  "return",
+  "super",
+  "switch",
+  "this",
+  "throw",
+  "true",
+  "try",
+  "typeof",
+  "var",
+  "void",
+  "while",
+  "with",
+  "yield",
+  "let",
+  "static",
+  "implements",
+  "interface",
+  "package",
+  "private",
+  "protected",
+  "public",
+  "type",
 ]);
 
 function snakeToCamel(name) {
   return name.replace(/_([a-z])/g, (_, char) => char.toUpperCase());
 }
 
+function escapeTsName(name) {
+  return tsKeywords.has(name) ? `${name}_` : name;
+}
+
 function rustSignatureKey(rustFile, rustName) {
-  return `${rustFile}::${snakeToCamel(rustName)}`;
+  return `${rustFile}::${escapeTsName(snakeToCamel(rustName))}`;
 }
 
 function rustMemberKey(rustFile, typeName, rustName) {
-  return `${rustFile}::${typeName}::${snakeToCamel(rustName)}`;
+  return `${rustFile}::${typeName}::${escapeTsName(snakeToCamel(rustName))}`;
+}
+
+function generatedTypeMemberName(item, generatedSurface) {
+  if (generatedSurface.classes[item.typeName]) {
+    return item.rustName === "new" ? "new" : escapeTsName(item.generatedName);
+  }
+  if (generatedSurface.namespaces[item.typeName] && item.rustName === "new") {
+    return "fromRaw";
+  }
+  if (generatedSurface.companions[item.typeName]) {
+    return item.generatedName;
+  }
+  return escapeTsName(item.generatedName);
 }
 
 async function collectRustFiles(currentRoot, currentRelativePath = "") {
@@ -167,7 +210,39 @@ function parseGeneratedSurface(source) {
     ]),
   );
 
-  return { topLevelFunctions, classes, interfaces };
+  const companions = Object.fromEntries(
+    [...source.matchAll(/^export declare const (\w+): \{([\s\S]*?)^\};/gm)].map((match) => [
+      match[1],
+      new Set(
+        [...match[2].matchAll(/^\s+"?(\w+)"?(?:\(|: \()/gm)].map((methodMatch) => methodMatch[1]),
+      ),
+    ]),
+  );
+
+  const namespaces = Object.fromEntries(
+    [...source.matchAll(/^export declare namespace (\w+) \{([\s\S]*?)^\}/gm)].map((match) => [
+      match[1],
+      new Set(
+        [...match[2].matchAll(/^\s+const (\w+): \(/gm)].map((methodMatch) => methodMatch[1]),
+      ),
+    ]),
+  );
+
+  const typeMembers = {};
+  for (const [typeName, members] of Object.entries(classes)) {
+    typeMembers[typeName] = new Set(members);
+  }
+  for (const [typeName, members] of Object.entries(interfaces)) {
+    typeMembers[typeName] = new Set([...(typeMembers[typeName] ?? []), ...members]);
+  }
+  for (const [typeName, members] of Object.entries(companions)) {
+    typeMembers[typeName] = new Set([...(typeMembers[typeName] ?? []), ...members]);
+  }
+  for (const [typeName, members] of Object.entries(namespaces)) {
+    typeMembers[typeName] = new Set([...(typeMembers[typeName] ?? []), ...members]);
+  }
+
+  return { topLevelFunctions, classes, interfaces, companions, namespaces, typeMembers };
 }
 
 async function loadTestSources() {
@@ -202,17 +277,57 @@ export async function run() {
 
   const generatedSurface = parseGeneratedSurface(await readFile(generatedDeclarationPath, "utf8"));
   const testSources = await loadTestSources();
+  const duplicateGeneratedTopLevelFunctionNames = [];
+  const duplicateGeneratedTypeMemberNames = [];
+
+  const generatedTopLevelFunctionBuckets = new Map();
+  for (const item of rustTopLevelFunctions) {
+    if (unsupportedTopLevelFunctions.has(rustSignatureKey(item.rustFile, item.rustName))) {
+      continue;
+    }
+    const generatedName = escapeTsName(item.generatedName);
+    const existing = generatedTopLevelFunctionBuckets.get(generatedName);
+    if (existing) {
+      duplicateGeneratedTopLevelFunctionNames.push(
+        `${item.rustFile} -> ${generatedName} from ${existing} and ${item.rustName}`,
+      );
+    } else {
+      generatedTopLevelFunctionBuckets.set(generatedName, item.rustName);
+    }
+  }
+
+  const generatedMemberBuckets = new Map();
+  for (const item of rustTypeMembers) {
+    if (unsupportedTypeMembers.has(rustMemberKey(item.rustFile, item.typeName, item.rustName))) {
+      continue;
+    }
+    const generatedName = generatedTypeMemberName(item, generatedSurface);
+    const bucketKey = `${item.rustFile}::${item.typeName}::${generatedName}`;
+    const existing = generatedMemberBuckets.get(bucketKey);
+    if (existing) {
+      duplicateGeneratedTypeMemberNames.push(
+        `${item.rustFile} -> ${item.typeName}.${generatedName} from ${existing} and ${item.rustName}`,
+      );
+    } else {
+      generatedMemberBuckets.set(bucketKey, item.rustName);
+    }
+  }
 
   const missingTopLevelFunctions = rustTopLevelFunctions.filter(
     (item) =>
       !unsupportedTopLevelFunctions.has(rustSignatureKey(item.rustFile, item.rustName)) &&
-      !generatedSurface.topLevelFunctions.has(item.generatedName),
+      !generatedSurface.topLevelFunctions.has(escapeTsName(item.generatedName)),
   );
 
   const missingTypeMembers = rustTypeMembers.filter(
     (item) =>
       !unsupportedTypeMembers.has(rustMemberKey(item.rustFile, item.typeName, item.rustName)) &&
-      !(generatedSurface.classes[item.typeName] && generatedSurface.classes[item.typeName].has(item.generatedName)),
+      !(
+        generatedSurface.typeMembers[item.typeName] &&
+        generatedSurface.typeMembers[item.typeName].has(
+          generatedTypeMemberName(item, generatedSurface),
+        )
+      ),
   );
 
   const missingTraitMethods = rustTraitMethods.filter(
@@ -238,7 +353,7 @@ export async function run() {
       return false;
     }
     const testSource = testSources[expectedTestPath(item.rustFile)] ?? "";
-    return !testSource.includes(`${item.generatedName}(`);
+    return !testSource.includes(`${escapeTsName(item.generatedName)}(`);
   });
 
   const missingMemberCoverage = rustTypeMembers.filter((item) => {
@@ -246,7 +361,11 @@ export async function run() {
       return false;
     }
     const testSource = testSources[expectedTestPath(item.rustFile)] ?? "";
-    return !testSource.includes(`.${item.generatedName}(`) && !testSource.includes(`${item.typeName}.${item.generatedName}(`);
+    const generatedName = generatedTypeMemberName(item, generatedSurface);
+    return !(
+      testSource.includes(`.${generatedName}(`) ||
+      testSource.includes(`${item.typeName}.${generatedName}(`)
+    );
   });
 
   const missingTraitCoverage = rustTraitMethods.filter((item) => {
@@ -254,6 +373,16 @@ export async function run() {
     return !testSource.includes(item.generatedName);
   });
 
+  assert.equal(
+    duplicateGeneratedTopLevelFunctionNames.length,
+    0,
+    `duplicate generated wasm top-level function names:\n${duplicateGeneratedTopLevelFunctionNames.join("\n")}`,
+  );
+  assert.equal(
+    duplicateGeneratedTypeMemberNames.length,
+    0,
+    `duplicate generated wasm type member names:\n${duplicateGeneratedTypeMemberNames.join("\n")}`,
+  );
   assert.equal(
     missingTopLevelFunctions.length,
     0,

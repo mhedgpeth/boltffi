@@ -1,9 +1,17 @@
-import { assert, demo } from "../support/index.mjs";
+import { assert, assertThrowsWithMessage, demo } from "../support/index.mjs";
 
 export async function run() {
   const circle = demo.makeCircle(5);
   assert.equal(circle.tag, "Circle");
   assert.equal(circle.radius, 5);
+  assert.deepEqual(demo.Shape.new(5), { tag: "Circle", radius: 5 });
+  assert.deepEqual(demo.Shape.unitCircle(), { tag: "Circle", radius: 1 });
+  assert.deepEqual(demo.Shape.square(3), { tag: "Rectangle", width: 3, height: 3 });
+  assert.deepEqual(demo.Shape.tryCircle(2), { tag: "Circle", radius: 2 });
+  assertThrowsWithMessage(() => demo.Shape.tryCircle(0), "radius must be positive");
+  assert.equal(demo.Shape.area({ tag: "Circle", radius: 2 }), Math.PI * 4);
+  assert.equal(demo.Shape.describe({ tag: "Point" }), "point");
+  assert.equal(demo.Shape.variantCount(), 4);
 
   const rectangle = demo.makeRectangle(3, 4);
   assert.equal(rectangle.tag, "Rectangle");
