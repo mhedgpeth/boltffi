@@ -1,7 +1,10 @@
-use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU8, AtomicU64, Ordering};
+use core::ffi::c_void;
+use std::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
 use std::sync::{Arc, Condvar, Mutex, Weak};
 use std::time::Duration;
+use std::{marker::PhantomData, mem::MaybeUninit};
 
+use super::continuation::{ContinuationScheduler, ContinuationSignalPolicy};
 use crate::ringbuffer::SpscRingBuffer;
 
 #[repr(i8)]
@@ -13,194 +16,21 @@ pub enum StreamPollResult {
 
 pub type StreamContinuationCallback = extern "C" fn(callback_data: u64, StreamPollResult);
 
-/// States for the lock-free continuation scheduler. Transitions use atomic CAS.
-#[repr(u8)]
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum ContinuationState {
-    /// No continuation is parked and no wake has been buffered.
-    /// Initial state after construction or after a successful callback invocation.
-    Empty = 0,
-    /// A wake arrived before a continuation was stored. The next `store()` call
-    /// will fire the callback immediately and transition back to `Empty`.
-    Waked = 1,
-    /// A continuation is parked and waiting. A subsequent `wake()` or `cancel()`
-    /// will invoke the stored callback and transition out.
-    Stored = 2,
-    /// The stream has been torn down. Terminal state, no further transitions are valid.
-    /// Any future `store()` call receives `Closed` immediately.
-    Cancelled = 3,
-}
+struct StreamContinuationPolicy;
 
-impl ContinuationState {
-    fn from_raw(value: u8) -> Self {
-        match value {
-            0 => Self::Empty,
-            1 => Self::Waked,
-            2 => Self::Stored,
-            3 => Self::Cancelled,
-            _ => Self::Empty,
-        }
-    }
-}
+impl ContinuationSignalPolicy for StreamContinuationPolicy {
+    type Signal = StreamPollResult;
 
-/// A lock-free scheduler that coordinates handoff between a stream producer and a
-/// single parked continuation.
-///
-/// # Overview
-///
-/// The scheduler mediates the race between two sides of a stream: the consumer that
-/// parks a continuation via [`store`](Self::store_continuation), and the producer that
-/// signals data availability via [`wake`](Self::wake). Both sides may arrive in any
-/// order; the scheduler resolves the race without locks using atomic compare-and-swap
-/// on a four-state machine.
-///
-/// # States
-///
-/// | State | Meaning |
-/// |-------------|---------|
-/// | `Empty` | Idle. No continuation parked, no pending wake. |
-/// | `Stored` | A continuation is parked and waiting for data. |
-/// | `Waked` | Data arrived before a continuation was parked. |
-/// | `Cancelled` | Terminal. The stream has been torn down. |
-///
-/// # State Diagram
-///
-/// ```text
-///              store()          wake()
-///   Empty ─────────────► Stored ─────────────► Empty
-///     │                    │                     (invokes callback)
-///     │ wake()             │ cancel()
-///     ▼                    ▼
-///   Waked                Cancelled
-///     │                    (invokes callback
-///     │ store()             with Closed)
-///     ▼
-///   Empty
-///   (invokes callback
-///    immediately)
-/// ```
-///
-/// # Transitions
-///
-/// - **`store()` in `Empty`** → `Stored`. The continuation is parked.
-/// - **`store()` in `Waked`** → `Empty`. The wake was buffered, so the continuation
-///   fires immediately with `Ready`.
-/// - **`store()` in `Cancelled`** → stays `Cancelled`. The continuation fires
-///   immediately with `Closed`.
-/// - **`wake()` in `Stored`** → `Empty`. The parked continuation fires with `Ready`.
-/// - **`wake()` in `Empty`** → `Waked`. The wake is buffered for the next `store()`.
-/// - **`cancel()` in `Stored`** → `Cancelled`. The parked continuation fires with `Closed`.
-/// - **`cancel()` in `Empty` or `Waked`** → `Cancelled`. No callback to invoke.
-///
-/// # Thread Safety
-///
-/// All transitions use `compare_exchange` with acquire-release ordering. The callback
-/// pointer and data are stored with release semantics before the state transition, and
-/// loaded with acquire semantics after, ensuring the callback is fully visible to
-/// whichever thread wins the CAS.
-struct StreamContinuationScheduler {
-    state: AtomicU8,
-    callback_data: AtomicU64,
-    callback_ptr: AtomicPtr<()>,
-}
-
-impl StreamContinuationScheduler {
-    fn new() -> Self {
-        Self {
-            state: AtomicU8::new(ContinuationState::Empty as u8),
-            callback_data: AtomicU64::new(0),
-            callback_ptr: AtomicPtr::new(std::ptr::null_mut()),
-        }
+    fn displaced() -> Self::Signal {
+        StreamPollResult::Ready
     }
 
-    fn current_state(&self) -> ContinuationState {
-        ContinuationState::from_raw(self.state.load(Ordering::Acquire))
+    fn wake() -> Self::Signal {
+        StreamPollResult::Ready
     }
 
-    fn try_transition(&self, from: ContinuationState, to: ContinuationState) -> bool {
-        self.state
-            .compare_exchange(from as u8, to as u8, Ordering::AcqRel, Ordering::Acquire)
-            .is_ok()
-    }
-
-    fn store_continuation(&self, callback: StreamContinuationCallback, callback_data: u64) {
-        loop {
-            match self.current_state() {
-                ContinuationState::Empty => {
-                    self.callback_data.store(callback_data, Ordering::Release);
-                    self.callback_ptr
-                        .store(callback as *mut (), Ordering::Release);
-                    if self.try_transition(ContinuationState::Empty, ContinuationState::Stored) {
-                        return;
-                    }
-                }
-                ContinuationState::Waked => {
-                    if self.try_transition(ContinuationState::Waked, ContinuationState::Empty) {
-                        callback(callback_data, StreamPollResult::Ready);
-                        return;
-                    }
-                }
-                ContinuationState::Stored => {
-                    self.invoke_stored(StreamPollResult::Ready);
-                    self.callback_data.store(callback_data, Ordering::Release);
-                    self.callback_ptr
-                        .store(callback as *mut (), Ordering::Release);
-                    return;
-                }
-                ContinuationState::Cancelled => {
-                    callback(callback_data, StreamPollResult::Closed);
-                    return;
-                }
-            }
-        }
-    }
-
-    fn wake(&self) {
-        loop {
-            match self.current_state() {
-                ContinuationState::Stored => {
-                    if self.try_transition(ContinuationState::Stored, ContinuationState::Empty) {
-                        self.invoke_stored(StreamPollResult::Ready);
-                        return;
-                    }
-                }
-                ContinuationState::Empty => {
-                    if self.try_transition(ContinuationState::Empty, ContinuationState::Waked) {
-                        return;
-                    }
-                }
-                ContinuationState::Waked | ContinuationState::Cancelled => return,
-            }
-        }
-    }
-
-    fn cancel(&self) {
-        loop {
-            match self.current_state() {
-                ContinuationState::Stored => {
-                    if self.try_transition(ContinuationState::Stored, ContinuationState::Cancelled)
-                    {
-                        self.invoke_stored(StreamPollResult::Closed);
-                        return;
-                    }
-                }
-                ContinuationState::Empty | ContinuationState::Waked => {
-                    if self.try_transition(self.current_state(), ContinuationState::Cancelled) {
-                        return;
-                    }
-                }
-                ContinuationState::Cancelled => return,
-            }
-        }
-    }
-
-    fn invoke_stored(&self, result: StreamPollResult) {
-        let callback_ptr = self.callback_ptr.load(Ordering::Acquire);
-        let callback_data = self.callback_data.load(Ordering::Acquire);
-        if !callback_ptr.is_null() {
-            let callback: StreamContinuationCallback = unsafe { std::mem::transmute(callback_ptr) };
-            callback(callback_data, result);
-        }
+    fn cancelled() -> Self::Signal {
+        StreamPollResult::Closed
     }
 }
 
@@ -209,7 +39,7 @@ pub struct EventSubscription<T: Send + 'static> {
     is_active: AtomicBool,
     notification_mutex: Mutex<()>,
     notification_condvar: Condvar,
-    continuation_scheduler: StreamContinuationScheduler,
+    continuation_scheduler: ContinuationScheduler<StreamContinuationPolicy>,
 }
 
 #[repr(i32)]
@@ -227,7 +57,7 @@ impl<T: Send + 'static> EventSubscription<T> {
             is_active: AtomicBool::new(true),
             notification_mutex: Mutex::new(()),
             notification_condvar: Condvar::new(),
-            continuation_scheduler: StreamContinuationScheduler::new(),
+            continuation_scheduler: ContinuationScheduler::new(),
         }
     }
 
@@ -324,80 +154,95 @@ impl<T: Send + 'static> Drop for EventSubscription<T> {
     }
 }
 
-pub type SubscriptionHandle = *mut core::ffi::c_void;
+pub type SubscriptionHandle = *mut c_void;
 
-pub fn subscription_new<T: Send + 'static>(capacity: usize) -> SubscriptionHandle {
-    let subscription = Box::new(EventSubscription::<T>::new(capacity));
-    Box::into_raw(subscription) as SubscriptionHandle
+pub struct SubscriptionHandleAccess<T: Send + 'static> {
+    subscription_handle: SubscriptionHandle,
+    subscription_type: PhantomData<T>,
 }
 
-pub unsafe fn subscription_push<T: Send + 'static>(handle: SubscriptionHandle, event: T) -> bool {
-    if handle.is_null() {
-        return false;
-    }
-    let subscription = unsafe { &*(handle as *const EventSubscription<T>) };
-    subscription.push_event(event)
-}
-
-pub unsafe fn subscription_pop_batch<T: Send + Copy + 'static>(
-    handle: SubscriptionHandle,
-    output_ptr: *mut T,
-    output_capacity: usize,
-) -> usize {
-    if handle.is_null() || output_ptr.is_null() || output_capacity == 0 {
-        return 0;
+impl<T: Send + 'static> SubscriptionHandleAccess<T> {
+    #[inline]
+    pub fn allocate(capacity: usize) -> Self {
+        let subscription = Box::new(EventSubscription::<T>::new(capacity));
+        Self {
+            subscription_handle: Box::into_raw(subscription).cast::<c_void>(),
+            subscription_type: PhantomData,
+        }
     }
 
-    let subscription = unsafe { &*(handle as *const EventSubscription<T>) };
-    let output_slice = unsafe {
-        std::slice::from_raw_parts_mut(output_ptr as *mut std::mem::MaybeUninit<T>, output_capacity)
-    };
-
-    subscription.pop_batch_into(output_slice)
-}
-
-pub unsafe fn subscription_wait<T: Send + 'static>(
-    handle: SubscriptionHandle,
-    timeout_milliseconds: u32,
-) -> i32 {
-    if handle.is_null() {
-        return WaitResult::Unsubscribed as i32;
+    #[inline]
+    pub fn from_raw(subscription_handle: SubscriptionHandle) -> Self {
+        Self {
+            subscription_handle,
+            subscription_type: PhantomData,
+        }
     }
 
-    let subscription = unsafe { &*(handle as *const EventSubscription<T>) };
-    subscription.wait_for_events(timeout_milliseconds) as i32
-}
-
-pub unsafe fn subscription_poll<T: Send + 'static>(
-    handle: SubscriptionHandle,
-    callback_data: u64,
-    callback: StreamContinuationCallback,
-) {
-    if handle.is_null() {
-        callback(callback_data, StreamPollResult::Closed);
-        return;
+    #[inline]
+    pub fn raw_handle(&self) -> SubscriptionHandle {
+        self.subscription_handle
     }
 
-    let subscription = unsafe { &*(handle as *const EventSubscription<T>) };
-    subscription.poll(callback_data, callback);
-}
-
-pub unsafe fn subscription_unsubscribe<T: Send + 'static>(handle: SubscriptionHandle) {
-    if handle.is_null() {
-        return;
+    #[inline]
+    pub fn is_null(&self) -> bool {
+        self.subscription_handle.is_null()
     }
 
-    let subscription = unsafe { &*(handle as *const EventSubscription<T>) };
-    subscription.unsubscribe();
-}
-
-pub unsafe fn subscription_free<T: Send + 'static>(handle: SubscriptionHandle) {
-    if handle.is_null() {
-        return;
+    #[inline]
+    pub fn push(&self, event: T) -> bool {
+        self.with_subscription(|subscription| subscription.push_event(event))
+            .unwrap_or(false)
     }
 
-    let subscription = unsafe { Box::from_raw(handle as *mut EventSubscription<T>) };
-    drop(subscription);
+    #[inline]
+    pub fn wait(&self, timeout_milliseconds: u32) -> WaitResult {
+        self.with_subscription(|subscription| subscription.wait_for_events(timeout_milliseconds))
+            .unwrap_or(WaitResult::Unsubscribed)
+    }
+
+    #[inline]
+    pub fn poll(&self, callback_data: u64, callback: StreamContinuationCallback) {
+        self.with_subscription(|subscription| subscription.poll(callback_data, callback))
+            .unwrap_or_else(|| callback(callback_data, StreamPollResult::Closed));
+    }
+
+    #[inline]
+    pub fn unsubscribe(&self) {
+        self.with_subscription(EventSubscription::unsubscribe);
+    }
+
+    #[inline]
+    pub fn free(self) {
+        drop(self.into_owned_subscription());
+    }
+
+    #[inline]
+    pub fn pop_batch_into(&self, output_buffer: &mut [MaybeUninit<T>]) -> usize
+    where
+        T: Copy,
+    {
+        self.with_subscription(|subscription| subscription.pop_batch_into(output_buffer))
+            .unwrap_or(0)
+    }
+
+    #[inline]
+    fn with_subscription<Result>(
+        &self,
+        subscription_access: impl FnOnce(&EventSubscription<T>) -> Result,
+    ) -> Option<Result> {
+        (!self.subscription_handle.is_null()).then(|| {
+            let subscription = unsafe { &*self.subscription_handle.cast::<EventSubscription<T>>() };
+            subscription_access(subscription)
+        })
+    }
+
+    #[inline]
+    fn into_owned_subscription(self) -> Option<Box<EventSubscription<T>>> {
+        (!self.subscription_handle.is_null()).then(|| unsafe {
+            Box::from_raw(self.subscription_handle.cast::<EventSubscription<T>>())
+        })
+    }
 }
 
 struct SubscriberSlot<T: Send + 'static> {

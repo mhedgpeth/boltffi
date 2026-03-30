@@ -1,11 +1,13 @@
 use std::future::Future;
 use std::pin::Pin;
-use std::ptr;
 #[cfg(target_arch = "wasm32")]
 use std::sync::atomic::AtomicU32;
-use std::sync::atomic::{AtomicPtr, AtomicU8, AtomicU64, Ordering};
+#[cfg(target_arch = "wasm32")]
+use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
+
+use super::continuation::{ContinuationScheduler, ContinuationSignalPolicy};
 
 #[repr(i32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -30,206 +32,26 @@ pub enum RustFuturePoll {
 
 pub type RustFutureContinuationCallback = extern "C" fn(callback_data: u64, RustFuturePoll);
 
-#[derive(Clone, Copy)]
-struct ContinuationCallback(RustFutureContinuationCallback);
+struct RustFutureContinuationPolicy;
 
-impl ContinuationCallback {
-    fn from_raw_ptr(ptr: *mut ()) -> Option<Self> {
-        (!ptr.is_null()).then(|| {
-            Self(unsafe { std::mem::transmute::<*mut (), RustFutureContinuationCallback>(ptr) })
-        })
+impl ContinuationSignalPolicy for RustFutureContinuationPolicy {
+    type Signal = RustFuturePoll;
+
+    fn displaced() -> Self::Signal {
+        RustFuturePoll::Ready
     }
 
-    fn into_raw_ptr(self) -> *mut () {
-        self.0 as *mut ()
+    fn wake() -> Self::Signal {
+        RustFuturePoll::MaybeReady
     }
 
-    fn invoke(self, callback_data: ContinuationData, poll_result: RustFuturePoll) {
-        (self.0)(callback_data.into_raw(), poll_result)
-    }
-}
-
-#[derive(Clone, Copy, Default)]
-struct ContinuationData(u64);
-
-impl ContinuationData {
-    fn from_raw(value: u64) -> Self {
-        Self(value)
-    }
-
-    fn into_raw(self) -> u64 {
-        self.0
+    fn cancelled() -> Self::Signal {
+        RustFuturePoll::Ready
     }
 }
-
-#[repr(u8)]
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum SchedulerStateTag {
-    Empty = 0,
-    Waked = 1,
-    Cancelled = 2,
-    ContinuationStored = 3,
-}
-
-impl SchedulerStateTag {
-    fn from_raw(value: u8) -> Self {
-        match value {
-            0 => Self::Empty,
-            1 => Self::Waked,
-            2 => Self::Cancelled,
-            3 => Self::ContinuationStored,
-            _ => Self::Empty,
-        }
-    }
-
-    fn into_raw(self) -> u8 {
-        self as u8
-    }
-}
-
-struct AtomicContinuationScheduler {
-    state_tag: AtomicU8,
-    stored_callback_data: AtomicU64,
-    stored_callback_ptr: AtomicPtr<()>,
-}
-
-impl AtomicContinuationScheduler {
-    fn new() -> Self {
-        Self {
-            state_tag: AtomicU8::new(SchedulerStateTag::Empty.into_raw()),
-            stored_callback_data: AtomicU64::new(0),
-            stored_callback_ptr: AtomicPtr::new(ptr::null_mut()),
-        }
-    }
-
-    fn current_state(&self) -> SchedulerStateTag {
-        SchedulerStateTag::from_raw(self.state_tag.load(Ordering::Acquire))
-    }
-
-    fn try_transition(&self, from: SchedulerStateTag, to: SchedulerStateTag) -> bool {
-        self.state_tag
-            .compare_exchange(
-                from.into_raw(),
-                to.into_raw(),
-                Ordering::AcqRel,
-                Ordering::Acquire,
-            )
-            .is_ok()
-    }
-
-    fn load_stored_continuation(&self) -> (Option<ContinuationCallback>, ContinuationData) {
-        let callback_ptr = self.stored_callback_ptr.load(Ordering::Acquire);
-        let callback_data =
-            ContinuationData::from_raw(self.stored_callback_data.load(Ordering::Acquire));
-        (
-            ContinuationCallback::from_raw_ptr(callback_ptr),
-            callback_data,
-        )
-    }
-
-    fn write_continuation(&self, callback: ContinuationCallback, callback_data: ContinuationData) {
-        self.stored_callback_data
-            .store(callback_data.into_raw(), Ordering::Release);
-        self.stored_callback_ptr
-            .store(callback.into_raw_ptr(), Ordering::Release);
-    }
-
-    fn invoke_stored_continuation(&self, poll_result: RustFuturePoll) {
-        let (callback, callback_data) = self.load_stored_continuation();
-        if let Some(continuation_callback) = callback {
-            continuation_callback.invoke(callback_data, poll_result);
-        }
-    }
-
-    fn store_continuation(
-        &self,
-        continuation_callback: ContinuationCallback,
-        callback_data: ContinuationData,
-    ) {
-        loop {
-            match self.current_state() {
-                SchedulerStateTag::Empty => {
-                    self.write_continuation(continuation_callback, callback_data);
-                    if self.try_transition(
-                        SchedulerStateTag::Empty,
-                        SchedulerStateTag::ContinuationStored,
-                    ) {
-                        return;
-                    }
-                }
-                SchedulerStateTag::ContinuationStored => {
-                    self.invoke_stored_continuation(RustFuturePoll::Ready);
-                    self.write_continuation(continuation_callback, callback_data);
-                    return;
-                }
-                SchedulerStateTag::Waked => {
-                    if self.try_transition(SchedulerStateTag::Waked, SchedulerStateTag::Empty) {
-                        continuation_callback.invoke(callback_data, RustFuturePoll::MaybeReady);
-                        return;
-                    }
-                }
-                SchedulerStateTag::Cancelled => {
-                    continuation_callback.invoke(callback_data, RustFuturePoll::Ready);
-                    return;
-                }
-            }
-        }
-    }
-
-    fn wake_continuation(&self) {
-        loop {
-            match self.current_state() {
-                SchedulerStateTag::ContinuationStored => {
-                    if self.try_transition(
-                        SchedulerStateTag::ContinuationStored,
-                        SchedulerStateTag::Empty,
-                    ) {
-                        self.invoke_stored_continuation(RustFuturePoll::MaybeReady);
-                        return;
-                    }
-                }
-                SchedulerStateTag::Empty => {
-                    if self.try_transition(SchedulerStateTag::Empty, SchedulerStateTag::Waked) {
-                        return;
-                    }
-                }
-                SchedulerStateTag::Waked | SchedulerStateTag::Cancelled => return,
-            }
-        }
-    }
-
-    fn mark_cancelled(&self) {
-        loop {
-            let current_state = self.current_state();
-            match current_state {
-                SchedulerStateTag::ContinuationStored => {
-                    if self.try_transition(
-                        SchedulerStateTag::ContinuationStored,
-                        SchedulerStateTag::Cancelled,
-                    ) {
-                        self.invoke_stored_continuation(RustFuturePoll::Ready);
-                        return;
-                    }
-                }
-                _ => {
-                    if self.try_transition(current_state, SchedulerStateTag::Cancelled) {
-                        return;
-                    }
-                }
-            }
-        }
-    }
-
-    fn is_cancelled(&self) -> bool {
-        self.current_state() == SchedulerStateTag::Cancelled
-    }
-}
-
-unsafe impl Send for AtomicContinuationScheduler {}
-unsafe impl Sync for AtomicContinuationScheduler {}
 
 struct FutureWakeTarget {
-    continuation_scheduler: AtomicContinuationScheduler,
+    continuation_scheduler: ContinuationScheduler<RustFutureContinuationPolicy>,
     #[cfg(target_arch = "wasm32")]
     wasm_handle: AtomicU32,
 }
@@ -237,7 +59,7 @@ struct FutureWakeTarget {
 impl FutureWakeTarget {
     fn new() -> Self {
         Self {
-            continuation_scheduler: AtomicContinuationScheduler::new(),
+            continuation_scheduler: ContinuationScheduler::new(),
             #[cfg(target_arch = "wasm32")]
             wasm_handle: AtomicU32::new(0),
         }
@@ -245,19 +67,19 @@ impl FutureWakeTarget {
 
     fn store_continuation(
         &self,
-        continuation_callback: ContinuationCallback,
-        callback_data: ContinuationData,
+        continuation_callback: RustFutureContinuationCallback,
+        callback_data: u64,
     ) {
         self.continuation_scheduler
             .store_continuation(continuation_callback, callback_data);
     }
 
     fn wake_continuation(&self) {
-        self.continuation_scheduler.wake_continuation();
+        self.continuation_scheduler.wake();
     }
 
     fn mark_cancelled(&self) {
-        self.continuation_scheduler.mark_cancelled();
+        self.continuation_scheduler.cancel();
     }
 
     fn is_cancelled(&self) -> bool {
@@ -378,10 +200,8 @@ impl<T: Send + 'static> RustFuture<T> {
         if is_ready {
             continuation_callback(callback_data, RustFuturePoll::Ready);
         } else {
-            self.wake_target.store_continuation(
-                ContinuationCallback(continuation_callback),
-                ContinuationData::from_raw(callback_data),
-            );
+            self.wake_target
+                .store_continuation(continuation_callback, callback_data);
         }
     }
 
@@ -522,6 +342,49 @@ fn panic_payload_to_string(payload: Box<dyn std::any::Any + Send>) -> String {
 
 pub type RustFutureHandle = *const core::ffi::c_void;
 
+struct RustFutureHandleAccess<T: Send + 'static> {
+    future_handle: RustFutureHandle,
+    future_type: std::marker::PhantomData<T>,
+}
+
+impl<T: Send + 'static> RustFutureHandleAccess<T> {
+    #[inline]
+    fn new(future_handle: RustFutureHandle) -> Self {
+        Self {
+            future_handle,
+            future_type: std::marker::PhantomData,
+        }
+    }
+
+    #[inline]
+    fn with_future<Result>(&self, future_access: impl FnOnce(&RustFuture<T>) -> Result) -> Result {
+        let rust_future = unsafe { Arc::from_raw(self.future_handle as *const RustFuture<T>) };
+        let result = future_access(&rust_future);
+        std::mem::forget(rust_future);
+        result
+    }
+
+    #[inline]
+    fn with_future_arc<Result>(
+        &self,
+        future_access: impl FnOnce(&Arc<RustFuture<T>>) -> Result,
+    ) -> Result {
+        let rust_future = unsafe { Arc::from_raw(self.future_handle as *const RustFuture<T>) };
+        let result = future_access(&rust_future);
+        std::mem::forget(rust_future);
+        result
+    }
+
+    #[inline]
+    fn consume_future<Result>(
+        self,
+        future_access: impl FnOnce(Arc<RustFuture<T>>) -> Result,
+    ) -> Result {
+        let rust_future = unsafe { Arc::from_raw(self.future_handle as *const RustFuture<T>) };
+        future_access(rust_future)
+    }
+}
+
 pub fn rust_future_new<F, T>(future: F) -> RustFutureHandle
 where
     F: Future<Output = T> + Send + 'static,
@@ -535,51 +398,40 @@ pub unsafe fn rust_future_poll<T: Send + 'static>(
     continuation_callback: RustFutureContinuationCallback,
     callback_data: u64,
 ) {
-    let rust_future_arc = unsafe { Arc::from_raw(handle as *const RustFuture<T>) };
-    rust_future_arc.poll(continuation_callback, callback_data);
-    std::mem::forget(rust_future_arc);
+    RustFutureHandleAccess::<T>::new(handle)
+        .with_future_arc(|rust_future| rust_future.poll(continuation_callback, callback_data));
 }
 
 pub unsafe fn rust_future_complete<T: Send + 'static>(handle: RustFutureHandle) -> Option<T> {
-    let rust_future_arc = unsafe { Arc::from_raw(handle as *const RustFuture<T>) };
-    let result = rust_future_arc.complete();
-    std::mem::forget(rust_future_arc);
-    result
+    RustFutureHandleAccess::<T>::new(handle).with_future(RustFuture::complete)
 }
 
 pub unsafe fn rust_future_cancel<T: Send + 'static>(handle: RustFutureHandle) {
-    let rust_future_arc = unsafe { Arc::from_raw(handle as *const RustFuture<T>) };
-    rust_future_arc.cancel();
-    std::mem::forget(rust_future_arc);
+    RustFutureHandleAccess::<T>::new(handle).with_future(RustFuture::cancel);
 }
 
 pub unsafe fn rust_future_free<T: Send + 'static>(handle: RustFutureHandle) {
-    let rust_future_arc = unsafe { Arc::from_raw(handle as *const RustFuture<T>) };
-    rust_future_arc.free();
+    RustFutureHandleAccess::<T>::new(handle).consume_future(RustFuture::free);
 }
 
 #[cfg(target_arch = "wasm32")]
 pub unsafe fn rust_future_poll_sync<T: Send + 'static>(handle: RustFutureHandle) -> i32 {
-    let rust_future_arc = unsafe { Arc::from_raw(handle as *const RustFuture<T>) };
-    let status = rust_future_arc.poll_sync();
-    std::mem::forget(rust_future_arc);
-    status as i32
+    RustFutureHandleAccess::<T>::new(handle)
+        .with_future_arc(|rust_future| rust_future.poll_sync() as i32)
 }
 
 #[cfg(target_arch = "wasm32")]
 pub unsafe fn rust_future_panic_message<T: Send + 'static>(
     handle: RustFutureHandle,
 ) -> Option<String> {
-    let rust_future_arc = unsafe { Arc::from_raw(handle as *const RustFuture<T>) };
-    let message = rust_future_arc.panic_message();
-    std::mem::forget(rust_future_arc);
-    message
+    RustFutureHandleAccess::<T>::new(handle).with_future(RustFuture::panic_message)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::sync::atomic::AtomicBool;
+    use std::sync::atomic::Ordering;
     use std::sync::mpsc;
     use std::thread;
     use std::time::Duration;

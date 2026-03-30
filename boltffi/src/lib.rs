@@ -8,10 +8,10 @@ pub use boltffi_core::{
 pub mod __private {
     #[cfg(target_arch = "wasm32")]
     pub use boltffi_core::{
-        AsyncCallbackCompletionCode, CallbackRequestId, CompleteResult, CompletionPayload,
-        RequestGuard, WasmCallbackOutBuf, WasmCallbackOwner, allocate_request, cancel_request,
-        complete_request, complete_request_from_ffi, remove_request, rust_future_panic_message,
-        rust_future_poll_sync, set_request_waker, take_request_result, write_return_slot,
+        AsyncCallbackCompletion, AsyncCallbackCompletionCode, AsyncCallbackCompletionResult,
+        AsyncCallbackRegistry, AsyncCallbackRequestGuard, AsyncCallbackRequestId,
+        WasmCallbackOutBuf, WasmCallbackOwner, rust_future_panic_message, rust_future_poll_sync,
+        write_return_slot,
     };
     pub use boltffi_core::{
         CallbackForeignType, CallbackHandle, EventSubscription, FfiBuf, FfiSpan, FfiStatus,
