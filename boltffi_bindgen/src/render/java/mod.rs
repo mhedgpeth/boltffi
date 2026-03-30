@@ -34,6 +34,10 @@ impl JavaVersion {
     pub const JAVA_23: Self = Self(23);
     pub const JAVA_24: Self = Self(24);
 
+    pub fn supports_flow_api(&self) -> bool {
+        self.0 >= 9
+    }
+
     pub fn supports_records(&self) -> bool {
         self.0 >= 16
     }

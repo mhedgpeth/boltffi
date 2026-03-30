@@ -17,18 +17,19 @@ use super::plan::{
     JavaConstructorKind, JavaDirectCompositeInput, JavaEnum, JavaEnumField, JavaEnumKind,
     JavaEnumVariant, JavaFunction, JavaInputBindings, JavaModule, JavaNativeParam, JavaParam,
     JavaRecord, JavaRecordField, JavaRecordShape, JavaResultBridgeReturn, JavaReturnPlan,
-    JavaReturnRender, JavaSyncCallbackMethod, JavaValueBridgeRender, JavaValueBridgeReturn,
-    JavaValueTypeConstructor, JavaValueTypeMethod, JavaWireWriter,
+    JavaReturnRender, JavaStream, JavaStreamMode, JavaSyncCallbackMethod, JavaValueBridgeRender,
+    JavaValueBridgeReturn, JavaValueTypeConstructor, JavaValueTypeMethod, JavaWireWriter,
 };
 use crate::ir::abi::{
     AbiCall, AbiCallbackInvocation, AbiCallbackMethod, AbiContract, AbiEnum, AbiEnumField,
-    AbiEnumPayload, AbiEnumVariant, AbiParam, AbiRecord, CallId, CallMode, ErrorTransport,
-    ParamRole, ReturnShape,
+    AbiEnumPayload, AbiEnumVariant, AbiParam, AbiRecord, AbiStream, CallId, CallMode,
+    ErrorTransport, ParamRole, ReturnShape, StreamItemTransport,
 };
 use crate::ir::contract::FfiContract;
 use crate::ir::definitions::{
     CallbackKind, CallbackMethodDef, CallbackTraitDef, ClassDef, ConstructorDef, EnumDef, EnumRepr,
-    FieldDef, FunctionDef, MethodDef, ParamDef, Receiver, RecordDef, ReturnDef,
+    FieldDef, FunctionDef, MethodDef, ParamDef, Receiver, RecordDef, ReturnDef, StreamDef,
+    StreamMode,
 };
 use crate::ir::ids::{CallbackId, FieldName, RecordId};
 use crate::ir::ops::{
@@ -1318,11 +1319,18 @@ impl<'a> JavaLowerer<'a> {
             .map(|m| self.lower_class_method(class, m))
             .collect();
 
+        let streams = class
+            .streams
+            .iter()
+            .map(|stream| self.lower_stream(class, stream))
+            .collect();
+
         JavaClass {
             class_name,
             ffi_free,
             constructors,
             methods,
+            streams,
         }
     }
 
@@ -1495,6 +1503,88 @@ impl<'a> JavaLowerer<'a> {
             input_bindings,
             async_call,
         }
+    }
+
+    fn lower_stream(
+        &self,
+        class: &ClassDef,
+        stream_def: &StreamDef,
+    ) -> JavaStream {
+        let abi_stream = self.abi_stream(class, stream_def);
+        let mode = match stream_def.mode {
+            StreamMode::Async => JavaStreamMode::Async,
+            StreamMode::Batch => JavaStreamMode::Batch,
+            StreamMode::Callback => JavaStreamMode::Callback,
+        };
+        JavaStream {
+            name: NamingConvention::method_name(stream_def.id.as_str()),
+            item_type: self.java_boxed_type(&stream_def.item_type),
+            pop_batch_items_expr: self.stream_pop_batch_items_expr(abi_stream),
+            subscribe: abi_stream.subscribe.to_string(),
+            poll: abi_stream.poll.to_string(),
+            pop_batch: abi_stream.pop_batch.to_string(),
+            wait: abi_stream.wait.to_string(),
+            unsubscribe: abi_stream.unsubscribe.to_string(),
+            free: abi_stream.free.to_string(),
+            mode,
+        }
+    }
+
+    fn stream_pop_batch_items_expr(&self, stream: &AbiStream) -> String {
+        match &stream.item_transport {
+            Transport::Scalar(origin) => self.scalar_stream_items_expr(origin),
+            Transport::Composite(layout) => {
+                let class_name = NamingConvention::class_name(layout.record_id.as_str());
+                format!(
+                    "{}.decodeBlittableVecFromRawBuffer(_bytes)",
+                    class_name
+                )
+            }
+            _ => {
+                let StreamItemTransport::WireEncoded { decode_ops } = &stream.item;
+                let item_decode = super::emit::emit_reader_read(decode_ops);
+                format!(
+                    "WireReader.readList(_bytes, _i -> {})",
+                    item_decode
+                )
+            }
+        }
+    }
+
+    fn scalar_stream_items_expr(&self, origin: &ScalarOrigin) -> String {
+        match origin {
+            ScalarOrigin::Primitive(primitive) => match primitive {
+                PrimitiveType::Bool => "WireReader.readPackedBools(_bytes)".to_string(),
+                PrimitiveType::I8 | PrimitiveType::U8 => "WireReader.readPackedBytes(_bytes)".to_string(),
+                PrimitiveType::I16 | PrimitiveType::U16 => "WireReader.readPackedShorts(_bytes)".to_string(),
+                PrimitiveType::I32 | PrimitiveType::U32 => "WireReader.readPackedInts(_bytes)".to_string(),
+                PrimitiveType::I64 | PrimitiveType::U64
+                | PrimitiveType::ISize | PrimitiveType::USize => "WireReader.readPackedLongs(_bytes)".to_string(),
+                PrimitiveType::F32 => "WireReader.readPackedFloats(_bytes)".to_string(),
+                PrimitiveType::F64 => "WireReader.readPackedDoubles(_bytes)".to_string(),
+            },
+            ScalarOrigin::CStyleEnum { enum_id, tag_type } => {
+                let class_name = NamingConvention::class_name(enum_id.as_str());
+                let read_method = match tag_type {
+                    PrimitiveType::I8 | PrimitiveType::U8 => "readPackedBytes",
+                    PrimitiveType::I16 | PrimitiveType::U16 => "readPackedShorts",
+                    PrimitiveType::I32 | PrimitiveType::U32 => "readPackedInts",
+                    _ => "readPackedLongs",
+                };
+                format!(
+                    "WireReader.{}(_bytes).stream().map(v -> {}.fromValue(v)).collect(java.util.stream.Collectors.toList())",
+                    read_method, class_name
+                )
+            }
+        }
+    }
+
+    fn abi_stream<'b>(&'b self, class: &ClassDef, stream: &StreamDef) -> &'b AbiStream {
+        self.abi
+            .streams
+            .iter()
+            .find(|s| s.class_id == class.id && s.stream_id == stream.id)
+            .expect("abi stream not found")
     }
 
     fn vec_buffer_decode_expr(&self, inner: &TypeExpr, transport: Option<&Transport>) -> String {

@@ -86,6 +86,7 @@ final class {{ callback.callbacks_class_name() }} {
 {%- for method in callback.async_methods %}
 
         @Override
+        @SuppressWarnings("unchecked")
         public CompletableFuture<{{ method.boxed_return_type() }}> {{ method.name }}({% for param in method.proxy.params %}{{ param.java_type }} {{ param.name }}{% if !loop.last %}, {% endif %}{% endfor %}) {
             CompletableFuture<{{ method.boxed_return_type() }}> future = new CompletableFuture<>();
             long callbackData = BoltFFICallbackFutureMap.insert(

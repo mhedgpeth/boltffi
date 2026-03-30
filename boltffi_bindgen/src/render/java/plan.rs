@@ -70,7 +70,11 @@ impl JavaModule {
     }
 
     pub fn uses_completable_future(&self) -> bool {
-        self.has_async() || self.has_async_callbacks()
+        self.has_async() || self.has_async_callbacks() || self.has_streams()
+    }
+
+    pub fn has_streams(&self) -> bool {
+        self.classes.iter().any(|c| c.has_streams())
     }
 
     pub fn has_wire_params(&self) -> bool {
@@ -548,11 +552,33 @@ pub struct JavaValueTypeMethod {
 }
 
 #[derive(Debug, Clone)]
+pub struct JavaStream {
+    pub name: String,
+    pub item_type: String,
+    pub pop_batch_items_expr: String,
+    pub subscribe: String,
+    pub poll: String,
+    pub pop_batch: String,
+    pub wait: String,
+    pub unsubscribe: String,
+    pub free: String,
+    pub mode: JavaStreamMode,
+}
+
+#[derive(Debug, Clone)]
+pub enum JavaStreamMode {
+    Async,
+    Batch,
+    Callback,
+}
+
+#[derive(Debug, Clone)]
 pub struct JavaClass {
     pub class_name: String,
     pub ffi_free: String,
     pub constructors: Vec<JavaConstructor>,
     pub methods: Vec<JavaClassMethod>,
+    pub streams: Vec<JavaStream>,
 }
 
 impl JavaClass {
@@ -568,6 +594,10 @@ impl JavaClass {
 
     pub fn has_async_methods(&self) -> bool {
         self.methods.iter().any(|m| m.async_call.is_some())
+    }
+
+    pub fn has_streams(&self) -> bool {
+        !self.streams.is_empty()
     }
 
     pub fn has_wire_params(&self) -> bool {

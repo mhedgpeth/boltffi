@@ -165,6 +165,7 @@ mod tests {
                 input_bindings: JavaInputBindings::default(),
                 async_call: None,
             }],
+            streams: vec![],
         };
 
         let source = ClassTemplate {
@@ -236,6 +237,7 @@ mod tests {
                     async_call: None,
                 },
             ],
+            streams: vec![],
         };
 
         let source = ClassTemplate {
@@ -299,6 +301,7 @@ mod tests {
                     async_call: None,
                 },
             ],
+            streams: vec![],
         };
         let module = JavaModule {
             functions: vec![JavaFunction {

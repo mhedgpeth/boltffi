@@ -128,9 +128,9 @@
     fun {{ stream.name }}(): {{ class_name }}{{ method_name_pascal }}Subscription =
         {{ class_name }}{{ method_name_pascal }}Subscription(
             handle = Native.{{ stream.subscribe }}(handle),
-            popBatch = Native::{{ stream.pop_batch }},
-            wait = Native::{{ stream.wait }},
-            unsubscribe = Native::{{ stream.unsubscribe }},
+            popBatchFn = Native::{{ stream.pop_batch }},
+            waitFn = Native::{{ stream.wait }},
+            unsubscribeFn = Native::{{ stream.unsubscribe }},
             freeFn = Native::{{ stream.free }}
         )
 {%- when KotlinStreamMode::Callback { class_name, method_name_pascal } %}
