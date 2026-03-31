@@ -5,7 +5,7 @@ description: "Understand the BoltFFI packaging pipeline for compiling Rust artif
 
 # Packaging
 
-Packaging takes your Rust library and produces artifacts ready for use in Xcode and Android Studio. A single command handles everything: compiling for each target architecture, generating bindings, and bundling the results into the format each platform expects.
+Packaging takes your Rust library and produces artifacts ready for each platform. A single command handles everything: compiling for each target architecture, generating bindings, and bundling the results into the format each platform expects.
 
 ## Overview
 
@@ -15,7 +15,7 @@ The packaging process has three stages:
 2. **Generate** - Create Swift/Kotlin bindings and C headers from your exported API
 3. **Package** - Bundle everything into platform-specific formats
 
-For Apple, this produces an xcframework and SwiftPM package. For Android, this produces jniLibs and Kotlin sources. For WASM, this produces an npm package with TypeScript bindings.
+For Apple, this produces an xcframework and SwiftPM package. For Android, this produces jniLibs and Kotlin sources. For Java (JVM), this produces a JNI shared library and Java sources. For WASM, this produces an npm package with TypeScript bindings.
 
 ## Getting Started
 
@@ -46,6 +46,7 @@ Package each platform with its own command:
 ```bash
 boltffi pack apple
 boltffi pack android
+boltffi pack java
 boltffi pack wasm
 ```
 
@@ -54,6 +55,7 @@ Add `--release` for optimized builds:
 ```bash
 boltffi pack apple --release
 boltffi pack android --release
+boltffi pack java --release
 boltffi pack wasm --release
 ```
 
@@ -95,6 +97,15 @@ dist/
 │   └── kotlin/
 │       └── com/example/mylib/
 │           └── MyLib.kt
+├── java/
+│   ├── com/example/mylib/
+│   │   ├── MyLib.java
+│   │   ├── Native.java
+│   │   └── ... (records, enums, etc.)
+│   ├── jni/
+│   │   ├── jni_glue.c
+│   │   └── mylib.h
+│   └── libmylib_jni.dylib (or .so)
 └── wasm/
     └── pkg/
         ├── mylib_bg.wasm
@@ -123,6 +134,14 @@ boltffi pack apple --release --no-build
 boltffi build android --release
 boltffi generate kotlin
 boltffi pack android --release --no-build
+```
+
+**Java:**
+```bash
+boltffi build java --release
+boltffi generate java
+boltffi generate header
+boltffi pack java --release --no-build
 ```
 
 **WASM:**
@@ -295,6 +314,88 @@ android {
 ```
 
 The shared libraries are loaded automatically when you first call into your Kotlin bindings.
+
+## Java Packaging
+
+Package for JVM:
+
+```bash
+boltffi pack java --release
+```
+
+This compiles a cdylib for the host platform, generates Java bindings and a C header, compiles the JNI glue into a shared library, and writes everything to `dist/java/`.
+
+### Prerequisites
+
+- JDK 8+ installed
+- `JAVA_HOME` environment variable set
+- `clang` available (used to compile the JNI bridge)
+
+### Configuration
+
+Enable Java in `boltffi.toml`:
+
+```toml
+[targets.java]
+min_version = 8  # or 16, 17, 21
+
+[targets.java.jvm]
+enabled = true
+```
+
+The `min_version` controls which language features the generated code uses:
+
+| Version | Features |
+|---------|----------|
+| 8 | `final class` records, `abstract class` enums, `CompletableFuture` async |
+| 16 | `record` types for structs |
+| 17 | `sealed interface` for enums with data |
+| 21 | Virtual thread blocking calls for async |
+
+### Output Structure
+
+```
+dist/java/
+├── com/example/mylib/
+│   ├── MyLib.java          # Functions module
+│   ├── Native.java         # JNI native declarations
+│   ├── WireReader.java     # Runtime: binary decoding
+│   ├── WireWriter.java     # Runtime: binary encoding
+│   └── ... (records, enums, callbacks, etc.)
+├── jni/
+│   ├── jni_glue.c          # JNI bridge implementation
+│   └── mylib.h             # C header
+└── libmylib_jni.dylib      # Compiled JNI library (.so on Linux)
+```
+
+### Using in a Project
+
+1. Copy the Java sources from `dist/java/com/...` into your source tree
+2. Place the JNI shared library where `System.loadLibrary` can find it (or set `java.library.path`)
+
+```java
+import com.example.mylib.*;
+
+int result = MyLib.someExportedFunction();
+```
+
+The native library is loaded automatically when you first call into the generated bindings.
+
+### Using with Gradle
+
+```kotlin
+dependencies {
+    implementation(files("libs/mylib-sources.jar"))
+}
+```
+
+Set the library path in your run configuration:
+
+```kotlin
+tasks.test {
+    jvmArgs("-Djava.library.path=libs/native")
+}
+```
 
 ## WASM Packaging
 
@@ -482,11 +583,12 @@ These options are useful during development when iterating on specific parts of 
 
 ## Full Release Pipeline
 
-For CI or final releases, run the complete pipeline:
+The `release` command runs check, build, generate, and pack in one shot:
 
 ```bash
 boltffi release apple
 boltffi release android
+boltffi release java
 boltffi release wasm
 ```
 
@@ -496,4 +598,4 @@ Or build everything at once:
 boltffi release all
 ```
 
-The `release` command runs check, build, generate, and pack in sequence for the specified platform.
+

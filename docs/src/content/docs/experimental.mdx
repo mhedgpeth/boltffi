@@ -1,0 +1,61 @@
+---
+title: "Experimental Features"
+description: "Enable and manage experimental BoltFFI features including Java bindings, TypeScript async streams, and record methods."
+---
+
+# Experimental Features
+
+Some BoltFFI features are behind an experimental flag. The API for these features may change between releases, so they require an explicit opt-in.
+
+| Feature | Key | Status |
+|---------|-----|--------|
+| Java bindings | `java` | Functional |
+| TS async streams | `typescript.async_streams` | Functional |
+| Record methods | `records.methods` | Functional |
+
+## Enabling
+
+### CLI flag
+
+```bash
+boltffi generate java --experimental
+boltffi pack java --experimental
+```
+
+### Config file
+
+```toml
+experimental = ["java", "typescript.async_streams", "records.methods"]
+```
+
+The CLI flag applies to a single command. The config array applies to every build.
+
+## Feature Details
+
+### Java Bindings
+
+**Key:** `java`
+
+The entire Java target (JVM and Android codegen, JNI bridge, all generated sources) requires this flag.
+
+Known gaps:
+
+- Custom types (`Duration`, `SystemTime`, `Uuid`, `Url`) are not yet supported. Functions using them are silently skipped.
+- Record field defaults (`#[boltffi::default(...)]`) don't generate overloaded constructors.
+- Error enum variant payloads are not carried across (error enums are flat in Java).
+
+### TypeScript Async Streams
+
+**Key:** `typescript.async_streams`
+
+Enables `AsyncIterable` stream generation for TypeScript/WASM targets. Without this flag, stream methods are skipped during TypeScript codegen.
+
+### Record Methods
+
+**Key:** `records.methods`
+
+Enables method generation on record types (structs marked with `#[data]` that also have `#[export] impl` blocks). By default, records are pure data with no methods.
+
+## Graduating from Experimental
+
+When a feature stabilizes, it moves out of the experimental list. The `--experimental` flag and config entry are no longer required. Existing code continues to work without changes.

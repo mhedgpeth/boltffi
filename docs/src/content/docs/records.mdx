@@ -84,6 +84,29 @@ fun rectContains(rect: Rect, point: Point): Boolean
 val r = Rect(0.0, 0.0, 100.0, 100.0)
 val p = Point(50.0, 50.0)
 val inside = rectContains(r, p)`}
+  java={`// Java 16+
+public record Point(double x, double y) {}
+public record Rect(
+    double x, double y,
+    double width, double height) {}
+
+// Java 8+
+public final class Point {
+    public final double x;
+    public final double y;
+}
+public final class Rect {
+    public final double x;
+    public final double y;
+    public final double width;
+    public final double height;
+}
+
+static boolean rectContains(Rect rect, Point point)
+
+Rect r = new Rect(0.0, 0.0, 100.0, 100.0);
+Point p = new Point(50.0, 50.0);
+boolean inside = rectContains(r, p);`}
   typescript={`interface Point {
     readonly x: number
     readonly y: number
@@ -164,6 +187,29 @@ data class SearchResult(
 fun searchUsers(query: String): SearchResult
 
 val result = searchUsers("alice")`}
+  java={`// Java 16+
+public record User(
+    long id, String name, String email) {}
+public record SearchResult(
+    String query,
+    java.util.List<User> matches,
+    long totalCount) {}
+
+// Java 8+
+public final class User {
+    public final long id;
+    public final String name;
+    public final String email;
+}
+public final class SearchResult {
+    public final String query;
+    public final java.util.List<User> matches;
+    public final long totalCount;
+}
+
+static SearchResult searchUsers(String query)
+
+SearchResult result = searchUsers("alice");`}
   typescript={`interface User {
     readonly id: bigint
     readonly name: string
@@ -254,6 +300,32 @@ val addr = Address(
 )
 val co = Company("Acme", addr, 50u)
 val summary = companySummary(co)`}
+  java={`// Java 16+
+public record Address(
+    String street, String city,
+    String zip) {}
+public record Company(
+    String name, Address address,
+    int employeeCount) {}
+
+// Java 8+
+public final class Address {
+    public final String street;
+    public final String city;
+    public final String zip;
+}
+public final class Company {
+    public final String name;
+    public final Address address;
+    public final int employeeCount;
+}
+
+static String companySummary(Company c)
+
+Address addr = new Address(
+    "123 Main", "Seattle", "98101");
+Company co = new Company("Acme", addr, 50);
+String summary = companySummary(co);`}
   typescript={`interface Address {
     readonly street: string
     readonly city: string
@@ -328,6 +400,29 @@ val p = Profile(
     1000uL
 )
 val label = displayLabel(p)`}
+  java={`// Java 16+
+public record Profile(
+    String username,
+    java.util.Optional<String> displayName,
+    java.util.Optional<String> bio,
+    long followerCount) {}
+
+// Java 8+
+public final class Profile {
+    public final String username;
+    public final java.util.Optional<String> displayName;
+    public final java.util.Optional<String> bio;
+    public final long followerCount;
+}
+
+static String displayLabel(Profile p)
+
+Profile p = new Profile(
+    "alice",
+    java.util.Optional.of("Alice Smith"),
+    java.util.Optional.empty(),
+    1000L);
+String label = displayLabel(p);`}
   typescript={`interface Profile {
     readonly username: string
     readonly displayName: string | null
@@ -385,6 +480,23 @@ let cfg = Config(name: "myapp")`}
 )
 
 val cfg = Config(name = "myapp")`}
+  java={`// Java 16+
+public record Config(
+    String name, int retries,
+    boolean enabled, String host) {}
+
+// Java 8+
+public final class Config {
+    public final String name;
+    public final int retries;
+    public final boolean enabled;
+    public final String host;
+}
+
+// Defaults: retries=3, enabled=true,
+// host="localhost"
+Config cfg = new Config(
+    "myapp", 3, true, "localhost");`}
   typescript={`interface Config {
     readonly name: string
     readonly retries: number      // default: 3
@@ -455,6 +567,18 @@ let label = statusLabel(s: .active)`}
 fun statusLabel(s: Status): String
 
 val label = statusLabel(Status.Active)`}
+  java={`public enum Status {
+    PENDING(0),
+    ACTIVE(1),
+    COMPLETED(2),
+    FAILED(3);
+
+    public final int value;
+}
+
+static String statusLabel(Status s)
+
+String label = statusLabel(Status.ACTIVE);`}
   typescript={`enum Status {
     Pending = 0,
     Active = 1,
@@ -523,6 +647,40 @@ fun describeState(s: LoadState): String
 
 val s = LoadState.Loading(0.5)
 val desc = describeState(s)`}
+  java={`// Java 17+
+public sealed interface LoadState {
+    record Idle() implements LoadState {}
+    record Loading(double progress)
+        implements LoadState {}
+    record Loaded(String data)
+        implements LoadState {}
+    record Error(String message, int code)
+        implements LoadState {}
+}
+
+// Java 8+
+public abstract class LoadState {
+    public static final class Idle
+        extends LoadState {}
+    public static final class Loading
+        extends LoadState {
+        public final double progress;
+    }
+    public static final class Loaded
+        extends LoadState {
+        public final String data;
+    }
+    public static final class Error
+        extends LoadState {
+        public final String message;
+        public final int code;
+    }
+}
+
+static String describeState(LoadState s)
+
+LoadState s = new LoadState.Loading(0.5);
+String desc = describeState(s);`}
   typescript={`type LoadState =
     | { readonly tag: "Idle" }
     | { readonly tag: "Loading"; readonly progress: number }

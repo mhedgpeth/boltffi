@@ -62,6 +62,19 @@ val counter = Counter()
 counter.increment()
 counter.increment()
 println(counter.get())  // 2`}
+  java={`public final class Counter
+    implements AutoCloseable {
+    public Counter()
+    public void increment()
+    public int get()
+    public void close()
+}
+
+Counter counter = new Counter();
+counter.increment();
+counter.increment();
+System.out.println(counter.get()); // 2
+counter.close();`}
   typescript={`declare class Counter {
     private constructor()
     static new(): Counter
@@ -103,6 +116,12 @@ let c = Counter()`}
 }
 
 val c = Counter()`}
+  java={`public final class Counter
+    implements AutoCloseable {
+    public Counter()
+}
+
+Counter c = new Counter();`}
   typescript={`declare class Counter {
     private constructor()
     static new(): Counter
@@ -159,6 +178,18 @@ let db3 = Database(path: "data.db", readOnly: true)`}
 val db1 = Database()
 val db2 = Database.open("data.db")
 val db3 = Database.withOptions("data.db", true)`}
+  java={`public final class Database
+    implements AutoCloseable {
+    public Database()
+    public static Database open(String path)
+    public static Database withOptions(
+        String path, boolean readOnly)
+}
+
+Database db1 = new Database();
+Database db2 = Database.open("data.db");
+Database db3 = Database.withOptions(
+    "data.db", true);`}
   typescript={`declare class Database {
     private constructor()
     static new(): Database
@@ -209,6 +240,14 @@ let cfg = Config.production()`}
 }
 
 val cfg = Config.production()`}
+  java={`public final class Config
+    implements AutoCloseable {
+    public Config()
+    public static Config production()
+    public static Config development()
+}
+
+Config cfg = Config.production();`}
   typescript={`declare class Config {
     private constructor()
     static new(): Config
@@ -262,6 +301,18 @@ try {
 } catch (e: DbError.NotFound) {
     println("file not found")
 }`}
+  java={`public final class Database
+    implements AutoCloseable {
+    public static Database open(String path)
+        // throws DbError.Exception
+}
+
+try {
+    Database db = Database.open("data.db");
+} catch (DbError.Exception e) {
+    if (e.getError() == DbError.NOT_FOUND)
+        System.out.println("file not found");
+}`}
   typescript={`declare enum DbError {
     NotFound = 0,
     PermissionDenied = 1
@@ -288,7 +339,9 @@ try {
 
 ## Methods
 
-Methods take `&self`. For mutation, use interior mutability (`Mutex`, atomics, etc.).
+Once you have a class, you define methods on it. Any `pub fn` in the `#[export] impl` block that takes `&self` becomes an instance method in the target language. The target language calls the method, BoltFFI routes it to Rust, and Rust executes it on the actual object.
+
+Because the target language can call your methods from any thread at any time, BoltFFI requires `&self` (shared reference), not `&mut self` (exclusive reference). If your method needs to change state, use interior mutability (`Mutex`, `RwLock`, atomics, or whatever synchronization fits your use case). This way multiple threads can safely call methods on the same object without data races. The [`&self vs &mut self`](#self-vs-mut-self) section below covers this in detail.
 
 <CodeComparison
   title=""
@@ -351,6 +404,23 @@ try {
 } catch (e: AccountError) {
     println(e.message)
 }`}
+  java={`public final class Account
+    implements AutoCloseable {
+    public long balance()
+    public void deposit(long amount)
+    public void withdraw(long amount)
+        // throws AccountError.Exception
+}
+
+Account acc = new Account();
+acc.deposit(100L);
+System.out.println(acc.balance());
+
+try {
+    acc.withdraw(50L);
+} catch (AccountError.Exception e) {
+    System.out.println(e.getError());
+}`}
   typescript={`declare class Account {
     private constructor()
     static new(): Account
@@ -373,9 +443,9 @@ try {
 
 ### &self vs &mut self
 
-`&self` takes a shared reference. `&mut self` takes an exclusive reference.
+When the target language calls a method, there's no guarantee which thread it comes from. Swift might dispatch from the main thread, a GCD queue, or a `Task`. Kotlin might call from a coroutine on any dispatcher. Java might call from any thread in a thread pool. You don't control this.
 
-**`&mut self` methods are blocked by default.** Two threads calling `&mut self` on the same instance is undefined behavior. BoltFFI prevents this at compile time:
+That's the problem with `&mut self`. It requires exclusive access to the object. If two threads call a `&mut self` method at the same time, you get undefined behavior. BoltFFI catches this at compile time:
 
 ```rust
 #[export]
@@ -397,7 +467,7 @@ Options:
    language and want to avoid synchronization overhead you don't need
 ```
 
-The recommended approach: use `&self` for all methods and handle mutability with `Mutex`, `RwLock`, or atomics. This is thread-safe by default and works everywhere.
+Use `&self` instead, and move the synchronization inside your struct. `Mutex`, `RwLock`, atomics, channels, or any other mechanism that makes concurrent access safe:
 
 ```rust
 use std::sync::Mutex;
@@ -412,7 +482,7 @@ impl Counter {
         Counter { value: Mutex::new(0) }
     }
     
-    pub fn increment(&self) {  // &self, not &mut self
+    pub fn increment(&self) {
         *self.value.lock().unwrap() += 1;
     }
     
@@ -422,7 +492,7 @@ impl Counter {
 }
 ```
 
-If you control thread access from the target language and want to avoid synchronization overhead, see [Single-threaded mode](#single-threaded-mode).
+If you know the object will only ever be accessed from a single thread and want to skip the synchronization overhead, see [Single-threaded mode](#single-threaded-mode).
 
 ### Static methods
 
@@ -454,6 +524,13 @@ let t = Config.defaultTimeout()`}
 }
 
 val t = Config.defaultTimeout()`}
+  java={`public final class Config
+    implements AutoCloseable {
+    public static int defaultTimeout()
+    public static int maxConnections()
+}
+
+int t = Config.defaultTimeout();`}
   typescript={`declare class Config {
     private constructor()
     static defaultTimeout(): number
@@ -510,6 +587,26 @@ let data = try await client.get(url: "https://api.example.com")`}
 
 val client = HttpClient()
 val data = client.get("https://api.example.com")`}
+  java={`public final class HttpClient
+    implements AutoCloseable {
+    public HttpClient()
+
+    // Java 21+ (virtual threads)
+    public String get(String url)
+        // throws HttpErrorException
+    public String post(String url, String body)
+        // throws HttpErrorException
+
+    // Java 8+ (CompletableFuture)
+    public CompletableFuture<String> get(
+        String url)
+    public CompletableFuture<String> post(
+        String url, String body)
+}
+
+HttpClient client = new HttpClient();
+String data = client.get(
+    "https://api.example.com");`}
   typescript={`declare class HttpClient {
     private constructor()
     static new(): HttpClient
@@ -561,6 +658,15 @@ let u = session.user()`}
 val user = User("alice")
 val session = Session(user)
 val u = session.user()`}
+  java={`public final class Session
+    implements AutoCloseable {
+    public Session(User user)
+    public User user()
+}
+
+User user = new User("alice");
+Session session = new Session(user);
+User u = session.user();`}
   typescript={`declare class Session {
     private constructor()
     static new(user: User): Session
@@ -580,10 +686,11 @@ const u = session.user()`}
 
 ## Skipping methods
 
-Use `#[skip]` to exclude a method from FFI export. The method stays in Rust but isn't exposed to the target language.
+Use `#[skip]` to exclude a method from FFI export. The method stays in Rust but isn't exposed to the target language. The skipped method is still callable from Rust, just not from the target language.
 
-```rust
-#[export]
+<CodeComparison
+  title=""
+  rust={`#[export]
 impl MyClass {
     pub fn exported(&self) -> i32 {
         self.helper() * 2
@@ -593,8 +700,39 @@ impl MyClass {
     pub fn helper(&self) -> i32 {
         42
     }
+}`}
+  swift={`public class MyClass {
+    public func exported() -> Int32
+    // helper() is not exposed
 }
-```
+
+let obj = MyClass()
+print(obj.exported()) // 84`}
+  kotlin={`class MyClass {
+    fun exported(): Int
+    // helper() is not exposed
+}
+
+val obj = MyClass()
+println(obj.exported()) // 84`}
+  java={`public final class MyClass
+    implements AutoCloseable {
+    public int exported()
+    // helper() is not exposed
+}
+
+MyClass obj = new MyClass();
+System.out.println(obj.exported()); // 84`}
+  typescript={`declare class MyClass {
+    private constructor()
+    exported(): number
+    // helper() is not exposed
+    dispose(): void
+}
+
+const obj = MyClass.new()
+console.log(obj.exported()) // 84`}
+/>
 
 ## Thread safety
 
@@ -650,6 +788,17 @@ val counter = SafeCounter()
 repeat(100) {
     thread { counter.increment() }
 }`}
+  java={`public final class SafeCounter
+    implements AutoCloseable {
+    public SafeCounter()
+    public void increment()
+    public int get()
+}
+
+SafeCounter counter = new SafeCounter();
+for (int i = 0; i < 100; i++) {
+    new Thread(counter::increment).start();
+}`}
   typescript={`declare class SafeCounter {
     private constructor()
     static new(): SafeCounter
@@ -698,7 +847,7 @@ impl FastCounter {
 }
 ```
 
-This compiles. No `Mutex`, no atomic operations, no overhead. But you're making a promise: you will not call methods on this object from multiple threads simultaneously. Breaking that promise is undefined behavior.
+No synchronization overhead. The tradeoff is that thread safety is now your responsibility. If two threads call methods on this object at the same time, that's undefined behavior.
 
 ### When to use single_threaded
 

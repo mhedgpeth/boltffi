@@ -8,10 +8,15 @@ import sitemap from '@astrojs/sitemap';
 // https://astro.build/config
 export default defineConfig({
   site: 'https://boltffi.dev',
+  trailingSlash: 'never',
   integrations: [
     react(),
     mdx(),
-    sitemap(),
+    sitemap({
+      changefreq: 'weekly',
+      priority: 0.7,
+      lastmod: new Date(),
+    }),
   ],
   markdown: {
     syntaxHighlight: 'prism',

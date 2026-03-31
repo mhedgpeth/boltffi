@@ -39,6 +39,11 @@ fun multiply(x: Double, y: Double): Double
 
 val sum = add(5, 3)
 val product = multiply(2.5, 4.0)`}
+  java={`static int add(int a, int b)
+static double multiply(double x, double y)
+
+int sum = add(5, 3);
+double product = multiply(2.5, 4.0);`}
   typescript={`function add(a: number, b: number): number
 function multiply(x: number, y: number): number
 
@@ -73,6 +78,11 @@ fun charCount(s: String): ULong
 
 val msg = greet("World")
 val len = charCount("hello")`}
+  java={`static String greet(String name)
+static long charCount(String s)
+
+String msg = greet("World");
+long len = charCount("hello");`}
   typescript={`function greet(name: string): string
 function charCount(s: string): number
 
@@ -144,6 +154,15 @@ val d = distance(
     Point(3.0, 4.0),
     Unit.Meters
 )`}
+  java={`// Point, Unit generated as records or
+// classes based on Java version target
+static double distance(
+    Point a, Point b, Unit unit)
+
+double d = distance(
+    new Point(0.0, 0.0),
+    new Point(3.0, 4.0),
+    Unit.METERS);`}
   typescript={`interface Point {
     readonly x: number
     readonly y: number
@@ -191,6 +210,12 @@ fun average(values: DoubleArray): Double
 
 val total = sum(intArrayOf(1, 2, 3, 4, 5))
 val avg = average(doubleArrayOf(1.0, 2.0, 3.0))`}
+  java={`static int sum(int[] values)
+static double average(double[] values)
+
+int total = sum(new int[]{1, 2, 3, 4, 5});
+double avg = average(
+    new double[]{1.0, 2.0, 3.0});`}
   typescript={`function sum(values: number[]): number
 function average(values: number[]): number
 
@@ -246,6 +271,18 @@ fun setTimeout(
 
 val formal = greetUser("Smith", "Dr.")
 val casual = greetUser("John", null)`}
+  java={`static String greetUser(
+    String name,
+    java.util.Optional<String> title)
+
+static void setTimeout(
+    long ms,
+    java.util.Optional<Long> callbackId)
+
+String formal = greetUser(
+    "Smith", java.util.Optional.of("Dr."));
+String casual = greetUser(
+    "John", java.util.Optional.empty());`}
   typescript={`function greetUser(
     name: string,
     title: string | null
@@ -258,6 +295,142 @@ function setTimeout(
 
 const formal = greetUser("Smith", "Dr.")
 const casual = greetUser("John", null)`}
+/>
+
+### Classes
+
+Functions can accept class instances as parameters. The class reference passes across the boundary without copying the object.
+
+<CodeComparison
+  title=""
+  rust={`#[export]
+impl Logger {
+    pub fn new(prefix: &str) -> Self {
+        Logger { prefix: prefix.into() }
+    }
+}
+
+#[export]
+pub fn log_message(
+    logger: &Logger,
+    message: &str
+) {
+    println!("[{}] {}", logger.prefix, message);
+}`}
+  swift={`func logMessage(logger: Logger, message: String)
+
+let logger = Logger(prefix: "app")
+logMessage(logger: logger, message: "started")`}
+  kotlin={`fun logMessage(logger: Logger, message: String)
+
+val logger = Logger("app")
+logMessage(logger, "started")`}
+  java={`static void logMessage(
+    Logger logger, String message)
+
+Logger logger = new Logger("app");
+logMessage(logger, "started");`}
+  typescript={`function logMessage(
+    logger: Logger, message: string): void
+
+const logger = Logger.new("app")
+logMessage(logger, "started")`}
+/>
+
+### Callback traits
+
+Functions can accept callback traits. A callback trait is a Rust trait marked with `#[export]` that the target language implements. Unlike closures (single anonymous function), callback traits can have multiple methods and carry state. See [Callbacks](/docs/callbacks) for more.
+
+<CodeComparison
+  title=""
+  rust={`#[export]
+pub trait EventListener {
+    fn on_start(&self);
+    fn on_progress(&self, percent: f64);
+    fn on_complete(&self, result: String);
+}
+
+#[export]
+pub fn run_task(
+    listener: impl EventListener
+) {
+    listener.on_start();
+    listener.on_progress(0.5);
+    listener.on_complete("done".into());
+}`}
+  swift={`protocol EventListener {
+    func onStart()
+    func onProgress(percent: Double)
+    func onComplete(result: String)
+}
+
+func runTask(listener: EventListener)
+
+class MyListener: EventListener {
+    func onStart() { print("started") }
+    func onProgress(percent: Double) {
+        print("\\(percent * 100)%")
+    }
+    func onComplete(result: String) {
+        print(result)
+    }
+}
+
+runTask(listener: MyListener())`}
+  kotlin={`interface EventListener {
+    fun onStart()
+    fun onProgress(percent: Double)
+    fun onComplete(result: String)
+}
+
+fun runTask(listener: EventListener)
+
+val listener = object : EventListener {
+    override fun onStart() =
+        println("started")
+    override fun onProgress(percent: Double) =
+        println("\${percent * 100}%")
+    override fun onComplete(result: String) =
+        println(result)
+}
+
+runTask(listener)`}
+  java={`public interface EventListener {
+    void onStart();
+    void onProgress(double percent);
+    void onComplete(String result);
+}
+
+static void runTask(EventListener listener)
+
+runTask(new EventListener() {
+    public void onStart() {
+        System.out.println("started");
+    }
+    public void onProgress(double percent) {
+        System.out.println(percent * 100 + "%");
+    }
+    public void onComplete(String result) {
+        System.out.println(result);
+    }
+});`}
+  typescript={`interface EventListener {
+    onStart(): void
+    onProgress(percent: number): void
+    onComplete(result: string): void
+}
+
+function runTask(listener: EventListener): void
+
+runTask({
+    onStart() { console.log("started") },
+    onProgress(percent) {
+        console.log(percent * 100 + "%")
+    },
+    onComplete(result) {
+        console.log(result)
+    }
+})`}
 />
 
 ## Return types
@@ -293,6 +466,16 @@ findUser(42uL)?.let { user ->
 }
 
 val pos = firstPositive(intArrayOf(-1, -2, 3))`}
+  java={`static java.util.Optional<User> findUser(
+    long id)
+static java.util.Optional<Integer> firstPositive(
+    int[] values)
+
+findUser(42L).ifPresent(user ->
+    System.out.println(user.name()));
+
+java.util.Optional<Integer> pos =
+    firstPositive(new int[]{-1, -2, 3});`}
   typescript={`function findUser(id: bigint): User | null
 function firstPositive(values: number[]): number | null
 
@@ -354,6 +537,27 @@ try {
 } catch (e: ParseError.OutOfRange) {
     println("too large")
 }`}
+  java={`public enum ParseError {
+    INVALID_FORMAT,
+    OUT_OF_RANGE;
+
+    public static final class Exception
+        extends RuntimeException {
+        public ParseError getError()
+    }
+}
+
+static short parsePort(String s)
+    // throws ParseError.Exception
+
+try {
+    short port = parsePort("8080");
+} catch (ParseError.Exception e) {
+    if (e.getError() == ParseError.INVALID_FORMAT)
+        System.out.println("bad format");
+    else if (e.getError() == ParseError.OUT_OF_RANGE)
+        System.out.println("too large");
+}`}
   typescript={`enum ParseError {
     InvalidFormat = 0,
     OutOfRange = 1
@@ -405,6 +609,12 @@ fun filterPositive(values: IntArray): IntArray
 
 val nums = range(0, 10)
 val pos = filterPositive(intArrayOf(-1, 2, -3, 4))`}
+  java={`static int[] range(int start, int end)
+static int[] filterPositive(int[] values)
+
+int[] nums = range(0, 10);
+int[] pos = filterPositive(
+    new int[]{-1, 2, -3, 4});`}
   typescript={`function range(start: number, end: number): number[]
 function filterPositive(values: number[]): number[]
 
@@ -414,7 +624,7 @@ const pos = filterPositive([-1, 2, -3, 4])`}
 
 ## Async functions
 
-Mark a function `async` and BoltFFI generates an async function in the target language. Swift gets `async`, Kotlin gets `suspend`.
+Mark a function `async` and BoltFFI generates an async function in the target language. Swift gets `async`, Kotlin gets `suspend`, Java gets `CompletableFuture` (Java 8+) or virtual-thread blocking calls (Java 21+), and TypeScript gets `Promise`.
 
 <CodeComparison
   title=""
@@ -444,6 +654,18 @@ coroutineScope {
     val data = fetchData("https://api.example.com")
     val config = loadConfig()
 }`}
+  java={`// Java 21+ (virtual threads)
+static String fetchData(String url)
+    // throws FetchErrorException
+static Config loadConfig()
+
+// Java 8+ (CompletableFuture)
+static CompletableFuture<String> fetchData(
+    String url)
+static CompletableFuture<Config> loadConfig()
+
+String data = fetchData(
+    "https://api.example.com");`}
   typescript={`async function fetchData(url: string): Promise<string>
 async function loadConfig(): Promise<Config>
 
@@ -451,7 +673,7 @@ const data = await fetchData("https://api.example.com")
 const config = await loadConfig()`}
 />
 
-The async runtime is handled by BoltFFI. Your Rust async code runs on a Tokio runtime that BoltFFI manages.
+BoltFFI has no built-in executor. You choose your Rust async runtime (Tokio, async-std, smol, etc.), and BoltFFI bridges the async boundary between Rust and the target language. See [Async](/docs/async) for more.
 
 ## Closures
 
@@ -505,6 +727,20 @@ var sum = 0
 foreachRange(1, 5) { sum += it }
 
 val doubled = mapValues(intArrayOf(1, 2, 3)) { it * 2 }`}
+  java={`// @FunctionalInterface generated for each
+// closure signature
+static void foreachRange(
+    int start, int end,
+    ForeachRangeCallback callback)
+static int[] mapValues(
+    int[] values,
+    MapValuesTransform transform)
+
+int[] sum = {0};
+foreachRange(1, 5, v -> sum[0] += v);
+
+int[] doubled = mapValues(
+    new int[]{1, 2, 3}, v -> v * 2);`}
   typescript={`function foreachRange(
     start: number,
     end: number,

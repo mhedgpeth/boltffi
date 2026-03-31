@@ -1,6 +1,6 @@
 ---
 title: "Types"
-description: "Reference how Rust types map to Swift, Kotlin, and TypeScript in BoltFFI, including supported primitives, collections, and performance notes."
+description: "Reference how Rust types map to Swift, Kotlin, Java, and TypeScript in BoltFFI, including supported primitives, collections, and performance notes."
 ---
 
 import CodeComparison from "../../components/CodeComparisonWrapper.astro";
@@ -17,24 +17,24 @@ When you design a Rust API for BoltFFI, you need to know what happens to your ty
 <TypeTable
   title="Integers"
   mappings={[
-    { rust: "i8", swift: "Int8", kotlin: "Byte", typescript: "number" },
-    { rust: "i16", swift: "Int16", kotlin: "Short", typescript: "number" },
-    { rust: "i32", swift: "Int32", kotlin: "Int", typescript: "number" },
-    { rust: "i64", swift: "Int64", kotlin: "Long", typescript: "bigint" },
-    { rust: "u8", swift: "UInt8", kotlin: "UByte", typescript: "number" },
-    { rust: "u16", swift: "UInt16", kotlin: "UShort", typescript: "number" },
-    { rust: "u32", swift: "UInt32", kotlin: "UInt", typescript: "number" },
-    { rust: "u64", swift: "UInt64", kotlin: "ULong", typescript: "bigint" },
+    { rust: "i8", swift: "Int8", kotlin: "Byte", java: "byte", typescript: "number" },
+    { rust: "i16", swift: "Int16", kotlin: "Short", java: "short", typescript: "number" },
+    { rust: "i32", swift: "Int32", kotlin: "Int", java: "int", typescript: "number" },
+    { rust: "i64", swift: "Int64", kotlin: "Long", java: "long", typescript: "bigint" },
+    { rust: "u8", swift: "UInt8", kotlin: "UByte", java: "byte", typescript: "number" },
+    { rust: "u16", swift: "UInt16", kotlin: "UShort", java: "short", typescript: "number" },
+    { rust: "u32", swift: "UInt32", kotlin: "UInt", java: "int", typescript: "number" },
+    { rust: "u64", swift: "UInt64", kotlin: "ULong", java: "long", typescript: "bigint" },
   ]}
 />
 
 <TypeTable
   title="Floats & Primitives"
   mappings={[
-    { rust: "f32", swift: "Float", kotlin: "Float", typescript: "number" },
-    { rust: "f64", swift: "Double", kotlin: "Double", typescript: "number" },
-    { rust: "bool", swift: "Bool", kotlin: "Boolean", typescript: "boolean" },
-    { rust: "String", swift: "String", kotlin: "String", typescript: "string" },
+    { rust: "f32", swift: "Float", kotlin: "Float", java: "float", typescript: "number" },
+    { rust: "f64", swift: "Double", kotlin: "Double", java: "double", typescript: "number" },
+    { rust: "bool", swift: "Bool", kotlin: "Boolean", java: "boolean", typescript: "boolean" },
+    { rust: "String", swift: "String", kotlin: "String", java: "String", typescript: "string" },
   ]}
 />
 
@@ -43,9 +43,9 @@ When you design a Rust API for BoltFFI, you need to know what happens to your ty
 <TypeTable
   title=""
   mappings={[
-    { rust: "Vec<T>", swift: "[T]", kotlin: "List<T>", typescript: "T[]" },
-    { rust: "Option<T>", swift: "T?", kotlin: "T?", typescript: "T | null" },
-    { rust: "Result<T, E>", swift: "throws", kotlin: "throws", typescript: "throws" },
+    { rust: "Vec<T>", swift: "[T]", kotlin: "List<T>", java: "List<T>", typescript: "T[]" },
+    { rust: "Option<T>", swift: "T?", kotlin: "T?", java: "T (nullable)", typescript: "T | null" },
+    { rust: "Result<T, E>", swift: "throws", kotlin: "throws", java: "throws", typescript: "throws" },
   ]}
 />
 
@@ -54,11 +54,11 @@ When you design a Rust API for BoltFFI, you need to know what happens to your ty
 <TypeTable
   title=""
   mappings={[
-    { rust: "Duration", swift: "TimeInterval", kotlin: "Duration", typescript: "Duration" },
-    { rust: "SystemTime", swift: "Date", kotlin: "Instant", typescript: "Date" },
-    { rust: "Uuid", swift: "UUID", kotlin: "UUID", typescript: "string" },
-    { rust: "Url", swift: "URL", kotlin: "URI", typescript: "string" },
-    { rust: "Vec<u8>", swift: "Data", kotlin: "ByteArray", typescript: "Uint8Array" },
+    { rust: "Duration", swift: "TimeInterval", kotlin: "Duration", java: "Duration", typescript: "Duration" },
+    { rust: "SystemTime", swift: "Date", kotlin: "Instant", java: "Instant", typescript: "Date" },
+    { rust: "Uuid", swift: "UUID", kotlin: "UUID", java: "UUID", typescript: "string" },
+    { rust: "Url", swift: "URL", kotlin: "URI", java: "URI", typescript: "string" },
+    { rust: "Vec<u8>", swift: "Data", kotlin: "ByteArray", java: "byte[]", typescript: "Uint8Array" },
   ]}
 />
 
@@ -106,6 +106,13 @@ fun byteAt(data: ByteArray, index: ULong): UByte
 val sum = add(5, 3)
 val ts = timestampMs()
 val b = byteAt(byteArrayOf(0x48, 0x69), 0uL)`}
+  java={`static int add(int a, int b)
+static long timestampMs()
+static byte byteAt(byte[] data, long index)
+
+int sum = add(5, 3);
+long ts = timestampMs();
+byte b = byteAt(new byte[]{0x48, 0x69}, 0L);`}
   typescript={`function add(a: number, b: number): number
 function timestampMs(): bigint
 function byteAt(data: Uint8Array, index: number): number
@@ -138,6 +145,11 @@ fun lerp(a: Float, b: Float, t: Float): Float
 
 val area = circleArea(5.0)
 val mid = lerp(0.0f, 10.0f, 0.5f)`}
+  java={`static double circleArea(double radius)
+static float lerp(float a, float b, float t)
+
+double area = circleArea(5.0);
+float mid = lerp(0.0f, 10.0f, 0.5f);`}
   typescript={`function circleArea(radius: number): number
 function lerp(a: number, b: number, t: number): number
 
@@ -186,6 +198,13 @@ fun firstWord(s: String): String
 val msg = greet("World")
 val ha = repeat("ha", 3uL)  // "hahaha"
 val word = firstWord("hello world")`}
+  java={`static String greet(String name)
+static String repeat(String s, long n)
+static String firstWord(String s)
+
+String msg = greet("World");
+String ha = repeat("ha", 3L);  // "hahaha"
+String word = firstWord("hello world");`}
   typescript={`function greet(name: string): string
 function repeat(s: string, n: number): string
 function firstWord(s: string): string
@@ -268,6 +287,12 @@ fun parseInt(s: String): Int?
 val user = findUser(42uL)  // "alice"
 val num = parseInt("123")  // 123
 val bad = parseInt("abc")  // null`}
+  java={`static String findUser(long id)
+static java.util.Optional<Integer> parseInt(String s)
+
+String user = findUser(42L);  // "alice"
+Optional<Integer> num = parseInt("123"); // 123
+Optional<Integer> bad = parseInt("abc"); // empty`}
   typescript={`function findUser(id: bigint): string | null
 function parseInt(s: string): number | null
 
@@ -331,6 +356,21 @@ try {
     println("empty input")
 } catch (e: ParseError) {
     println("other error")
+}`}
+  java={`public enum ParseError {
+    EMPTY(0),
+    INVALID_FORMAT(1),
+    OUT_OF_RANGE(2);
+
+    public final int value;
+}
+
+static short parsePort(String s) // throws
+
+try {
+    short port = parsePort("8080");
+} catch (RuntimeException e) {
+    System.out.println(e.getMessage());
 }`}
   typescript={`enum ParseError {
     Empty = 0,
@@ -400,6 +440,13 @@ fun filterPositive(values: IntArray): IntArray
 val total = sum(intArrayOf(1, 2, 3, 4, 5))
 val nums = range(0, 10)
 val pos = filterPositive(intArrayOf(-1, 2, -3, 4))`}
+  java={`static int sum(int[] values)
+static int[] range(int start, int end)
+static int[] filterPositive(int[] values)
+
+int total = sum(new int[]{1, 2, 3, 4, 5});
+int[] nums = range(0, 10);
+int[] pos = filterPositive(new int[]{-1, 2, -3, 4});`}
   typescript={`function sum(values: number[]): number
 function range(start: number, end: number): number[]
 function filterPositive(values: number[]): number[]
@@ -441,6 +488,14 @@ let t = transpose(matrix: m)
 
 val m = listOf(intArrayOf(1, 2, 3), intArrayOf(4, 5, 6))
 val t = transpose(m)
+// [[1, 4], [2, 5], [3, 6]]`}
+  java={`static List<int[]> transpose(List<int[]> matrix)
+
+List<int[]> m = List.of(
+    new int[]{1, 2, 3},
+    new int[]{4, 5, 6}
+);
+List<int[]> t = transpose(m);
 // [[1, 4], [2, 5], [3, 6]]`}
   typescript={`function transpose(matrix: number[][]): number[][]
 
@@ -493,11 +548,11 @@ BoltFFI recognizes certain standard library and common crate types and maps them
 <TypeTable
   title="Built-in Type Mappings"
   mappings={[
-    { rust: "std::time::Duration", swift: "TimeInterval", kotlin: "Duration", typescript: "Duration" },
-    { rust: "std::time::SystemTime", swift: "Date", kotlin: "Instant", typescript: "Date" },
-    { rust: "uuid::Uuid", swift: "UUID", kotlin: "UUID", typescript: "string" },
-    { rust: "url::Url", swift: "URL", kotlin: "URI", typescript: "string" },
-    { rust: "Vec<u8>", swift: "Data", kotlin: "ByteArray", typescript: "Uint8Array" },
+    { rust: "std::time::Duration", swift: "TimeInterval", kotlin: "Duration", java: "Duration", typescript: "Duration" },
+    { rust: "std::time::SystemTime", swift: "Date", kotlin: "Instant", java: "Instant", typescript: "Date" },
+    { rust: "uuid::Uuid", swift: "UUID", kotlin: "UUID", java: "UUID", typescript: "string" },
+    { rust: "url::Url", swift: "URL", kotlin: "URI", java: "URI", typescript: "string" },
+    { rust: "Vec<u8>", swift: "Data", kotlin: "ByteArray", java: "byte[]", typescript: "Uint8Array" },
   ]}
 />
 
@@ -528,6 +583,11 @@ fun doubleDuration(d: Duration): Duration
 
 val half = sleepDuration()  // PT0.5S
 val full = doubleDuration(half)  // PT1S`}
+  java={`static Duration sleepDuration()
+static Duration doubleDuration(Duration d)
+
+Duration half = sleepDuration();
+Duration full = doubleDuration(half);`}
   typescript={`function sleepDuration(): Duration
 function doubleDuration(d: Duration): Duration
 
@@ -562,6 +622,11 @@ fun epoch(): Instant
 
 val current = now()
 val unix = epoch()  // 1970-01-01T00:00:00Z`}
+  java={`static Instant now()
+static Instant epoch()
+
+Instant current = now();
+Instant unix = epoch();`}
   typescript={`function now(): Date
 function epoch(): Date
 
@@ -596,6 +661,11 @@ fun parseId(s: String): UUID?
 
 val id = newId()
 val parsed = parseId("550e8400-e29b-41d4-a716-446655440000")`}
+  java={`static UUID newId()
+static UUID parseId(String s)
+
+UUID id = newId();
+UUID parsed = parseId("550e8400-e29b-41d4-a716-446655440000");`}
   typescript={`function newId(): string
 function parseId(s: string): string | null
 
@@ -630,6 +700,11 @@ fun withPath(base: URI, path: String): URI
 
 val base = baseUrl()
 val full = withPath(base, "/api/v1")`}
+  java={`static URI baseUrl()
+static URI withPath(URI base, String path)
+
+URI base = baseUrl();
+URI full = withPath(base, "/api/v1");`}
   typescript={`function baseUrl(): string
 function withPath(base: string, path: string): string
 
@@ -664,6 +739,11 @@ fun hash(data: ByteArray): ByteArray
 
 val compressed = compress(originalData)
 val digest = hash(message)`}
+  java={`static byte[] compress(byte[] data)
+static byte[] hash(byte[] data)
+
+byte[] compressed = compress(originalData);
+byte[] digest = hash(message);`}
   typescript={`function compress(data: Uint8Array): Uint8Array
 function hash(data: Uint8Array): Uint8Array
 

@@ -1,6 +1,6 @@
 ---
 title: "Configuration"
-description: "Configure boltffi.toml package names, target outputs, and platform packaging behavior for generated Swift, Kotlin, and other bindings."
+description: "Configure boltffi.toml package names, target outputs, and platform packaging behavior for generated Swift, Kotlin, Java, and TypeScript bindings."
 ---
 
 # Configuration
@@ -363,6 +363,75 @@ dist/android/
 
 Copy `jniLibs` to your Android project's `src/main/` directory. Copy the Kotlin sources to your source set. The native libraries are loaded automatically when you first use the Kotlin bindings.
 
+## Java Configuration
+
+The `[targets.java]` section controls Java bindings for both JVM and Android.
+
+### Package Name
+
+Generated Java code needs a package name. By default, BoltFFI uses `com.example.{name}`:
+
+```toml
+[targets.java]
+package = "com.mycompany.mylib"
+```
+
+This determines the directory structure and the `package` declaration in every generated `.java` file.
+
+### Module Name
+
+The generated functions class uses a name derived from your package name. Override it if needed:
+
+```toml
+[targets.java]
+module_name = "MyLib"
+```
+
+This becomes the class name for the static functions module: `MyLib.someFunction()`.
+
+### Minimum Java Version
+
+The `min_version` controls which Java language features the generated code uses:
+
+```toml
+[targets.java]
+min_version = 8
+```
+
+| Version | Generated code uses |
+|---------|---------------------|
+| 8 | `final class` for records, `abstract class` for enums with data, `CompletableFuture` for async |
+| 16 | `record` types for structs |
+| 17 | `sealed interface` + `record` for enums with data |
+| 21 | Virtual thread blocking calls for async (no `CompletableFuture`) |
+
+### JVM Target
+
+Enable JVM packaging to produce a standalone JNI library for desktop or server use:
+
+```toml
+[targets.java.jvm]
+enabled = true
+output = "dist/java"
+```
+
+The default output is `dist/java`. This produces Java sources, a C header, JNI glue, and a compiled shared library. Requires `JAVA_HOME` and `clang`.
+
+### Android Target
+
+Enable Android packaging to produce shared libraries for all Android ABIs:
+
+```toml
+[targets.java.android]
+enabled = true
+output = "dist/java/android"
+min_sdk = 24
+```
+
+The default output is `dist/java/android`. The `min_sdk` sets the minimum Android API level (default `24`).
+
+Both JVM and Android targets can be enabled simultaneously. They share the same `package`, `module_name`, and `min_version` settings but produce separate output.
+
 ## WASM Configuration
 
 The `[targets.wasm]` section controls WebAssembly builds and npm package generation.
@@ -498,6 +567,13 @@ package = "com.mycompany.mylib"
 api_style = "top_level"
 factory_style = "constructors"
 
+[targets.java]
+package = "com.mycompany.mylib"
+min_version = 8
+
+[targets.java.jvm]
+enabled = true
+
 [targets.wasm]
 output = "dist/wasm"
 
@@ -509,12 +585,3 @@ targets = ["bundler", "web", "nodejs"]
 enabled = true
 level = "s"
 ```
-
-This configuration:
-- Names the library `mylib`, generating `MyLib` modules
-- Builds for iOS 15+, iOS Simulator, and macOS
-- Uses the simple ffi-only SwiftPM layout
-- Maps `Uuid` to native Swift `UUID`
-- Builds for Android API 24+
-- Generates top-level Kotlin functions with constructor-style factories
-- Builds optimized WASM with npm package `@mycompany/mylib`

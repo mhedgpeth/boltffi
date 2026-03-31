@@ -13,6 +13,7 @@ import {
   GraduationCap,
   Database,
   Settings,
+  FlaskConical,
   ChevronDown,
   type LucideIcon
 } from "lucide-react";
@@ -152,9 +153,8 @@ const sections: Section[] = [
     children: [
       { id: "apple-packaging", label: "Apple" },
       { id: "android-packaging", label: "Android" },
+      { id: "java-packaging", label: "Java" },
       { id: "wasm-packaging", label: "WASM" },
-      { id: "using-in-xcode", label: "Using in Xcode" },
-      { id: "using-in-android-studio", label: "Using in Android" },
     ]
   },
   { 
@@ -166,7 +166,17 @@ const sections: Section[] = [
       { id: "apple-configuration", label: "Apple" },
       { id: "swiftpm-layouts", label: "SwiftPM Layouts" },
       { id: "android-configuration", label: "Android" },
+      { id: "java-configuration", label: "Java" },
       { id: "wasm-configuration", label: "WASM" },
+    ]
+  },
+  { 
+    id: "experimental", 
+    label: "Experimental", 
+    icon: FlaskConical,
+    children: [
+      { id: "enabling-experimental-features", label: "Enabling" },
+      { id: "current-experimental-features", label: "Current Features" },
     ]
   },
   { id: "tutorial", label: "Tutorial", icon: GraduationCap },
