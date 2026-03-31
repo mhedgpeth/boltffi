@@ -190,7 +190,7 @@ enum PackTargetArg {
         #[arg(long)]
         no_build: bool,
 
-        #[arg(long, help = "Include experimental targets")]
+        #[arg(long, help = "Include experimental targets/features")]
         experimental: bool,
     },
 
@@ -252,7 +252,7 @@ enum PackTargetArg {
     },
 
     #[command(
-        about = "Build + package Java artifacts (experimental)",
+        about = "Build + package Java artifacts",
         long_about = "Build + package Java artifacts.\n\nOutputs:\n  - Java bindings: {targets.java.jvm.output}\n"
     )]
     Java {
@@ -475,6 +475,7 @@ fn execute_command(
                     release,
                     regenerate,
                     no_build,
+                    experimental: false,
                     cargo_args: cargo_args.clone(),
                 }),
             };

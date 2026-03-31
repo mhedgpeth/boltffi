@@ -30,20 +30,17 @@ pub enum Experimental {
 }
 
 impl Experimental {
-    pub const ALL: &'static [Experimental] = &[
-        Experimental::WholeTarget(Target::Java),
-        Experimental::Feature {
-            target: Target::TypeScript,
-            name: "async_streams",
-        },
-    ];
+    pub const ALL: &'static [Experimental] = &[Experimental::Feature {
+        target: Target::TypeScript,
+        name: "async_streams",
+    }];
 
     pub const RECORDS_METHODS: &'static str = "records.methods";
 
     pub fn is_target_experimental(target: Target) -> bool {
-        Self::ALL
-            .iter()
-            .any(|e| matches!(e, Experimental::WholeTarget(t) if *t == target))
+        Self::ALL.iter().any(
+            |experimental| matches!(experimental, Experimental::WholeTarget(t) if *t == target),
+        )
     }
 }
 
@@ -756,7 +753,9 @@ impl Config {
 
     pub fn should_process(&self, target: Target, experimental_flag: bool) -> bool {
         self.is_enabled(target)
-            && (!Experimental::is_target_experimental(target) || experimental_flag)
+            && (!Experimental::is_target_experimental(target)
+                || experimental_flag
+                || self.is_experimental_enabled(&Experimental::WholeTarget(target)))
     }
 
     pub fn cargo_args_for_command(&self, command_name: &str) -> Vec<String> {
@@ -776,7 +775,7 @@ impl Config {
 
     fn is_experimental_enabled(&self, exp: &Experimental) -> bool {
         let key = match exp {
-            Experimental::WholeTarget(t) => t.name().to_string(),
+            Experimental::WholeTarget(target) => target.name().to_string(),
             Experimental::Feature { target, name } => format!("{}.{}", target.name(), name),
         };
         self.experimental.contains(&key)

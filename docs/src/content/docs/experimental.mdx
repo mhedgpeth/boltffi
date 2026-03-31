@@ -1,15 +1,16 @@
 ---
 title: "Experimental Features"
-description: "Enable and manage experimental BoltFFI features including Java bindings, TypeScript async streams, and record methods."
+description: "Enable and manage experimental BoltFFI features such as TypeScript async streams and record methods."
 ---
 
 # Experimental Features
 
 Some BoltFFI features are behind an experimental flag. The API for these features may change between releases, so they require an explicit opt-in.
 
+Java bindings are now generally available and no longer require experimental opt-in.
+
 | Feature | Key | Status |
 |---------|-----|--------|
-| Java bindings | `java` | Functional |
 | TS async streams | `typescript.async_streams` | Functional |
 | Record methods | `records.methods` | Functional |
 
@@ -17,32 +18,24 @@ Some BoltFFI features are behind an experimental flag. The API for these feature
 
 ### CLI flag
 
+Pass `--experimental` to include experimental targets during that command run:
+
 ```bash
-boltffi generate java --experimental
-boltffi pack java --experimental
+boltffi generate all --experimental
+boltffi pack all --experimental
 ```
 
 ### Config file
 
+Add the feature key to `experimental` in `boltffi.toml`:
+
 ```toml
-experimental = ["java", "typescript.async_streams", "records.methods"]
+experimental = ["typescript.async_streams", "records.methods"]
 ```
 
 The CLI flag applies to a single command. The config array applies to every build.
 
 ## Feature Details
-
-### Java Bindings
-
-**Key:** `java`
-
-The entire Java target (JVM and Android codegen, JNI bridge, all generated sources) requires this flag.
-
-Known gaps:
-
-- Custom types (`Duration`, `SystemTime`, `Uuid`, `Url`) are not yet supported. Functions using them are silently skipped.
-- Record field defaults (`#[boltffi::default(...)]`) don't generate overloaded constructors.
-- Error enum variant payloads are not carried across (error enums are flat in Java).
 
 ### TypeScript Async Streams
 

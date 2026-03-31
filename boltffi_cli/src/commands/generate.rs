@@ -31,14 +31,28 @@ pub struct GenerateOptions {
     pub experimental: bool,
 }
 
-fn require_experimental(target: Target, experimental_flag: bool) -> Result<()> {
-    if Experimental::is_target_experimental(target) && !experimental_flag {
-        return Err(CliError::CommandFailed {
-            command: format!("{} is experimental, use --experimental flag", target.name()),
-            status: None,
-        });
+fn require_experimental_target(
+    config: &Config,
+    target: Target,
+    experimental_flag: bool,
+) -> Result<()> {
+    if !Experimental::is_target_experimental(target) {
+        return Ok(());
     }
-    Ok(())
+
+    let enabled_in_config = config.experimental.contains(&target.name().to_string());
+    if experimental_flag || enabled_in_config {
+        return Ok(());
+    }
+
+    Err(CliError::CommandFailed {
+        command: format!(
+            "{} is experimental, use --experimental flag or add \"{}\" to [experimental]",
+            target.name(),
+            target.name()
+        ),
+        status: None,
+    })
 }
 
 pub fn run_generate_with_output(config: &Config, options: GenerateOptions) -> Result<()> {
@@ -46,7 +60,7 @@ pub fn run_generate_with_output(config: &Config, options: GenerateOptions) -> Re
         GenerateTarget::Swift => generate_swift(config, options.output),
         GenerateTarget::Kotlin => generate_kotlin(config, options.output),
         GenerateTarget::Java => {
-            require_experimental(Target::Java, options.experimental)?;
+            require_experimental_target(config, Target::Java, options.experimental)?;
             generate_java(config, options.output)
         }
         GenerateTarget::Header => generate_header(config, options.output),
