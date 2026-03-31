@@ -320,6 +320,7 @@ impl<'a> JavaLowerer<'a> {
         };
         let value_type = JavaValueTypeDef::Record(record);
         JavaRecord {
+            doc: record.doc.clone(),
             shape,
             class_name,
             fields,
@@ -401,6 +402,7 @@ impl<'a> JavaLowerer<'a> {
             .record_field_write_seq(record_id, &field.name)
             .expect("record field encode ops");
         JavaRecordField {
+            doc: field.doc.clone(),
             name: NamingConvention::field_name(field.name.as_str()),
             java_type: self.java_type(&field.type_expr),
             wire_decode_expr: super::emit::emit_reader_read(&decode_seq),
@@ -708,6 +710,7 @@ impl<'a> JavaLowerer<'a> {
         };
 
         JavaFunction {
+            doc: func.doc.clone(),
             name: NamingConvention::method_name(func.id.as_str()),
             ffi_name: call.symbol.as_str().to_string(),
             params,
@@ -1326,6 +1329,7 @@ impl<'a> JavaLowerer<'a> {
             .collect();
 
         JavaClass {
+            doc: class.doc.clone(),
             class_name,
             ffi_free,
             constructors,
@@ -1459,6 +1463,7 @@ impl<'a> JavaLowerer<'a> {
             .collect();
 
         JavaConstructor {
+            doc: ctor.doc().map(str::to_string),
             kind,
             name,
             is_fallible: ctor.is_fallible(),
@@ -1494,6 +1499,7 @@ impl<'a> JavaLowerer<'a> {
         };
 
         JavaClassMethod {
+            doc: method.doc.clone(),
             name: NamingConvention::method_name(method.id.as_str()),
             ffi_name: call.symbol.as_str().to_string(),
             is_static,
@@ -1513,6 +1519,7 @@ impl<'a> JavaLowerer<'a> {
             StreamMode::Callback => JavaStreamMode::Callback,
         };
         JavaStream {
+            doc: stream_def.doc.clone(),
             name: NamingConvention::method_name(stream_def.id.as_str()),
             item_type: self.java_boxed_type(&stream_def.item_type),
             pop_batch_items_expr: self.stream_pop_batch_items_expr(abi_stream),
@@ -1684,16 +1691,25 @@ impl<'a> JavaLowerer<'a> {
             .iter()
             .map(|v| NamingConvention::class_name(v.name.as_str()))
             .collect();
+        let variant_docs = enumeration.variant_docs();
         let variants = abi_enum
             .variants
             .iter()
             .enumerate()
             .map(|(ordinal, variant)| {
-                self.lower_enum_variant(abi_enum, variant, ordinal, kind, &variant_names)
+                self.lower_enum_variant(
+                    abi_enum,
+                    variant,
+                    variant_docs.get(ordinal).cloned().flatten(),
+                    ordinal,
+                    kind,
+                    &variant_names,
+                )
             })
             .collect();
         let owner = JavaValueTypeDef::Enum(enumeration);
         JavaEnum {
+            doc: enumeration.doc.clone(),
             class_name,
             kind,
             value_type,
@@ -1719,6 +1735,7 @@ impl<'a> JavaLowerer<'a> {
         &self,
         abi_enum: &AbiEnum,
         variant: &AbiEnumVariant,
+        doc: Option<String>,
         ordinal: usize,
         kind: JavaEnumKind,
         sibling_names: &HashSet<String>,
@@ -1737,6 +1754,7 @@ impl<'a> JavaLowerer<'a> {
                 .collect(),
         };
         JavaEnumVariant {
+            doc,
             name,
             tag: self.java_enum_variant_tag(abi_enum, kind, ordinal, variant.discriminant),
             fields,
@@ -1787,6 +1805,7 @@ impl<'a> JavaLowerer<'a> {
         self.qualify_colliding_names(&mut size_expr, sibling_names);
         self.qualify_colliding_names(&mut encode_expr, sibling_names);
         JavaEnumField {
+            doc: None,
             name: field_name,
             java_type,
             wire_decode_expr: decode_expr,
@@ -1976,6 +1995,8 @@ impl<'a> JavaLowerer<'a> {
         let return_info = self.lower_bridge_return(&method.returns, &abi_method.returns);
         let proxy = self.lower_closure_proxy_method(callback, method, abi_method);
         JavaClosureInterface {
+            doc: callback.doc.clone(),
+            invoke_doc: method.doc.clone(),
             interface_name,
             callback_id: callback.id.as_str().to_string(),
             callbacks_class_name,
@@ -2020,6 +2041,7 @@ impl<'a> JavaLowerer<'a> {
             .collect();
 
         JavaCallbackTrait {
+            doc: callback.doc.clone(),
             interface_name,
             callback_id: callback.id.as_str().to_string(),
             supports_cleaner: self.options.min_java_version.supports_cleaner(),
@@ -2037,6 +2059,7 @@ impl<'a> JavaLowerer<'a> {
         let proxy = self.lower_sync_callback_proxy_method(callback, method, abi_method);
         let return_info = self.lower_bridge_return(&method.returns, &abi_method.returns);
         JavaSyncCallbackMethod {
+            doc: method.doc.clone(),
             name: NamingConvention::method_name(method.id.as_str()),
             ffi_name: abi_method.vtable_field.as_str().to_string(),
             params: self.lower_bridge_params(&method.params, abi_method),
@@ -2053,6 +2076,7 @@ impl<'a> JavaLowerer<'a> {
     ) -> JavaAsyncCallbackMethod {
         let proxy = self.lower_async_callback_proxy_method(callback, method, abi_method);
         JavaAsyncCallbackMethod {
+            doc: method.doc.clone(),
             name: NamingConvention::method_name(method.id.as_str()),
             ffi_name: abi_method.vtable_field.as_str().to_string(),
             params: self.lower_bridge_params(&method.params, abi_method),
@@ -2696,6 +2720,7 @@ impl JavaValueTypeConstructor {
         };
 
         Self {
+            doc: constructor.doc().map(str::to_string),
             name: NamingConvention::method_name(
                 constructor
                     .name()
@@ -2766,6 +2791,7 @@ impl JavaValueTypeMethod {
         };
 
         Self {
+            doc: method.doc.clone(),
             name: NamingConvention::method_name(method.id.as_str()),
             ffi_name: call.symbol.as_str().to_string(),
             is_static: method.callable_form() == CallableForm::StaticMethod,

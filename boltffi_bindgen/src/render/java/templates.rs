@@ -4,6 +4,48 @@ use super::plan::{
     JavaCallbackTrait, JavaClass, JavaClosureInterface, JavaEnum, JavaModule, JavaRecord,
 };
 
+pub fn javadoc_block(doc: &Option<String>, indent: &str) -> String {
+    match doc {
+        Some(text) => {
+            let mut result = format!("{indent}/**\n");
+            text.lines().for_each(|line| {
+                if line.is_empty() {
+                    result.push_str(&format!("{indent} *\n"));
+                } else {
+                    result.push_str(&format!("{indent} * {line}\n"));
+                }
+            });
+            result.push_str(&format!("{indent} */\n"));
+            result
+        }
+        None => String::new(),
+    }
+}
+
+pub fn record_import_block(record: &JavaRecord) -> String {
+    let mut imports = Vec::new();
+
+    if !record.uses_native_record_syntax() {
+        imports.push("import java.util.Objects;");
+    }
+
+    if record.is_blittable() {
+        imports.extend([
+            "import java.nio.ByteBuffer;",
+            "import java.nio.ByteOrder;",
+            "import java.util.ArrayList;",
+            "import java.util.Collections;",
+            "import java.util.List;",
+        ]);
+    }
+
+    if imports.is_empty() {
+        String::new()
+    } else {
+        format!("{}\n\n", imports.join("\n"))
+    }
+}
+
 #[derive(Template)]
 #[template(path = "render_java/preamble.txt", escape = "none")]
 pub struct PreambleTemplate<'a> {
@@ -98,8 +140,9 @@ mod tests {
     use super::*;
     use crate::render::java::JavaVersion;
     use crate::render::java::plan::{
-        JavaAsyncMode, JavaClassMethod, JavaConstructor, JavaConstructorKind, JavaFunction,
-        JavaInputBindings, JavaParam, JavaReturnPlan, JavaReturnRender, JavaStream, JavaStreamMode,
+        JavaAsyncMode, JavaClassMethod, JavaConstructor, JavaConstructorKind, JavaEnum,
+        JavaEnumKind, JavaEnumVariant, JavaFunction, JavaInputBindings, JavaParam, JavaRecord,
+        JavaRecordField, JavaReturnPlan, JavaReturnRender, JavaStream, JavaStreamMode,
         JavaWireWriter,
     };
 
@@ -147,10 +190,12 @@ mod tests {
     #[test]
     fn class_template_renders_nullable_handle_return_guard() {
         let class = JavaClass {
+            doc: None,
             class_name: "Node".to_string(),
             ffi_free: "boltffi_node_free".to_string(),
             constructors: vec![],
             methods: vec![JavaClassMethod {
+                doc: None,
                 name: "maybeNext".to_string(),
                 ffi_name: "boltffi_node_maybe_next".to_string(),
                 is_static: false,
@@ -197,11 +242,13 @@ mod tests {
         );
 
         let class = JavaClass {
+            doc: None,
             class_name: "Counter".to_string(),
             ffi_free: "boltffi_counter_free".to_string(),
             constructors: vec![],
             methods: vec![
                 JavaClassMethod {
+                    doc: None,
                     name: "fromPayload".to_string(),
                     ffi_name: "boltffi_counter_from_payload".to_string(),
                     is_static: true,
@@ -220,6 +267,7 @@ mod tests {
                     async_call: None,
                 },
                 JavaClassMethod {
+                    doc: None,
                     name: "stateWithPayload".to_string(),
                     ffi_name: "boltffi_counter_state_with_payload".to_string(),
                     is_static: false,
@@ -264,9 +312,11 @@ mod tests {
     #[test]
     fn native_template_renders_class_native_declarations() {
         let class = JavaClass {
+            doc: None,
             class_name: "Counter".to_string(),
             ffi_free: "boltffi_counter_free".to_string(),
             constructors: vec![JavaConstructor {
+                doc: None,
                 kind: JavaConstructorKind::Primary,
                 name: String::new(),
                 is_fallible: false,
@@ -276,6 +326,7 @@ mod tests {
             }],
             methods: vec![
                 JavaClassMethod {
+                    doc: None,
                     name: "globalCount".to_string(),
                     ffi_name: "boltffi_counter_global_count".to_string(),
                     is_static: true,
@@ -289,6 +340,7 @@ mod tests {
                     async_call: None,
                 },
                 JavaClassMethod {
+                    doc: None,
                     name: "get".to_string(),
                     ffi_name: "boltffi_counter_get".to_string(),
                     is_static: false,
@@ -306,6 +358,7 @@ mod tests {
         };
         let module = JavaModule {
             functions: vec![JavaFunction {
+                doc: None,
                 name: "noop".to_string(),
                 ffi_name: "boltffi_noop".to_string(),
                 params: vec![],
@@ -333,12 +386,14 @@ mod tests {
     #[test]
     fn class_template_uses_single_stream_subscription_for_all_stream_modes() {
         let class = JavaClass {
+            doc: None,
             class_name: "EventBus".to_string(),
             ffi_free: "boltffi_event_bus_free".to_string(),
             constructors: vec![],
             methods: vec![],
             streams: vec![
                 JavaStream {
+                    doc: None,
                     name: "subscribeValues".to_string(),
                     item_type: "Integer".to_string(),
                     pop_batch_items_expr: "WireReader.readPackedInts(_bytes)".to_string(),
@@ -351,6 +406,7 @@ mod tests {
                     mode: JavaStreamMode::Async,
                 },
                 JavaStream {
+                    doc: None,
                     name: "subscribeValuesBatch".to_string(),
                     item_type: "Integer".to_string(),
                     pop_batch_items_expr: "WireReader.readPackedInts(_bytes)".to_string(),
@@ -363,6 +419,7 @@ mod tests {
                     mode: JavaStreamMode::Batch,
                 },
                 JavaStream {
+                    doc: None,
                     name: "subscribeValuesCallback".to_string(),
                     item_type: "Integer".to_string(),
                     pop_batch_items_expr: "WireReader.readPackedInts(_bytes)".to_string(),
@@ -394,11 +451,13 @@ mod tests {
     #[test]
     fn preamble_template_renders_live_stream_publisher() {
         let class = JavaClass {
+            doc: None,
             class_name: "EventBus".to_string(),
             ffi_free: "boltffi_event_bus_free".to_string(),
             constructors: vec![],
             methods: vec![],
             streams: vec![JavaStream {
+                doc: None,
                 name: "subscribeValuesBatch".to_string(),
                 item_type: "Integer".to_string(),
                 pop_batch_items_expr: "WireReader.readPackedInts(_bytes)".to_string(),
@@ -426,5 +485,130 @@ mod tests {
         assert!(source.contains("if (!publisherAttached.compareAndSet(false, true))"));
         assert!(source.contains("int waitResult = waitFn.apply(handle, WAIT_TIMEOUT_MILLIS);"));
         assert!(source.contains("subscriber.onComplete();"));
+    }
+
+    #[test]
+    fn class_template_renders_doc_comments() {
+        let class = JavaClass {
+            doc: Some("A data store.\nPersists values across calls.".to_string()),
+            class_name: "Store".to_string(),
+            ffi_free: "boltffi_store_free".to_string(),
+            constructors: vec![JavaConstructor {
+                doc: Some("Creates a store with the requested capacity.".to_string()),
+                kind: JavaConstructorKind::Primary,
+                name: String::new(),
+                is_fallible: false,
+                params: vec![java_param("capacity", "int", "int", "capacity")],
+                ffi_name: "boltffi_store_new".to_string(),
+                input_bindings: JavaInputBindings::default(),
+            }],
+            methods: vec![JavaClassMethod {
+                doc: Some("Returns the number of stored items.".to_string()),
+                name: "count".to_string(),
+                ffi_name: "boltffi_store_count".to_string(),
+                is_static: false,
+                params: vec![],
+                return_type: "int".to_string(),
+                return_plan: JavaReturnPlan {
+                    native_return_type: "int".to_string(),
+                    render: JavaReturnRender::Direct,
+                },
+                input_bindings: JavaInputBindings::default(),
+                async_call: None,
+            }],
+            streams: vec![JavaStream {
+                doc: Some("Subscribes to value changes.".to_string()),
+                name: "subscribeValuesBatch".to_string(),
+                item_type: "Integer".to_string(),
+                pop_batch_items_expr: "WireReader.readPackedInts(_bytes)".to_string(),
+                subscribe: "boltffi_store_subscribe_values".to_string(),
+                poll: "boltffi_store_subscribe_values_poll".to_string(),
+                pop_batch: "boltffi_store_subscribe_values_pop_batch".to_string(),
+                wait: "boltffi_store_subscribe_values_wait".to_string(),
+                unsubscribe: "boltffi_store_subscribe_values_unsubscribe".to_string(),
+                free: "boltffi_store_subscribe_values_free".to_string(),
+                mode: JavaStreamMode::Batch,
+            }],
+        };
+
+        let source = ClassTemplate {
+            class: &class,
+            package_name: "com.test",
+            async_mode: &JavaAsyncMode::CompletableFuture,
+        }
+        .render()
+        .expect("class template should render");
+
+        assert!(source.contains(
+            "/**\n * A data store.\n * Persists values across calls.\n */\npublic final class Store"
+        ));
+        assert!(source.contains("/**\n     * Creates a store with the requested capacity.\n     */\n    public Store(int capacity)"));
+        assert!(source.contains(
+            "/**\n     * Returns the number of stored items.\n     */\n    public int count()"
+        ));
+        assert!(source.contains("/**\n     * Subscribes to value changes.\n     */\n    public StreamSubscription<Integer> subscribeValuesBatch()"));
+    }
+
+    #[test]
+    fn record_and_enum_templates_render_doc_comments() {
+        let record = JavaRecord {
+            doc: Some("A physical point.".to_string()),
+            shape: crate::render::java::plan::JavaRecordShape::ClassicClass,
+            class_name: "Point".to_string(),
+            fields: vec![JavaRecordField {
+                doc: Some("Horizontal coordinate.".to_string()),
+                name: "x".to_string(),
+                java_type: "double".to_string(),
+                wire_decode_expr: "reader.readF64()".to_string(),
+                wire_size_expr: "8".to_string(),
+                wire_encode_expr: "wire.writeF64(x)".to_string(),
+                equals_expr: "Double.compare(x, other.x) == 0".to_string(),
+                hash_expr: "Double.hashCode(x)".to_string(),
+            }],
+            blittable_layout: None,
+            constructors: vec![],
+            methods: vec![],
+        };
+
+        let record_source = RecordTemplate {
+            record: &record,
+            package_name: "com.test",
+        }
+        .render()
+        .expect("record template should render");
+
+        assert!(record_source.contains("/**\n * A physical point.\n */\npublic final class Point"));
+        assert!(
+            record_source
+                .contains("/**\n     * Horizontal coordinate.\n     */\n    public double x()")
+        );
+        assert!(record_source.contains("package com.test;\n\nimport java.util.Objects;\n\n/**"));
+
+        let enumeration = JavaEnum {
+            doc: Some("Represents a direction.".to_string()),
+            class_name: "Direction".to_string(),
+            kind: JavaEnumKind::CStyle,
+            value_type: "int".to_string(),
+            variants: vec![JavaEnumVariant {
+                doc: Some("Points north.".to_string()),
+                name: "NORTH".to_string(),
+                tag: 0,
+                fields: vec![],
+            }],
+            constructors: vec![],
+            methods: vec![],
+        };
+
+        let enum_source = CStyleEnumTemplate {
+            enumeration: &enumeration,
+            package_name: "com.test",
+        }
+        .render()
+        .expect("enum template should render");
+
+        assert!(
+            enum_source.contains("/**\n * Represents a direction.\n */\npublic enum Direction")
+        );
+        assert!(enum_source.contains("/**\n     * Points north.\n     */\n    NORTH(0);"));
     }
 }

@@ -1,5 +1,4 @@
-
-    public {% if method.is_static %}static {% endif %}{{ method.return_type }} {{ method.name }}({% for param in method.params %}{{ param.java_type }} {{ param.name }}{% if !loop.last %}, {% endif %}{% endfor %}) {
+{{ self::javadoc_block(method.doc, "    ") }}    public {% if method.is_static %}static {% endif %}{{ method.return_type }} {{ method.name }}({% for param in method.params %}{{ param.java_type }} {{ param.name }}{% if !loop.last %}, {% endif %}{% endfor %}) {
 {%- for binding in method.input_bindings.direct_composites %}
         {{ binding.declaration() }};
 {%- endfor %}

@@ -118,6 +118,7 @@ impl JavaModule {
 
 #[derive(Debug, Clone)]
 pub struct JavaEnum {
+    pub doc: Option<String>,
     pub class_name: String,
     pub kind: JavaEnumKind,
     pub value_type: String,
@@ -185,6 +186,7 @@ pub enum JavaEnumKind {
 
 #[derive(Debug, Clone)]
 pub struct JavaEnumVariant {
+    pub doc: Option<String>,
     pub name: String,
     pub tag: i128,
     pub fields: Vec<JavaEnumField>,
@@ -198,6 +200,7 @@ impl JavaEnumVariant {
 
 #[derive(Debug, Clone)]
 pub struct JavaEnumField {
+    pub doc: Option<String>,
     pub name: String,
     pub java_type: String,
     pub wire_decode_expr: String,
@@ -209,6 +212,7 @@ pub struct JavaEnumField {
 
 #[derive(Debug, Clone)]
 pub struct JavaRecord {
+    pub doc: Option<String>,
     pub shape: JavaRecordShape,
     pub class_name: String,
     pub fields: Vec<JavaRecordField>,
@@ -276,6 +280,7 @@ pub enum JavaRecordShape {
 
 #[derive(Debug, Clone)]
 pub struct JavaRecordField {
+    pub doc: Option<String>,
     pub name: String,
     pub java_type: String,
     pub wire_decode_expr: String,
@@ -437,6 +442,7 @@ impl JavaReturnPlan {
 
 #[derive(Debug, Clone)]
 pub struct JavaFunction {
+    pub doc: Option<String>,
     pub name: String,
     pub ffi_name: String,
     pub params: Vec<JavaParam>,
@@ -530,6 +536,7 @@ pub struct JavaNativeParam {
 
 #[derive(Debug, Clone)]
 pub struct JavaValueTypeConstructor {
+    pub doc: Option<String>,
     pub name: String,
     pub params: Vec<JavaParam>,
     pub native_params: Vec<JavaNativeParam>,
@@ -541,6 +548,7 @@ pub struct JavaValueTypeConstructor {
 
 #[derive(Debug, Clone)]
 pub struct JavaValueTypeMethod {
+    pub doc: Option<String>,
     pub name: String,
     pub ffi_name: String,
     pub is_static: bool,
@@ -553,6 +561,7 @@ pub struct JavaValueTypeMethod {
 
 #[derive(Debug, Clone)]
 pub struct JavaStream {
+    pub doc: Option<String>,
     pub name: String,
     pub item_type: String,
     pub pop_batch_items_expr: String,
@@ -574,6 +583,7 @@ pub enum JavaStreamMode {
 
 #[derive(Debug, Clone)]
 pub struct JavaClass {
+    pub doc: Option<String>,
     pub class_name: String,
     pub ffi_free: String,
     pub constructors: Vec<JavaConstructor>,
@@ -620,6 +630,7 @@ pub enum JavaConstructorKind {
 
 #[derive(Debug, Clone)]
 pub struct JavaConstructor {
+    pub doc: Option<String>,
     pub kind: JavaConstructorKind,
     pub name: String,
     pub is_fallible: bool,
@@ -636,6 +647,7 @@ impl JavaConstructor {
 
 #[derive(Debug, Clone)]
 pub struct JavaClassMethod {
+    pub doc: Option<String>,
     pub name: String,
     pub ffi_name: String,
     pub is_static: bool,
@@ -662,6 +674,8 @@ impl JavaClassMethod {
 
 #[derive(Debug, Clone)]
 pub struct JavaClosureInterface {
+    pub doc: Option<String>,
+    pub invoke_doc: Option<String>,
     pub interface_name: String,
     pub callback_id: String,
     pub callbacks_class_name: String,
@@ -702,6 +716,7 @@ impl JavaClosureInterface {
 
 #[derive(Debug, Clone)]
 pub struct JavaCallbackTrait {
+    pub doc: Option<String>,
     pub interface_name: String,
     pub callback_id: String,
     pub supports_cleaner: bool,
@@ -893,6 +908,7 @@ pub struct JavaCallbackErrorCapture {
 
 #[derive(Debug, Clone)]
 pub struct JavaSyncCallbackMethod {
+    pub doc: Option<String>,
     pub name: String,
     pub ffi_name: String,
     pub params: Vec<JavaBridgeParam>,
@@ -910,6 +926,7 @@ impl JavaSyncCallbackMethod {
 
 #[derive(Debug, Clone)]
 pub struct JavaAsyncCallbackMethod {
+    pub doc: Option<String>,
     pub name: String,
     pub ffi_name: String,
     pub params: Vec<JavaBridgeParam>,

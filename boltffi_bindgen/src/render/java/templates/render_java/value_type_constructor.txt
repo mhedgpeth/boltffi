@@ -1,5 +1,4 @@
-
-    public static {{ ctor.return_type }} {{ ctor.name }}({% for param in ctor.params %}{{ param.java_type }} {{ param.name }}{% if !loop.last %}, {% endif %}{% endfor %}) {
+{{ self::javadoc_block(ctor.doc, "    ") }}    public static {{ ctor.return_type }} {{ ctor.name }}({% for param in ctor.params %}{{ param.java_type }} {{ param.name }}{% if !loop.last %}, {% endif %}{% endfor %}) {
 {%- for binding in ctor.input_bindings.direct_composites %}
         {{ binding.declaration() }};
 {%- endfor %}

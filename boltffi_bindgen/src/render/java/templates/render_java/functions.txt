@@ -6,18 +6,18 @@ public final class {{ module.class_name }} {
 {%- when Some with (ac) %}
 {% if module.async_mode.is_virtual_thread() %}
 {%- if ac.complete_return_plan.is_void() %}
-    public static void {{ func.name }}({% for param in func.params %}{{ param.java_type }} {{ param.name }}{% if !loop.last %}, {% endif %}{% endfor %}) {
+{{ self::javadoc_block(func.doc, "    ") }}    public static void {{ func.name }}({% for param in func.params %}{{ param.java_type }} {{ param.name }}{% if !loop.last %}, {% endif %}{% endfor %}) {
         BoltFFIAsync.callAsyncVoid(
 {%- else %}
-    public static {{ func.return_type }} {{ func.name }}({% for param in func.params %}{{ param.java_type }} {{ param.name }}{% if !loop.last %}, {% endif %}{% endfor %}) {
+{{ self::javadoc_block(func.doc, "    ") }}    public static {{ func.return_type }} {{ func.name }}({% for param in func.params %}{{ param.java_type }} {{ param.name }}{% if !loop.last %}, {% endif %}{% endfor %}) {
         return BoltFFIAsync.callAsync(
 {%- endif %}
 {%- else %}
 {%- if ac.complete_return_plan.is_void() %}
-    public static CompletableFuture<Void> {{ func.name }}({% for param in func.params %}{{ param.java_type }} {{ param.name }}{% if !loop.last %}, {% endif %}{% endfor %}) {
+{{ self::javadoc_block(func.doc, "    ") }}    public static CompletableFuture<Void> {{ func.name }}({% for param in func.params %}{{ param.java_type }} {{ param.name }}{% if !loop.last %}, {% endif %}{% endfor %}) {
         return BoltFFIAsync.callAsyncVoid(
 {%- else %}
-    public static CompletableFuture<{{ func.boxed_return_type() }}> {{ func.name }}({% for param in func.params %}{{ param.java_type }} {{ param.name }}{% if !loop.last %}, {% endif %}{% endfor %}) {
+{{ self::javadoc_block(func.doc, "    ") }}    public static CompletableFuture<{{ func.boxed_return_type() }}> {{ func.name }}({% for param in func.params %}{{ param.java_type }} {{ param.name }}{% if !loop.last %}, {% endif %}{% endfor %}) {
         return BoltFFIAsync.callAsync(
 {%- endif %}
 {%- endif %}
@@ -97,7 +97,7 @@ public final class {{ module.class_name }} {
 {%- endmatch %}
 {%- else %}
 
-    public static {{ func.return_type }} {{ func.name }}({% for param in func.params %}{{ param.java_type }} {{ param.name }}{% if !loop.last %}, {% endif %}{% endfor %}) {
+{{ self::javadoc_block(func.doc, "    ") }}    public static {{ func.return_type }} {{ func.name }}({% for param in func.params %}{{ param.java_type }} {{ param.name }}{% if !loop.last %}, {% endif %}{% endfor %}) {
 {%- for binding in func.input_bindings.direct_composites %}
         {{ binding.declaration() }};
 {%- endfor %}
