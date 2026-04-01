@@ -233,6 +233,7 @@ pub struct JavaRecord {
     pub is_error: bool,
     pub class_name: String,
     pub fields: Vec<JavaRecordField>,
+    pub default_constructors: Vec<JavaRecordDefaultConstructor>,
     pub blittable_layout: Option<JavaBlittableLayout>,
     pub constructors: Vec<JavaValueTypeConstructor>,
     pub methods: Vec<JavaValueTypeMethod>,
@@ -259,6 +260,10 @@ impl JavaRecord {
 
     pub fn has_constructors(&self) -> bool {
         !self.constructors.is_empty()
+    }
+
+    pub fn has_default_constructors(&self) -> bool {
+        !self.default_constructors.is_empty()
     }
 
     pub fn has_static_methods(&self) -> bool {
@@ -306,11 +311,24 @@ pub struct JavaRecordField {
     pub doc: Option<String>,
     pub name: String,
     pub java_type: String,
+    pub default_value: Option<String>,
     pub wire_decode_expr: String,
     pub wire_size_expr: String,
     pub wire_encode_expr: String,
     pub equals_expr: String,
     pub hash_expr: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct JavaRecordDefaultConstructor {
+    pub params: Vec<JavaRecordDefaultConstructorParam>,
+    pub arguments: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct JavaRecordDefaultConstructorParam {
+    pub name: String,
+    pub java_type: String,
 }
 
 #[derive(Debug, Clone)]

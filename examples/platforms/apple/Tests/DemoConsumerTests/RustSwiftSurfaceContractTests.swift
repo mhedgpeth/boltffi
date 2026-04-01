@@ -564,6 +564,7 @@ private let rustToSwiftCoverageFile: [String: String] = [
     "primitives/strings.rs": "primitives/StringsTests.swift",
     "primitives/vecs.rs": "primitives/VecsTests.swift",
     "records/blittable.rs": "records/BlittableRecordsTests.swift",
+    "records/default_values.rs": "records/DefaultValuesRecordsTests.swift",
     "records/nested.rs": "records/NestedRecordsTests.swift",
     "records/with_collections.rs": "records/WithCollectionsRecordsTests.swift",
     "records/with_enums.rs": "records/WithEnumsRecordsTests.swift",

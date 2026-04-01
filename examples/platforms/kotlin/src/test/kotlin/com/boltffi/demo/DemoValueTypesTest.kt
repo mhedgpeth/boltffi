@@ -335,4 +335,42 @@ class DemoValueTypesTest {
         assertEquals(address, echoAddress(address))
         assertEquals("Main St, Amsterdam, 1000AA", formatAddress(address))
     }
+
+    @Test
+    fun recordDefaultValuesSurfaceCorrectly() {
+        val implicitDefaults = ServiceConfig("worker")
+        assertEquals("worker", implicitDefaults.name)
+        assertEquals(3, implicitDefaults.retries)
+        assertEquals("standard", implicitDefaults.region)
+        assertNull(implicitDefaults.endpoint)
+        assertEquals("https://default", implicitDefaults.backupEndpoint)
+
+        val customRetries = ServiceConfig("worker", 7)
+        assertEquals("worker", customRetries.name)
+        assertEquals(7, customRetries.retries)
+        assertEquals("standard", customRetries.region)
+        assertNull(customRetries.endpoint)
+        assertEquals("https://default", customRetries.backupEndpoint)
+
+        val explicitRegion = ServiceConfig("worker", 9, "eu-west")
+        assertNull(explicitRegion.endpoint)
+        assertEquals("https://default", explicitRegion.backupEndpoint)
+
+        val explicitEndpoint = ServiceConfig("worker", 9, "eu-west", "https://edge")
+        assertEquals("https://default", explicitEndpoint.backupEndpoint)
+
+        val explicitBackupEndpoint = ServiceConfig(
+            "worker",
+            9,
+            "eu-west",
+            "https://edge",
+            "https://backup"
+        )
+        assertEquals(explicitBackupEndpoint, echoServiceConfig(explicitBackupEndpoint))
+        assertEquals("worker:3:standard:none:https://default", implicitDefaults.describe())
+        assertEquals("worker:7:standard:none:https://default", customRetries.describe())
+        assertEquals("worker:9:eu-west:none:https://default", explicitRegion.describe())
+        assertEquals("worker:9:eu-west:https://edge:https://default", explicitEndpoint.describe())
+        assertEquals("worker:9:eu-west:https://edge:https://backup", explicitBackupEndpoint.describe())
+    }
 }

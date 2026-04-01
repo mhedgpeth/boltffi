@@ -142,7 +142,8 @@ mod tests {
     use crate::render::java::plan::{
         JavaAsyncMode, JavaClassMethod, JavaConstructor, JavaConstructorKind, JavaEnum,
         JavaEnumField, JavaEnumKind, JavaEnumVariant, JavaFunction, JavaInputBindings, JavaParam,
-        JavaRecord, JavaRecordField, JavaReturnPlan, JavaReturnRender, JavaStream, JavaStreamMode,
+        JavaRecord, JavaRecordDefaultConstructor, JavaRecordDefaultConstructorParam,
+        JavaRecordField, JavaReturnPlan, JavaReturnRender, JavaStream, JavaStreamMode,
         JavaWireWriter,
     };
 
@@ -560,12 +561,14 @@ mod tests {
                 doc: Some("Horizontal coordinate.".to_string()),
                 name: "x".to_string(),
                 java_type: "double".to_string(),
+                default_value: None,
                 wire_decode_expr: "reader.readF64()".to_string(),
                 wire_size_expr: "8".to_string(),
                 wire_encode_expr: "wire.writeF64(x)".to_string(),
                 equals_expr: "Double.compare(x, other.x) == 0".to_string(),
                 hash_expr: "Double.hashCode(x)".to_string(),
             }],
+            default_constructors: vec![],
             blittable_layout: None,
             constructors: vec![],
             methods: vec![],
@@ -611,6 +614,139 @@ mod tests {
             enum_source.contains("/**\n * Represents a direction.\n */\npublic enum Direction")
         );
         assert!(enum_source.contains("/**\n     * Points north.\n     */\n    NORTH(0);"));
+    }
+
+    #[test]
+    fn record_template_renders_default_field_overloads() {
+        let record = JavaRecord {
+            doc: None,
+            shape: crate::render::java::plan::JavaRecordShape::NativeRecord,
+            is_error: false,
+            class_name: "Config".to_string(),
+            fields: vec![
+                JavaRecordField {
+                    doc: None,
+                    name: "name".to_string(),
+                    java_type: "String".to_string(),
+                    default_value: None,
+                    wire_decode_expr: "reader.readString()".to_string(),
+                    wire_size_expr: "4".to_string(),
+                    wire_encode_expr: "wire.writeString(name)".to_string(),
+                    equals_expr: "java.util.Objects.equals(name, other.name)".to_string(),
+                    hash_expr: "java.util.Objects.hashCode(name)".to_string(),
+                },
+                JavaRecordField {
+                    doc: None,
+                    name: "retries".to_string(),
+                    java_type: "int".to_string(),
+                    default_value: Some("3".to_string()),
+                    wire_decode_expr: "reader.readI32()".to_string(),
+                    wire_size_expr: "4".to_string(),
+                    wire_encode_expr: "wire.writeI32(retries)".to_string(),
+                    equals_expr: "retries == other.retries".to_string(),
+                    hash_expr: "Integer.hashCode(retries)".to_string(),
+                },
+                JavaRecordField {
+                    doc: None,
+                    name: "label".to_string(),
+                    java_type: "java.util.Optional<String>".to_string(),
+                    default_value: Some("java.util.Optional.empty()".to_string()),
+                    wire_decode_expr: "reader.readOptionalString()".to_string(),
+                    wire_size_expr: "1".to_string(),
+                    wire_encode_expr: "wire.writeOptionalString(label)".to_string(),
+                    equals_expr: "java.util.Objects.equals(label, other.label)".to_string(),
+                    hash_expr: "java.util.Objects.hashCode(label)".to_string(),
+                },
+                JavaRecordField {
+                    doc: None,
+                    name: "alias".to_string(),
+                    java_type: "java.util.Optional<String>".to_string(),
+                    default_value: Some("java.util.Optional.of(\"primary\")".to_string()),
+                    wire_decode_expr: "reader.readOptionalString()".to_string(),
+                    wire_size_expr: "1".to_string(),
+                    wire_encode_expr: "wire.writeOptionalString(alias)".to_string(),
+                    equals_expr: "java.util.Objects.equals(alias, other.alias)".to_string(),
+                    hash_expr: "java.util.Objects.hashCode(alias)".to_string(),
+                },
+            ],
+            default_constructors: vec![
+                JavaRecordDefaultConstructor {
+                    params: vec![
+                        JavaRecordDefaultConstructorParam {
+                            name: "name".to_string(),
+                            java_type: "String".to_string(),
+                        },
+                        JavaRecordDefaultConstructorParam {
+                            name: "retries".to_string(),
+                            java_type: "int".to_string(),
+                        },
+                        JavaRecordDefaultConstructorParam {
+                            name: "label".to_string(),
+                            java_type: "java.util.Optional<String>".to_string(),
+                        },
+                    ],
+                    arguments: vec![
+                        "name".to_string(),
+                        "retries".to_string(),
+                        "label".to_string(),
+                        "java.util.Optional.of(\"primary\")".to_string(),
+                    ],
+                },
+                JavaRecordDefaultConstructor {
+                    arguments: vec![
+                        "name".to_string(),
+                        "retries".to_string(),
+                        "java.util.Optional.empty()".to_string(),
+                        "java.util.Optional.of(\"primary\")".to_string(),
+                    ],
+                    params: vec![
+                        JavaRecordDefaultConstructorParam {
+                            name: "name".to_string(),
+                            java_type: "String".to_string(),
+                        },
+                        JavaRecordDefaultConstructorParam {
+                            name: "retries".to_string(),
+                            java_type: "int".to_string(),
+                        },
+                    ],
+                },
+                JavaRecordDefaultConstructor {
+                    params: vec![JavaRecordDefaultConstructorParam {
+                        name: "name".to_string(),
+                        java_type: "String".to_string(),
+                    }],
+                    arguments: vec![
+                        "name".to_string(),
+                        "3".to_string(),
+                        "java.util.Optional.empty()".to_string(),
+                        "java.util.Optional.of(\"primary\")".to_string(),
+                    ],
+                },
+            ],
+            blittable_layout: None,
+            constructors: vec![],
+            methods: vec![],
+        };
+
+        let source = RecordTemplate {
+            record: &record,
+            package_name: "com.test",
+        }
+        .render()
+        .expect("record template should render");
+
+        assert!(source.contains(
+            "public record Config(String name, int retries, java.util.Optional<String> label, java.util.Optional<String> alias)"
+        ));
+        assert!(source.contains(
+            "public Config(String name, int retries, java.util.Optional<String> label) {\n        this(name, retries, label, java.util.Optional.of(\"primary\"));\n    }"
+        ));
+        assert!(source.contains(
+            "public Config(String name, int retries) {\n        this(name, retries, java.util.Optional.empty(), java.util.Optional.of(\"primary\"));\n    }"
+        ));
+        assert!(source.contains(
+            "public Config(String name) {\n        this(name, 3, java.util.Optional.empty(), java.util.Optional.of(\"primary\"));\n    }"
+        ));
     }
 
     #[test]

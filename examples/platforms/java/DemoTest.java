@@ -19,6 +19,7 @@ public final class DemoTest {
         testPointRecords();
         testLineRecords();
         testPersonRecords();
+        testRecordDefaultValues();
         testCStyleEnums();
         testDataEnums();
         testCStyleEnumVecs();
@@ -183,6 +184,49 @@ public final class DemoTest {
         assert emojiPerson.name().equals("🎉 Party") : "makePerson(emoji)";
         Person echoedEmojiPerson = Demo.echoPerson(emojiPerson);
         assert echoedEmojiPerson.name().equals("🎉 Party") : "echoPerson(emoji)";
+        System.out.println("  PASS\n");
+    }
+
+    private static void testRecordDefaultValues() {
+        System.out.println("Testing records (default values)...");
+        ServiceConfig implicitDefaults = new ServiceConfig("worker");
+        assert implicitDefaults.name().equals("worker") : "ServiceConfig(name).name";
+        assert implicitDefaults.retries() == 3 : "ServiceConfig(name).retries";
+        assert implicitDefaults.region().equals("standard") : "ServiceConfig(name).region";
+        assert !implicitDefaults.endpoint().isPresent() : "ServiceConfig(name).endpoint";
+        assert implicitDefaults.backupEndpoint().isPresent() : "ServiceConfig(name).backupEndpoint";
+        assert implicitDefaults.backupEndpoint().get().equals("https://default") : "ServiceConfig(name).backupEndpoint.value";
+
+        ServiceConfig customRetries = new ServiceConfig("worker", 7);
+        assert customRetries.name().equals("worker") : "ServiceConfig(name,retries).name";
+        assert customRetries.retries() == 7 : "ServiceConfig(name,retries).retries";
+        assert customRetries.region().equals("standard") : "ServiceConfig(name,retries).region";
+        assert !customRetries.endpoint().isPresent() : "ServiceConfig(name,retries).endpoint";
+        assert customRetries.backupEndpoint().isPresent() : "ServiceConfig(name,retries).backupEndpoint";
+        assert customRetries.backupEndpoint().get().equals("https://default") : "ServiceConfig(name,retries).backupEndpoint.value";
+
+        ServiceConfig explicitRegion = new ServiceConfig("worker", 9, "eu-west");
+        assert !explicitRegion.endpoint().isPresent() : "ServiceConfig(name,retries,region).endpoint";
+        assert explicitRegion.backupEndpoint().isPresent() : "ServiceConfig(name,retries,region).backupEndpoint";
+        assert explicitRegion.backupEndpoint().get().equals("https://default") : "ServiceConfig(name,retries,region).backupEndpoint.value";
+
+        ServiceConfig explicitEndpoint = new ServiceConfig("worker", 9, "eu-west", Optional.of("https://edge"));
+        assert explicitEndpoint.backupEndpoint().isPresent() : "ServiceConfig(name,retries,region,endpoint).backupEndpoint";
+        assert explicitEndpoint.backupEndpoint().get().equals("https://default") : "ServiceConfig(name,retries,region,endpoint).backupEndpoint.value";
+
+        ServiceConfig explicitBackupEndpoint = new ServiceConfig(
+            "worker",
+            9,
+            "eu-west",
+            Optional.of("https://edge"),
+            Optional.of("https://backup")
+        );
+        assert Demo.echoServiceConfig(explicitBackupEndpoint).equals(explicitBackupEndpoint) : "echoServiceConfig";
+        assert implicitDefaults.describe().equals("worker:3:standard:none:https://default") : "ServiceConfig.describe(defaults)";
+        assert customRetries.describe().equals("worker:7:standard:none:https://default") : "ServiceConfig.describe(customRetries)";
+        assert explicitRegion.describe().equals("worker:9:eu-west:none:https://default") : "ServiceConfig.describe(explicitRegion)";
+        assert explicitEndpoint.describe().equals("worker:9:eu-west:https://edge:https://default") : "ServiceConfig.describe(explicitEndpoint)";
+        assert explicitBackupEndpoint.describe().equals("worker:9:eu-west:https://edge:https://backup") : "ServiceConfig.describe(explicitBackupEndpoint)";
         System.out.println("  PASS\n");
     }
 

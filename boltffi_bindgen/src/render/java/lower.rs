@@ -16,9 +16,10 @@ use super::plan::{
     JavaCallbackTrait, JavaClass, JavaClassMethod, JavaClosureInterface, JavaConstructor,
     JavaConstructorKind, JavaDirectCompositeInput, JavaEnum, JavaEnumField, JavaEnumKind,
     JavaEnumVariant, JavaFunction, JavaInputBindings, JavaModule, JavaNativeParam, JavaParam,
-    JavaRecord, JavaRecordField, JavaRecordShape, JavaResultBridgeReturn, JavaReturnPlan,
-    JavaReturnRender, JavaStream, JavaStreamMode, JavaSyncCallbackMethod, JavaValueBridgeRender,
-    JavaValueBridgeReturn, JavaValueTypeConstructor, JavaValueTypeMethod, JavaWireWriter,
+    JavaRecord, JavaRecordDefaultConstructor, JavaRecordDefaultConstructorParam, JavaRecordField,
+    JavaRecordShape, JavaResultBridgeReturn, JavaReturnPlan, JavaReturnRender, JavaStream,
+    JavaStreamMode, JavaSyncCallbackMethod, JavaValueBridgeRender, JavaValueBridgeReturn,
+    JavaValueTypeConstructor, JavaValueTypeMethod, JavaWireWriter,
 };
 use crate::ir::abi::{
     AbiCall, AbiCallbackInvocation, AbiCallbackMethod, AbiContract, AbiEnum, AbiEnumField,
@@ -28,8 +29,8 @@ use crate::ir::abi::{
 use crate::ir::contract::FfiContract;
 use crate::ir::definitions::{
     CallbackKind, CallbackMethodDef, CallbackTraitDef, ClassDef, ConstructorDef, CustomTypeDef,
-    EnumDef, EnumRepr, FieldDef, FunctionDef, MethodDef, ParamDef, Receiver, RecordDef, ReturnDef,
-    StreamDef, StreamMode, VariantPayload,
+    DefaultValue, EnumDef, EnumRepr, FieldDef, FunctionDef, MethodDef, ParamDef, Receiver,
+    RecordDef, ReturnDef, StreamDef, StreamMode, VariantPayload,
 };
 use crate::ir::ids::{CallbackId, CustomTypeId, EnumId, FieldName, RecordId};
 use crate::ir::ops::{
@@ -523,6 +524,7 @@ impl<'a> JavaLowerer<'a> {
             is_error: record.is_error,
             class_name,
             fields,
+            default_constructors: self.lower_record_default_constructors(record),
             blittable_layout,
             constructors: self.lower_value_type_constructors(value_type),
             methods: self.lower_value_type_methods(value_type),
@@ -608,12 +610,63 @@ impl<'a> JavaLowerer<'a> {
             doc: field.doc.clone(),
             name: NamingConvention::field_name(field.name.as_str()),
             java_type: self.java_type(&field.type_expr),
+            default_value: field
+                .default
+                .as_ref()
+                .map(|default| self.java_default_literal(default, &field.type_expr)),
             wire_decode_expr: self.emit_reader_read(&decode_seq),
             wire_size_expr: self.emit_size_expr(&encode_seq.size),
             wire_encode_expr: self.emit_write_expr(&encode_seq, "wire"),
             equals_expr: self.record_field_equals_expr(&field.type_expr, field.name.as_str()),
             hash_expr: self.record_field_hash_expr(&field.type_expr, field.name.as_str()),
         }
+    }
+
+    fn lower_record_default_constructors(
+        &self,
+        record: &RecordDef,
+    ) -> Vec<JavaRecordDefaultConstructor> {
+        let trailing_default_count = record
+            .fields
+            .iter()
+            .rev()
+            .take_while(|field| field.default.is_some())
+            .count();
+
+        (1..=trailing_default_count)
+            .map(|omitted_count| {
+                let included_count = record.fields.len() - omitted_count;
+                let params = record
+                    .fields
+                    .iter()
+                    .take(included_count)
+                    .map(|field| JavaRecordDefaultConstructorParam {
+                        name: NamingConvention::field_name(field.name.as_str()),
+                        java_type: self.java_type(&field.type_expr),
+                    })
+                    .collect();
+                let arguments = record
+                    .fields
+                    .iter()
+                    .enumerate()
+                    .map(|(index, field)| {
+                        if index < included_count {
+                            NamingConvention::field_name(field.name.as_str())
+                        } else {
+                            self.java_default_literal(
+                                field
+                                    .default
+                                    .as_ref()
+                                    .expect("trailing default field must have a default"),
+                                &field.type_expr,
+                            )
+                        }
+                    })
+                    .collect();
+
+                JavaRecordDefaultConstructor { params, arguments }
+            })
+            .collect()
     }
 
     fn lower_value_type_constructors(
@@ -630,6 +683,86 @@ impl<'a> JavaLowerer<'a> {
                 JavaValueTypeConstructor::lower(self, owner, constructor, call)
             })
             .collect()
+    }
+
+    fn java_default_literal(&self, default: &DefaultValue, ty: &TypeExpr) -> String {
+        if let TypeExpr::Option(inner) = ty {
+            return match default {
+                DefaultValue::Null => "java.util.Optional.empty()".to_string(),
+                _ => format!(
+                    "java.util.Optional.of({})",
+                    self.java_default_literal(default, inner)
+                ),
+            };
+        }
+
+        match default {
+            DefaultValue::Bool(value) => value.to_string(),
+            DefaultValue::Integer(value) => match ty {
+                TypeExpr::Primitive(
+                    PrimitiveType::I64
+                    | PrimitiveType::U64
+                    | PrimitiveType::ISize
+                    | PrimitiveType::USize,
+                ) => format!("{value}L"),
+                _ => value.to_string(),
+            },
+            DefaultValue::Float(value) => match ty {
+                TypeExpr::Primitive(PrimitiveType::F32) => format!("{value}f"),
+                _ => value.to_string(),
+            },
+            DefaultValue::String(value) => {
+                format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\""))
+            }
+            DefaultValue::EnumVariant {
+                enum_name,
+                variant_name,
+            } => self.java_enum_default_literal(enum_name, variant_name),
+            DefaultValue::Null => "null".to_string(),
+        }
+    }
+
+    fn java_enum_default_literal(&self, enum_name: &str, variant_name: &str) -> String {
+        let enum_id = EnumId::new(enum_name);
+        let enum_def = self
+            .ffi
+            .catalog
+            .resolve_enum(&enum_id)
+            .expect("enum default should reference a known enum");
+        let class_name = NamingConvention::class_name(enum_name);
+        let variant_class_name = NamingConvention::class_name(variant_name);
+        match &enum_def.repr {
+            EnumRepr::CStyle { .. } if enum_def.is_error => {
+                format!(
+                    "{}.{}",
+                    class_name,
+                    NamingConvention::enum_constant_name(variant_name)
+                )
+            }
+            EnumRepr::CStyle { .. } => {
+                format!(
+                    "{}.{}",
+                    class_name,
+                    NamingConvention::enum_constant_name(variant_name)
+                )
+            }
+            EnumRepr::Data { variants, .. } => {
+                let variant = variants
+                    .iter()
+                    .find(|candidate| candidate.name.as_str() == variant_name)
+                    .expect("enum default should reference a known variant");
+                match variant.payload {
+                    VariantPayload::Unit => {
+                        if self.options.min_java_version.supports_sealed() {
+                            format!("new {}.{}()", class_name, variant_class_name)
+                        } else {
+                            format!("{}.{}.INSTANCE", class_name, variant_class_name)
+                        }
+                    }
+                    _ => panic!("enum defaults only support unit variants in Java"),
+                }
+            }
+        }
     }
 
     fn lower_value_type_methods(&self, owner: JavaValueTypeDef<'_>) -> Vec<JavaValueTypeMethod> {
@@ -5155,6 +5288,90 @@ mod tests {
         assert!(record.has_constructors());
         assert!(record.has_static_methods());
         assert!(record.has_instance_methods());
+    }
+
+    #[test]
+    fn record_field_defaults_generate_java_overloads() {
+        let mut contract = empty_contract();
+        contract.catalog.insert_record(RecordDef {
+            is_repr_c: true,
+            id: RecordId::new("config"),
+            is_error: false,
+            fields: vec![
+                FieldDef {
+                    name: FieldName::new("name"),
+                    type_expr: TypeExpr::String,
+                    doc: None,
+                    default: None,
+                },
+                FieldDef {
+                    name: FieldName::new("retries"),
+                    type_expr: TypeExpr::Primitive(PrimitiveType::I32),
+                    doc: None,
+                    default: Some(DefaultValue::Integer(3)),
+                },
+                FieldDef {
+                    name: FieldName::new("label"),
+                    type_expr: TypeExpr::Option(Box::new(TypeExpr::String)),
+                    doc: None,
+                    default: Some(DefaultValue::Null),
+                },
+                FieldDef {
+                    name: FieldName::new("alias"),
+                    type_expr: TypeExpr::Option(Box::new(TypeExpr::String)),
+                    doc: None,
+                    default: Some(DefaultValue::String("primary".to_string())),
+                },
+            ],
+            constructors: vec![],
+            methods: vec![],
+            doc: None,
+            deprecated: None,
+        });
+
+        let module = lower(&contract);
+        let record = &module.records[0];
+
+        assert_eq!(record.fields[1].default_value.as_deref(), Some("3"));
+        assert_eq!(
+            record.fields[2].default_value.as_deref(),
+            Some("java.util.Optional.empty()")
+        );
+        assert_eq!(
+            record.fields[3].default_value.as_deref(),
+            Some("java.util.Optional.of(\"primary\")")
+        );
+        assert_eq!(record.default_constructors.len(), 3);
+        assert_eq!(record.default_constructors[0].params.len(), 3);
+        assert_eq!(
+            record.default_constructors[0].arguments,
+            vec![
+                "name",
+                "retries",
+                "label",
+                "java.util.Optional.of(\"primary\")"
+            ]
+        );
+        assert_eq!(record.default_constructors[1].params.len(), 2);
+        assert_eq!(
+            record.default_constructors[1].arguments,
+            vec![
+                "name",
+                "retries",
+                "java.util.Optional.empty()",
+                "java.util.Optional.of(\"primary\")"
+            ]
+        );
+        assert_eq!(record.default_constructors[2].params.len(), 1);
+        assert_eq!(
+            record.default_constructors[2].arguments,
+            vec![
+                "name",
+                "3",
+                "java.util.Optional.empty()",
+                "java.util.Optional.of(\"primary\")"
+            ]
+        );
     }
 
     #[test]
