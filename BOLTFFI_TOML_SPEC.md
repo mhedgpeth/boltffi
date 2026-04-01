@@ -29,10 +29,6 @@ Placeholder references like `{package.crate}` follow these fallback rules:
 List of experimental targets or features that are explicitly enabled.
 
 ```toml
-experimental = ["typescript.async_streams", "records.methods"]
-```
-
-```toml
 experimental = ["typescript.async_streams"]
 ```
 
@@ -46,7 +42,6 @@ Experimental targets:
 
 Experimental features:
 - `typescript.async_streams`
-- `records.methods`
 
 ### `[package]` (required)
 

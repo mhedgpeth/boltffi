@@ -1,5 +1,3 @@
-experimental = ["records.methods"]
-
 [package]
 name = "demo"
 

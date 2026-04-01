@@ -2533,13 +2533,8 @@ mod tests {
             .unwrap()
             .to_path_buf();
         let demo_crate_path = repo_root.join("examples").join("demo");
-        let mut module = crate::scan::scan_crate_with_options(
-            &demo_crate_path,
-            "demo",
-            Some(32),
-            crate::scan::ScanFeatures::default(),
-        )
-        .unwrap();
+        let mut module =
+            crate::scan::scan_crate_with_pointer_width(&demo_crate_path, "demo", Some(32)).unwrap();
         let contract = crate::ir::build_contract(&mut module);
         let lowered_module = lower_contract(&contract);
         let function = lowered_module
