@@ -1,6 +1,6 @@
 ---
 title: "Experimental Features"
-description: "Enable and manage experimental BoltFFI features such as TypeScript async streams and record methods."
+description: "Enable and manage experimental BoltFFI features such as TypeScript async streams."
 ---
 
 # Experimental Features
@@ -12,7 +12,6 @@ Java bindings are now generally available and no longer require experimental opt
 | Feature | Key | Status |
 |---------|-----|--------|
 | TS async streams | `typescript.async_streams` | Functional |
-| Record methods | `records.methods` | Functional |
 
 ## Enabling
 
@@ -30,7 +29,7 @@ boltffi pack all --experimental
 Add the feature key to `experimental` in `boltffi.toml`:
 
 ```toml
-experimental = ["typescript.async_streams", "records.methods"]
+experimental = ["typescript.async_streams"]
 ```
 
 The CLI flag applies to a single command. The config array applies to every build.
@@ -42,12 +41,6 @@ The CLI flag applies to a single command. The config array applies to every buil
 **Key:** `typescript.async_streams`
 
 Enables `AsyncIterable` stream generation for TypeScript/WASM targets. Without this flag, stream methods are skipped during TypeScript codegen.
-
-### Record Methods
-
-**Key:** `records.methods`
-
-Enables method generation on record types (structs marked with `#[data]` that also have `#[export] impl` blocks). By default, records are pure data with no methods.
 
 ## Graduating from Experimental
 

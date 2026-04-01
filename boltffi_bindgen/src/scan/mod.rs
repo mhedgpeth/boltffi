@@ -437,11 +437,6 @@ impl AliasResolver {
     }
 }
 
-#[derive(Debug, Clone, Default)]
-pub struct ScanFeatures {
-    pub record_methods: bool,
-}
-
 pub struct SourceScanner {
     module_name: String,
     type_registry: TypeRegistry,
@@ -453,7 +448,6 @@ pub struct SourceScanner {
     integer_constants: HashMap<String, i128>,
     source_root: Option<PathBuf>,
     target_pointer_width_bits: Option<u8>,
-    features: ScanFeatures,
 }
 
 impl SourceScanner {
@@ -476,13 +470,7 @@ impl SourceScanner {
             integer_constants: HashMap::new(),
             source_root: None,
             target_pointer_width_bits,
-            features: ScanFeatures::default(),
         }
-    }
-
-    pub fn with_features(mut self, features: ScanFeatures) -> Self {
-        self.features = features;
-        self
     }
 
     pub fn scan_directory(&mut self, crate_path: &Path, dir: &Path) -> Result<(), String> {
@@ -1067,7 +1055,7 @@ impl SourceScanner {
                 }
             }
             Item::Impl(item_impl) => {
-                if self.features.record_methods && has_data_impl_attribute(&item_impl.attrs) {
+                if has_data_impl_attribute(&item_impl.attrs) {
                     self.process_value_type_impl(item_impl);
                 } else if has_attribute(&item_impl.attrs, "ffi_class")
                     || has_attribute(&item_impl.attrs, "export")
@@ -2751,26 +2739,11 @@ pub fn scan_crate_with_pointer_width(
     module_name: &str,
     target_pointer_width_bits: Option<u8>,
 ) -> Result<Module, String> {
-    scan_crate_with_options(
-        crate_path,
-        module_name,
-        target_pointer_width_bits,
-        ScanFeatures::default(),
-    )
-}
-
-pub fn scan_crate_with_options(
-    crate_path: &Path,
-    module_name: &str,
-    target_pointer_width_bits: Option<u8>,
-    features: ScanFeatures,
-) -> Result<Module, String> {
     let src_path = crate_path.join("src");
     let mut scanner = SourceScanner::new_with_pointer_width(
         module_name,
         target_pointer_width_bits.or_else(parse_target_pointer_width),
-    )
-    .with_features(features);
+    );
     scanner.scan_directory(crate_path, &src_path)?;
     let module = scanner.into_module();
     validate_no_symbol_collisions(&module)?;
@@ -3450,7 +3423,7 @@ mod tests {
         fs::remove_dir_all(temp_root).expect("cleanup temp root");
     }
 
-    fn scan_temp_crate(source: &str, features: ScanFeatures) -> Module {
+    fn scan_temp_crate(source: &str) -> Module {
         let unique_suffix = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
@@ -3465,12 +3438,12 @@ mod tests {
         fs::write(src_dir.join("lib.rs"), source).expect("write lib.rs");
 
         let module =
-            scan_crate_with_options(&temp_root, "testlib", None, features).expect("scan failed");
+            scan_crate_with_pointer_width(&temp_root, "testlib", None).expect("scan failed");
         fs::remove_dir_all(&temp_root).expect("cleanup");
         module
     }
 
-    fn scan_temp_crate_multi(files: &[(&str, &str)], features: ScanFeatures) -> Module {
+    fn scan_temp_crate_multi(files: &[(&str, &str)]) -> Module {
         let unique_suffix = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
@@ -3488,7 +3461,7 @@ mod tests {
         });
 
         let module =
-            scan_crate_with_options(&temp_root, "testlib", None, features).expect("scan failed");
+            scan_crate_with_pointer_width(&temp_root, "testlib", None).expect("scan failed");
         fs::remove_dir_all(&temp_root).expect("cleanup");
         module
     }
@@ -3517,7 +3490,7 @@ mod tests {
             }
         "#;
 
-        let module = scan_temp_crate(source, ScanFeatures::default());
+        let module = scan_temp_crate(source);
         let error_record = module
             .records
             .iter()
@@ -3530,7 +3503,7 @@ mod tests {
     }
 
     #[test]
-    fn record_impl_scanned_with_feature_enabled() {
+    fn record_impl_scanned() {
         let source = r#"
             #[boltffi::data]
             pub struct Point {
@@ -3550,12 +3523,7 @@ mod tests {
             }
         "#;
 
-        let module = scan_temp_crate(
-            source,
-            ScanFeatures {
-                record_methods: true,
-            },
-        );
+        let module = scan_temp_crate(source);
 
         let record = module.find_record("Point").expect("Point not found");
         assert_eq!(record.fields.len(), 2);
@@ -3566,42 +3534,12 @@ mod tests {
     }
 
     #[test]
-    fn record_impl_ignored_with_feature_disabled() {
-        let source = r#"
-            #[boltffi::data]
-            pub struct Point {
-                pub x: f64,
-                pub y: f64,
-            }
-
-            #[boltffi::data(impl)]
-            impl Point {
-                pub fn origin() -> Self {
-                    Self { x: 0.0, y: 0.0 }
-                }
-
-                pub fn magnitude(&self) -> f64 {
-                    (self.x * self.x + self.y * self.y).sqrt()
-                }
-            }
-        "#;
-
-        let module = scan_temp_crate(source, ScanFeatures::default());
-
-        let record = module.find_record("Point").expect("Point not found");
-        assert_eq!(record.fields.len(), 2);
-        assert!(record.constructors.is_empty());
-        assert!(record.methods.is_empty());
-    }
-
-    #[test]
     fn record_impl_cross_file_impl_before_struct() {
-        let module = scan_temp_crate_multi(
-            &[
-                ("lib.rs", "pub mod record_impl;\npub mod record_struct;\n"),
-                (
-                    "record_impl.rs",
-                    r#"
+        let module = scan_temp_crate_multi(&[
+            ("lib.rs", "pub mod record_impl;\npub mod record_struct;\n"),
+            (
+                "record_impl.rs",
+                r#"
                         use super::record_struct::Point;
 
                         #[boltffi::data(impl)]
@@ -3615,22 +3553,18 @@ mod tests {
                             }
                         }
                     "#,
-                ),
-                (
-                    "record_struct.rs",
-                    r#"
+            ),
+            (
+                "record_struct.rs",
+                r#"
                         #[boltffi::data]
                         pub struct Point {
                             pub x: f64,
                             pub y: f64,
                         }
                     "#,
-                ),
-            ],
-            ScanFeatures {
-                record_methods: true,
-            },
-        );
+            ),
+        ]);
 
         let record = module.find_record("Point").expect("Point not found");
         assert_eq!(record.fields.len(), 2);
