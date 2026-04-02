@@ -53,6 +53,7 @@ pub struct PreambleTemplate<'a> {
     pub prefix: &'a str,
     pub extra_imports: &'a [String],
     pub custom_types: &'a [super::plan::KotlinCustomType],
+    pub has_async_runtime: bool,
     pub has_streams: bool,
 }
 
@@ -66,6 +67,7 @@ pub struct NativeTemplate<'a> {
     pub classes: &'a [super::plan::KotlinNativeClass],
     pub callbacks: &'a [super::plan::KotlinCallbackTrait],
     pub async_callback_invokers: &'a [super::plan::KotlinAsyncCallbackInvoker],
+    pub has_async_runtime: bool,
 }
 
 #[derive(Template)]
@@ -274,6 +276,7 @@ impl KotlinEmitter {
             prefix: &module.prefix,
             extra_imports: &module.extra_imports,
             custom_types: &module.custom_types,
+            has_async_runtime: module.has_async_runtime,
             has_streams: module.has_streams,
         }
         .render()
@@ -471,6 +474,7 @@ impl KotlinEmitter {
             classes: &module.native.classes,
             callbacks: &module.callbacks,
             async_callback_invokers: &module.native.async_callback_invokers,
+            has_async_runtime: module.has_async_runtime,
         }
         .render()
         .unwrap();
@@ -906,6 +910,46 @@ mod tests {
             doc: &None,
         };
         insta::assert_snapshot!(template.render().unwrap());
+    }
+
+    #[test]
+    fn preamble_without_async_runtime_omits_async_infrastructure() {
+        let rendered = PreambleTemplate {
+            package_name: "com.test.repro",
+            prefix: "boltffi",
+            extra_imports: &[],
+            custom_types: &[],
+            has_async_runtime: false,
+            has_streams: false,
+        }
+        .render()
+        .unwrap();
+
+        assert!(!rendered.contains("object BoltFFIScope : CoroutineScope"));
+        assert!(!rendered.contains("private const val BOLTFFI_FUTURE_POLL_READY"));
+        assert!(!rendered.contains("internal class BoltFFIHandleMap"));
+        assert!(!rendered.contains("private val boltffiContinuationMap"));
+        assert!(!rendered.contains("internal suspend inline fun <T> boltffiCallAsync"));
+        assert!(!rendered.contains("import kotlin.coroutines.Continuation"));
+        assert!(!rendered.contains("import kotlinx.coroutines.CancellableContinuation"));
+    }
+
+    #[test]
+    fn native_without_async_runtime_omits_future_continuation_callback() {
+        let rendered = NativeTemplate {
+            lib_name: "repro",
+            prefix: "boltffi",
+            functions: &[],
+            wire_functions: &[],
+            classes: &[],
+            callbacks: &[],
+            async_callback_invokers: &[],
+            has_async_runtime: false,
+        }
+        .render()
+        .unwrap();
+
+        assert!(!rendered.contains("fun boltffiFutureContinuationCallback("));
     }
 
     #[test]

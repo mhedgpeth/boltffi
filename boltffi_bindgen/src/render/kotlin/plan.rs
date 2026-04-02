@@ -19,6 +19,7 @@ pub struct KotlinModule {
     pub native: KotlinNative,
     pub api_style: KotlinApiStyle,
     pub module_object_name: Option<String>,
+    pub has_async_runtime: bool,
     pub has_streams: bool,
 }
 

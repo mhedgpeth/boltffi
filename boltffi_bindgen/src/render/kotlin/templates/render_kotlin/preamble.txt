@@ -8,11 +8,13 @@ import java.nio.ByteOrder
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
+{%- if has_async_runtime %}
 import kotlin.coroutines.Continuation
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 import kotlinx.coroutines.CancellableContinuation
 import kotlinx.coroutines.suspendCancellableCoroutine
+{%- endif %}
 import kotlin.jvm.JvmInline
 {%- for import in extra_imports %}
 import {{ import }}
@@ -68,6 +70,7 @@ class FfiException(val code: Int, message: String) : Exception(message)
 private fun takeLastErrorMessage(): String =
     Native.{{ prefix }}_last_error_message().toString(Charsets.UTF_8)
 
+{%- if has_async_runtime %}
 object BoltFFIScope : CoroutineScope {
     override val coroutineContext = Dispatchers.Default + SupervisorJob()
 
@@ -132,6 +135,7 @@ internal suspend inline fun <T> boltffiCallAsync(
         free(rustFuture)
     }
 }
+{%- endif %}
 
 {%- if has_streams %}
 

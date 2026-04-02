@@ -17,6 +17,7 @@ private object Native {
     @JvmStatic external fun {{ prefix }}_free_string(ptr: Long)
     @JvmStatic external fun {{ prefix }}_last_error_message(): ByteArray
 
+{%- if has_async_runtime %}
     @JvmStatic fun boltffiFutureContinuationCallback(handle: Long, pollResult: Byte) {
         val continuation = boltffiContinuationMap.tryRemove(handle)
         if (continuation == null) {
@@ -31,6 +32,7 @@ private object Native {
             }
         }
     }
+{%- endif %}
 {%- for function in functions %}
 {%- if function.is_async() %}
     @JvmStatic external fun {{ function.ffi_name }}({% for param in function.params %}{{ param.name }}: {{ param.jni_type }}{% if !loop.last %}, {% endif %}{% endfor %}): Long

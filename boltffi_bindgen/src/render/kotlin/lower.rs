@@ -79,7 +79,8 @@ impl<'a> KotlinLowerer<'a> {
             .catalog
             .all_classes()
             .any(|class| !class.streams.is_empty());
-        let preamble = self.lower_preamble(has_streams);
+        let has_async_runtime = self.has_async_runtime(has_streams);
+        let preamble = self.lower_preamble(has_async_runtime, has_streams);
         let enums = self
             .contract
             .catalog
@@ -142,12 +143,13 @@ impl<'a> KotlinLowerer<'a> {
                 KotlinInputApiStyle::ModuleObject => KotlinApiStyle::ModuleObject,
             },
             module_object_name: self.options.module_object_name.clone(),
+            has_async_runtime,
             has_streams,
         }
     }
 
-    fn lower_preamble(&self, has_streams: bool) -> KotlinPreamble {
-        let extra_imports = self.collect_extra_imports(has_streams);
+    fn lower_preamble(&self, has_async_runtime: bool, has_streams: bool) -> KotlinPreamble {
+        let extra_imports = self.collect_extra_imports(has_async_runtime, has_streams);
         let custom_types = self
             .contract
             .catalog
@@ -159,23 +161,18 @@ impl<'a> KotlinLowerer<'a> {
             prefix: naming::ffi_prefix().to_string(),
             extra_imports,
             custom_types,
+            has_async_runtime,
             has_streams,
         }
     }
 
-    fn collect_extra_imports(&self, has_streams: bool) -> Vec<String> {
+    fn collect_extra_imports(&self, has_async_runtime: bool, has_streams: bool) -> Vec<String> {
         let mut imports = self
             .collect_builtin_ids()
             .into_iter()
             .filter_map(|id| self.builtin_import(&id))
             .collect::<Vec<_>>();
-        let has_async_callbacks = self.contract.catalog.all_callbacks().any(|callback| {
-            callback
-                .methods
-                .iter()
-                .any(|method| method.execution_kind() == ExecutionKind::Async)
-        });
-        let coroutine_imports = if has_async_callbacks || has_streams {
+        let coroutine_imports = if has_async_runtime {
             vec![
                 "kotlinx.coroutines.CoroutineScope".to_string(),
                 "kotlinx.coroutines.Dispatchers".to_string(),
@@ -212,6 +209,27 @@ impl<'a> KotlinLowerer<'a> {
                 }
             });
         imports
+    }
+
+    fn has_async_runtime(&self, has_streams: bool) -> bool {
+        has_streams
+            || self
+                .contract
+                .functions
+                .iter()
+                .any(|function| function.execution_kind() == ExecutionKind::Async)
+            || self.contract.catalog.all_classes().any(|class| {
+                class
+                    .methods
+                    .iter()
+                    .any(|method| method.execution_kind() == ExecutionKind::Async)
+            })
+            || self.contract.catalog.all_callbacks().any(|callback| {
+                callback
+                    .methods
+                    .iter()
+                    .any(|method| method.execution_kind() == ExecutionKind::Async)
+            })
     }
 
     fn collect_builtin_ids(&self) -> HashSet<BuiltinId> {
@@ -4685,6 +4703,7 @@ struct KotlinPreamble {
     prefix: String,
     extra_imports: Vec<String>,
     custom_types: Vec<KotlinCustomType>,
+    has_async_runtime: bool,
     has_streams: bool,
 }
 
