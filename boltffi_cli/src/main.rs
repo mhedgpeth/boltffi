@@ -331,6 +331,10 @@ fn execute_command(
                 .as_ref()
                 .map(|c| c.apple_include_macos())
                 .unwrap_or(false);
+            let android_targets = config
+                .as_ref()
+                .map(|c| c.android_targets())
+                .unwrap_or_else(|| crate::target::RustTarget::ALL_ANDROID.to_vec());
             let options = CheckOptions {
                 fix,
                 apple: if explicit_target_selected {
@@ -344,6 +348,7 @@ fn execute_command(
                 } else {
                     true
                 },
+                android_targets,
                 wasm: check_wasm,
                 wasm_target_triple,
             };
@@ -356,6 +361,7 @@ fn execute_command(
             wasm,
         } => {
             let explicit_target_selected = apple || android || wasm;
+            let config = load_config_if_present().unwrap_or(None);
             let options = DoctorOptions {
                 apple: if explicit_target_selected {
                     apple
@@ -367,6 +373,10 @@ fn execute_command(
                 } else {
                     true
                 },
+                android_targets: config
+                    .as_ref()
+                    .map(|c| c.android_targets())
+                    .unwrap_or_else(|| crate::target::RustTarget::ALL_ANDROID.to_vec()),
                 wasm: if explicit_target_selected { wasm } else { true },
             };
             run_doctor(options)
@@ -534,6 +544,7 @@ fn run_release(
         apple: config.is_apple_enabled(),
         include_macos: config.apple_include_macos(),
         android: config.is_android_enabled(),
+        android_targets: config.android_targets(),
         wasm: config.is_wasm_enabled(),
         wasm_target_triple: Some(config.wasm_triple().to_string()),
     };

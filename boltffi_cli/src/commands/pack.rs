@@ -16,7 +16,7 @@ use crate::config::{
 use crate::error::{CliError, Result};
 use crate::pack::{AndroidPackager, SpmPackageGenerator, XcframeworkBuilder, compute_checksum};
 use crate::reporter::{Reporter, Step};
-use crate::target::{BuiltLibrary, Platform};
+use crate::target::{BuiltLibrary, Platform, RustTarget};
 
 pub enum PackCommand {
     All(PackAllOptions),
@@ -415,10 +415,17 @@ fn pack_android(config: &Config, options: PackAndroidOptions, reporter: &Reporte
 
     let build_cargo_args = resolve_build_cargo_args(config, &options.cargo_args);
     let build_profile = resolve_build_profile(options.release, &build_cargo_args);
+    let android_targets = config.android_targets();
 
     if !options.no_build {
         let step = reporter.step("Building Android targets");
-        build_android_targets(config, options.release, &build_cargo_args, &step)?;
+        build_android_targets(
+            config,
+            &android_targets,
+            options.release,
+            &build_cargo_args,
+            &step,
+        )?;
         step.finish_success();
     }
 
@@ -446,18 +453,21 @@ fn pack_android(config: &Config, options: PackAndroidOptions, reporter: &Reporte
         step.finish_success();
     }
 
-    let libraries = discover_built_libraries(
+    let libraries = discover_built_libraries_for_targets(
         &config.crate_artifact_name(),
         build_profile.output_directory_name(),
+        &android_targets,
     )?;
     let android_libraries: Vec<_> = libraries
         .into_iter()
         .filter(|lib| lib.target.platform() == Platform::Android)
         .collect();
 
-    if android_libraries.is_empty() {
-        return Err(CliError::NoLibrariesFound {
+    let missing_targets = missing_built_libraries(&android_targets, &android_libraries);
+    if !missing_targets.is_empty() {
+        return Err(CliError::MissingBuiltLibraries {
             platform: "Android".to_string(),
+            targets: missing_targets,
         });
     }
 
@@ -731,6 +741,7 @@ fn print_cargo_line(line: &str) {
 
 fn build_android_targets(
     config: &Config,
+    targets: &[RustTarget],
     release: bool,
     build_cargo_args: &[String],
     step: &Step,
@@ -748,7 +759,7 @@ fn build_android_targets(
         on_output,
     };
     let builder = Builder::new(config, build_options);
-    let results = builder.build_android()?;
+    let results = builder.build_android(targets)?;
 
     if all_successful(&results) {
         return Ok(());
@@ -1127,6 +1138,28 @@ fn discover_built_libraries(
     ))
 }
 
+fn discover_built_libraries_for_targets(
+    crate_artifact_name: &str,
+    profile_directory_name: &str,
+    targets: &[RustTarget],
+) -> Result<Vec<BuiltLibrary>> {
+    let target_directory = cargo_target_directory()?;
+    Ok(BuiltLibrary::discover_for_targets(
+        &target_directory,
+        crate_artifact_name,
+        profile_directory_name,
+        targets,
+    ))
+}
+
+fn missing_built_libraries(targets: &[RustTarget], libraries: &[BuiltLibrary]) -> Vec<String> {
+    targets
+        .iter()
+        .filter(|target| libraries.iter().all(|library| library.target != **target))
+        .map(|target| target.triple().to_string())
+        .collect()
+}
+
 fn cargo_target_directory() -> Result<PathBuf> {
     let crate_dir = std::env::current_dir().map_err(|source| CliError::CommandFailed {
         command: format!("current_dir: {source}"),
@@ -1189,7 +1222,8 @@ fn detect_version() -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_cargo_target_directory;
+    use super::{missing_built_libraries, parse_cargo_target_directory};
+    use crate::target::{BuiltLibrary, RustTarget};
     use std::path::PathBuf;
 
     #[test]
@@ -1208,5 +1242,20 @@ mod tests {
             parse_cargo_target_directory(metadata).expect("expected target directory");
 
         assert_eq!(target_directory, PathBuf::from("/tmp/boltffi-target"));
+    }
+
+    #[test]
+    fn reports_missing_built_libraries_for_unbuilt_configured_targets() {
+        let libraries = vec![BuiltLibrary {
+            target: RustTarget::ANDROID_ARM64,
+            path: PathBuf::from("/tmp/libdemo.a"),
+        }];
+
+        let missing = missing_built_libraries(
+            &[RustTarget::ANDROID_ARM64, RustTarget::ANDROID_X86_64],
+            &libraries,
+        );
+
+        assert_eq!(missing, vec!["x86_64-linux-android".to_string()]);
     }
 }

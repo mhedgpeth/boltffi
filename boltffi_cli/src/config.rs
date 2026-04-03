@@ -1,5 +1,6 @@
+use crate::target::{AndroidArchitecture, RustTarget, resolve_android_targets};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -204,6 +205,7 @@ pub struct AndroidConfig {
     #[serde(default = "default_android_min_sdk")]
     pub min_sdk: u32,
     pub ndk_version: Option<String>,
+    pub architectures: Option<Vec<AndroidArchitecture>>,
     #[serde(default)]
     pub kotlin: AndroidKotlinConfig,
     #[serde(default)]
@@ -438,6 +440,7 @@ impl Default for AndroidConfig {
             output: default_android_output(),
             min_sdk: default_android_min_sdk(),
             ndk_version: None,
+            architectures: None,
             kotlin: AndroidKotlinConfig::default(),
             header: HeaderConfig::default(),
             pack: AndroidPackConfig::default(),
@@ -549,6 +552,26 @@ impl Config {
             return Err(ConfigError::Validation(
                 "targets.wasm.npm.targets must be non-empty when provided".to_string(),
             ));
+        }
+
+        if self.is_android_enabled()
+            && let Some(architectures) = self.targets.android.architectures.as_ref()
+        {
+            if architectures.is_empty() {
+                return Err(ConfigError::Validation(
+                    "targets.android.architectures must be non-empty when provided".to_string(),
+                ));
+            }
+
+            let mut seen = HashSet::new();
+            for architecture in architectures {
+                if !seen.insert(*architecture) {
+                    return Err(ConfigError::Validation(format!(
+                        "targets.android.architectures contains duplicate architecture '{}'",
+                        architecture.canonical_name()
+                    )));
+                }
+            }
         }
 
         Ok(())
@@ -665,6 +688,18 @@ impl Config {
 
     pub fn android_ndk_version(&self) -> Option<&str> {
         self.targets.android.ndk_version.as_deref()
+    }
+
+    pub fn android_architectures(&self) -> &[AndroidArchitecture] {
+        self.targets
+            .android
+            .architectures
+            .as_deref()
+            .unwrap_or(AndroidArchitecture::ALL)
+    }
+
+    pub fn android_targets(&self) -> Vec<RustTarget> {
+        resolve_android_targets(self.android_architectures())
     }
 
     pub fn android_output(&self) -> PathBuf {
@@ -1135,6 +1170,81 @@ include_macos = false
 
         assert_eq!(config.targets.apple.deployment_target, "16.0");
         assert!(!config.targets.apple.include_macos);
+    }
+
+    #[test]
+    fn defaults_android_architectures_to_all_supported_abis() {
+        let config = parse_config(
+            r#"
+[package]
+name = "mylib"
+"#,
+        );
+
+        assert_eq!(
+            config
+                .android_architectures()
+                .iter()
+                .map(|architecture| architecture.canonical_name())
+                .collect::<Vec<_>>(),
+            vec!["arm64", "armv7", "x86_64", "x86"]
+        );
+    }
+
+    #[test]
+    fn rejects_noncanonical_android_architecture_aliases() {
+        let parsed = toml::from_str::<Config>(
+            r#"
+[package]
+name = "mylib"
+
+[targets.android]
+architectures = ["arm"]
+"#,
+        );
+
+        assert!(parsed.is_err());
+    }
+
+    #[test]
+    fn rejects_empty_android_architectures() {
+        let parsed: Config = toml::from_str(
+            r#"
+[package]
+name = "mylib"
+
+[targets.android]
+architectures = []
+"#,
+        )
+        .expect("toml parse failed");
+
+        assert!(matches!(
+            parsed.validate(),
+            Err(ConfigError::Validation(message))
+                if message == "targets.android.architectures must be non-empty when provided"
+        ));
+    }
+
+    #[test]
+    fn rejects_duplicate_android_architectures() {
+        let parsed: Config = toml::from_str(
+            r#"
+[package]
+name = "mylib"
+
+[targets.android]
+architectures = ["armv7", "armv7"]
+"#,
+        )
+        .expect("toml parse failed");
+
+        assert!(matches!(
+            parsed.validate(),
+            Err(ConfigError::Validation(message))
+                if message
+                    == "targets.android.architectures contains duplicate architecture 'armv7'"
+        ));
     }
 
     #[test]

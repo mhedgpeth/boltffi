@@ -67,11 +67,23 @@ boltffi pack apple
 # Produces: ./dist/apple/YourCrate.xcframework + Package.swift
 
 boltffi pack android
-# Produces: ./dist/android/jniLibs/*.so + Kotlin bindings
+# Produces: ./dist/android/jniLibs/<abi>/libyour_crate.so + Kotlin bindings
 
 boltffi pack wasm
 # Produces: ./dist/wasm/pkg/*.wasm + TypeScript bindings + npm package
 ```
+
+Android ABI selection is configurable in `boltffi.toml`:
+
+```toml
+[targets.android]
+architectures = ["arm64"]
+```
+
+When `architectures` is omitted, BoltFFI keeps the existing default Android matrix:
+`arm64`, `armv7`, `x86_64`, and `x86`. `boltffi pack android --no-build` now validates that each
+configured ABI already has a built Rust static library and ignores stale artifacts for
+unconfigured ABIs.
 
 Use it from Swift, Kotlin, or TypeScript:
 

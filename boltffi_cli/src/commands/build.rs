@@ -61,7 +61,7 @@ pub fn run_build(config: &Config, options: BuildCommandOptions) -> Result<Vec<Bu
                 return Ok(Vec::new());
             }
             println!("Building for Android ({})...", profile);
-            builder.build_android()?
+            builder.build_android(&config.android_targets())?
         }
         BuildPlatform::Wasm => {
             if !config.is_wasm_enabled() {
@@ -77,7 +77,7 @@ pub fn run_build(config: &Config, options: BuildCommandOptions) -> Result<Vec<Bu
                 all_results.extend(builder.build_ios()?);
             }
             if config.is_android_enabled() {
-                all_results.extend(builder.build_android()?);
+                all_results.extend(builder.build_android(&config.android_targets())?);
             }
             if config.is_apple_enabled() && config.apple_include_macos() {
                 all_results.extend(builder.build_macos()?);

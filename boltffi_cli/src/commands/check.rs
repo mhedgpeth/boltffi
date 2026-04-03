@@ -7,6 +7,7 @@ pub struct CheckOptions {
     pub apple: bool,
     pub include_macos: bool,
     pub android: bool,
+    pub android_targets: Vec<RustTarget>,
     pub wasm: bool,
     pub wasm_target_triple: Option<String>,
 }
@@ -18,6 +19,7 @@ impl Default for CheckOptions {
             apple: true,
             include_macos: false,
             android: true,
+            android_targets: RustTarget::ALL_ANDROID.to_vec(),
             wasm: true,
             wasm_target_triple: Some(RustTarget::WASM32_UNKNOWN_UNKNOWN.triple().to_string()),
         }
@@ -44,7 +46,8 @@ pub fn run_check(options: CheckOptions) -> Result<bool> {
 
     if options.android {
         required_triples.extend(
-            RustTarget::ALL_ANDROID
+            options
+                .android_targets
                 .iter()
                 .map(|target| target.triple().to_string()),
         );
@@ -112,7 +115,7 @@ fn print_environment_status(check: &EnvironmentCheck, options: &CheckOptions) {
 
     if options.android {
         println!("Android Targets");
-        RustTarget::ALL_ANDROID.iter().for_each(|target| {
+        options.android_targets.iter().for_each(|target| {
             let installed = check.installed_targets.iter().any(|t| t == target.triple());
             println!("  {} {}", status_icon(installed), target.triple());
         });

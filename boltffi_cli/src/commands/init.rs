@@ -109,6 +109,7 @@ fn create_default_config(package_name: &str) -> Config {
                 output: PathBuf::from("dist/android"),
                 min_sdk: 24,
                 ndk_version: None,
+                architectures: None,
                 kotlin: AndroidKotlinConfig {
                     package: Some(format!("com.example.{}", normalized_kotlin_name)),
                     output: None,

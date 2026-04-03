@@ -141,6 +141,13 @@ Uuid = { type = "UUID", conversion = "uuid_string" }
 - `min_sdk` (integer): Android minSdkVersion used for packaging.
   - Default: `24`
 - `ndk_version` (string, optional): NDK version hint (used by environment checks).
+- `architectures` (array of strings, optional): Android ABIs to build and package.
+  - Supported canonical values: `arm64`, `armv7`, `x86_64`, `x86`
+  - Default: all four Android architectures above, in that order
+  - Behavior: `boltffi build android`, `boltffi check`, `boltffi doctor`, and
+    `boltffi pack android` all resolve against this configured list.
+  - `boltffi pack android --no-build` requires one prebuilt Rust static library per configured
+    architecture and ignores stale artifacts for unconfigured ABIs.
 
 ### `[targets.android.kotlin]` (optional)
 

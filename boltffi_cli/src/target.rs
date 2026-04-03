@@ -1,3 +1,4 @@
+use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -18,7 +19,41 @@ pub enum Architecture {
     Wasm32,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum AndroidArchitecture {
+    #[serde(rename = "arm64")]
+    Arm64,
+    #[serde(rename = "armv7")]
+    Armv7,
+    #[serde(rename = "x86_64")]
+    X86_64,
+    #[serde(rename = "x86")]
+    X86,
+}
+
+impl AndroidArchitecture {
+    pub const ALL: &'static [Self] = &[Self::Arm64, Self::Armv7, Self::X86_64, Self::X86];
+
+    pub const fn canonical_name(self) -> &'static str {
+        match self {
+            Self::Arm64 => "arm64",
+            Self::Armv7 => "armv7",
+            Self::X86_64 => "x86_64",
+            Self::X86 => "x86",
+        }
+    }
+
+    pub const fn rust_target(self) -> RustTarget {
+        match self {
+            Self::Arm64 => RustTarget::ANDROID_ARM64,
+            Self::Armv7 => RustTarget::ANDROID_ARMV7,
+            Self::X86_64 => RustTarget::ANDROID_X86_64,
+            Self::X86 => RustTarget::ANDROID_X86,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct RustTarget {
     triple: &'static str,
     platform: Platform,
@@ -100,6 +135,10 @@ impl RustTarget {
 
     pub const ALL_WASM: &'static [Self] = &[Self::WASM32_UNKNOWN_UNKNOWN];
 
+    pub const fn from_android_architecture(architecture: AndroidArchitecture) -> Self {
+        architecture.rust_target()
+    }
+
     pub fn triple(&self) -> &'static str {
         self.triple
     }
@@ -136,6 +175,14 @@ impl RustTarget {
     }
 }
 
+pub fn resolve_android_targets(architectures: &[AndroidArchitecture]) -> Vec<RustTarget> {
+    architectures
+        .iter()
+        .copied()
+        .map(RustTarget::from_android_architecture)
+        .collect()
+}
+
 impl Platform {
     pub fn is_apple(&self) -> bool {
         matches!(
@@ -164,6 +211,25 @@ pub struct BuiltLibrary {
 }
 
 impl BuiltLibrary {
+    pub fn discover_for_targets(
+        target_dir: &Path,
+        lib_name: &str,
+        profile_directory_name: &str,
+        targets: &[RustTarget],
+    ) -> Vec<Self> {
+        targets
+            .iter()
+            .filter_map(|target| {
+                let path =
+                    target.library_path_for_profile(target_dir, lib_name, profile_directory_name);
+                path.exists().then_some(BuiltLibrary {
+                    target: *target,
+                    path,
+                })
+            })
+            .collect()
+    }
+
     pub fn discover_for_profile(
         target_dir: &Path,
         lib_name: &str,
@@ -175,23 +241,17 @@ impl BuiltLibrary {
             .chain(RustTarget::ALL_ANDROID)
             .chain(RustTarget::ALL_WASM);
 
-        all_targets
-            .filter_map(|target| {
-                let path =
-                    target.library_path_for_profile(target_dir, lib_name, profile_directory_name);
-                path.exists().then(|| BuiltLibrary {
-                    target: target.clone(),
-                    path,
-                })
-            })
-            .collect()
+        let targets: Vec<_> = all_targets.copied().collect();
+        Self::discover_for_targets(target_dir, lib_name, profile_directory_name, &targets)
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{Platform, RustTarget};
+    use super::{AndroidArchitecture, BuiltLibrary, Platform, RustTarget, resolve_android_targets};
+    use std::fs;
     use std::path::Path;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
     fn apple_targets_use_static_libraries() {
@@ -212,5 +272,59 @@ mod tests {
 
         assert_eq!(RustTarget::ANDROID_ARM64.platform(), Platform::Android);
         assert!(library_path.ends_with("target/aarch64-linux-android/debug/libdemo.a"));
+    }
+
+    #[test]
+    fn resolves_android_architectures_to_targets() {
+        let targets = resolve_android_targets(&[
+            AndroidArchitecture::Arm64,
+            AndroidArchitecture::Armv7,
+            AndroidArchitecture::X86_64,
+        ]);
+
+        assert_eq!(
+            targets
+                .iter()
+                .map(|target| target.triple())
+                .collect::<Vec<_>>(),
+            vec![
+                "aarch64-linux-android",
+                "armv7-linux-androideabi",
+                "x86_64-linux-android",
+            ]
+        );
+    }
+
+    #[test]
+    fn discovers_only_requested_targets() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("time went backwards")
+            .as_nanos();
+        let temp_root = std::env::temp_dir().join(format!("boltffi-target-test-{unique}"));
+        let arm64_path =
+            RustTarget::ANDROID_ARM64.library_path_for_profile(&temp_root, "demo", "debug");
+        let x86_path =
+            RustTarget::ANDROID_X86.library_path_for_profile(&temp_root, "demo", "debug");
+
+        fs::create_dir_all(arm64_path.parent().expect("arm64 parent")).expect("create arm64 dir");
+        fs::create_dir_all(x86_path.parent().expect("x86 parent")).expect("create x86 dir");
+        fs::write(&arm64_path, []).expect("write arm64 artifact");
+        fs::write(&x86_path, []).expect("write x86 artifact");
+
+        let discovered = BuiltLibrary::discover_for_targets(
+            &temp_root,
+            "demo",
+            "debug",
+            &[RustTarget::ANDROID_ARM64],
+        );
+
+        assert_eq!(discovered.len(), 1);
+        assert_eq!(
+            discovered[0].target.triple(),
+            RustTarget::ANDROID_ARM64.triple()
+        );
+
+        fs::remove_dir_all(&temp_root).expect("cleanup temp target dir");
     }
 }

@@ -8,6 +8,7 @@ use crate::target::RustTarget;
 pub struct DoctorOptions {
     pub apple: bool,
     pub android: bool,
+    pub android_targets: Vec<RustTarget>,
     pub wasm: bool,
 }
 
@@ -33,7 +34,7 @@ fn required_targets(options: &DoctorOptions) -> Vec<RustTarget> {
 
     let android_targets = options
         .android
-        .then(|| RustTarget::ALL_ANDROID.iter().cloned())
+        .then(|| options.android_targets.iter().copied())
         .into_iter()
         .flatten();
 
@@ -76,6 +77,13 @@ fn print_environment(check: &EnvironmentCheck, options: &DoctorOptions) {
         readiness(check.is_ready_for_android())
     );
     if options.android {
+        options.android_targets.iter().for_each(|target| {
+            let installed = check
+                .installed_targets
+                .iter()
+                .any(|triple| triple == target.triple());
+            println!("  target {}: {}", target.triple(), readiness(installed));
+        });
         match &check.tools.android_ndk {
             Some(path) => println!("  ndk: {}", path),
             None => println!("  ndk: missing (set ANDROID_NDK_HOME)"),
@@ -143,6 +151,15 @@ fn print_config_summary() {
             println!(
                 "  targets.android.pack.output: {}",
                 config.android_pack_output().display()
+            );
+            println!(
+                "  targets.android.architectures: {}",
+                config
+                    .android_architectures()
+                    .iter()
+                    .map(|architecture| architecture.canonical_name())
+                    .collect::<Vec<_>>()
+                    .join(", ")
             );
             println!("  targets.wasm.output: {}", config.wasm_output().display());
             println!(
