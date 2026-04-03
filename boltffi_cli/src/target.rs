@@ -188,8 +188,6 @@ impl RustTarget {
         Self::ANDROID_X86,
     ];
 
-    pub const ALL_WASM: &'static [Self] = &[Self::WASM32_UNKNOWN_UNKNOWN];
-
     pub const fn from_android_architecture(architecture: AndroidArchitecture) -> Self {
         architecture.rust_target()
     }

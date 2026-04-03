@@ -323,18 +323,10 @@ fn execute_command(
             let config = load_config_if_present()?;
             let check_wasm = if explicit_target_selected { wasm } else { true };
             let wasm_target_triple = if check_wasm {
-                config.as_ref().map(|c| c.wasm_triple().to_string())
+                configured_wasm_target_triple_for_diagnostics(config.as_ref())
             } else {
                 None
             };
-            let apple_targets = config
-                .as_ref()
-                .map(|c| c.apple_targets())
-                .unwrap_or_else(|| crate::target::RustTarget::ALL_IOS.to_vec());
-            let android_targets = config
-                .as_ref()
-                .map(|c| c.android_targets())
-                .unwrap_or_else(|| crate::target::RustTarget::ALL_ANDROID.to_vec());
             let options = CheckOptions {
                 fix,
                 apple: if explicit_target_selected {
@@ -342,13 +334,13 @@ fn execute_command(
                 } else {
                     true
                 },
-                apple_targets,
+                apple_targets: configured_apple_targets_for_diagnostics(config.as_ref()),
                 android: if explicit_target_selected {
                     android
                 } else {
                     true
                 },
-                android_targets,
+                android_targets: configured_android_targets_for_diagnostics(config.as_ref()),
                 wasm: check_wasm,
                 wasm_target_triple,
             };
@@ -361,27 +353,29 @@ fn execute_command(
             wasm,
         } => {
             let explicit_target_selected = apple || android || wasm;
-            let config = load_config_if_present().unwrap_or(None);
+            let doctor_config = resolve_doctor_config(load_config_if_present());
             let options = DoctorOptions {
                 apple: if explicit_target_selected {
                     apple
                 } else {
                     true
                 },
-                apple_targets: config
-                    .as_ref()
-                    .map(|c| c.apple_targets())
-                    .unwrap_or_else(|| crate::target::RustTarget::ALL_IOS.to_vec()),
+                apple_targets: configured_apple_targets_for_diagnostics(
+                    doctor_config.config.as_ref(),
+                ),
                 android: if explicit_target_selected {
                     android
                 } else {
                     true
                 },
-                android_targets: config
-                    .as_ref()
-                    .map(|c| c.android_targets())
-                    .unwrap_or_else(|| crate::target::RustTarget::ALL_ANDROID.to_vec()),
+                android_targets: configured_android_targets_for_diagnostics(
+                    doctor_config.config.as_ref(),
+                ),
                 wasm: if explicit_target_selected { wasm } else { true },
+                wasm_target_triple: configured_wasm_target_triple_for_diagnostics(
+                    doctor_config.config.as_ref(),
+                ),
+                config_warning: doctor_config.warning,
             };
             run_doctor(options)
         }
@@ -535,6 +529,51 @@ fn load_config_if_present() -> Result<Option<Config>> {
     Config::load(&config_path).map(Some).map_err(Into::into)
 }
 
+fn configured_apple_targets_for_diagnostics(
+    config: Option<&Config>,
+) -> Vec<crate::target::RustTarget> {
+    config
+        .filter(|config| config.is_apple_enabled())
+        .map(|config| config.apple_targets())
+        .unwrap_or_else(|| crate::target::RustTarget::ALL_IOS.to_vec())
+}
+
+fn configured_android_targets_for_diagnostics(
+    config: Option<&Config>,
+) -> Vec<crate::target::RustTarget> {
+    config
+        .filter(|config| config.is_android_enabled())
+        .map(|config| config.android_targets())
+        .unwrap_or_else(|| crate::target::RustTarget::ALL_ANDROID.to_vec())
+}
+
+fn configured_wasm_target_triple_for_diagnostics(config: Option<&Config>) -> Option<String> {
+    config
+        .filter(|config| config.is_wasm_enabled())
+        .map(|config| config.wasm_triple().to_string())
+}
+
+struct DoctorConfig {
+    config: Option<Config>,
+    warning: Option<String>,
+}
+
+fn resolve_doctor_config(config_result: Result<Option<Config>>) -> DoctorConfig {
+    match config_result {
+        Ok(config) => DoctorConfig {
+            config,
+            warning: None,
+        },
+        Err(error) => DoctorConfig {
+            config: None,
+            warning: Some(format!(
+                "failed to load boltffi.toml ({}); using default Apple/Android/WASM target checks",
+                error
+            )),
+        },
+    }
+}
+
 fn run_release(
     config: &Config,
     platform: Option<BuildPlatformArg>,
@@ -686,4 +725,92 @@ fn run_release(
     println!("Release complete!");
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        configured_android_targets_for_diagnostics, configured_apple_targets_for_diagnostics,
+        configured_wasm_target_triple_for_diagnostics, resolve_doctor_config,
+    };
+    use crate::target::RustTarget;
+    use crate::{config::Config, error::CliError};
+
+    fn parse_config(input: &str) -> Config {
+        let parsed: Config = toml::from_str(input).expect("toml parse failed");
+        parsed.validate().expect("config validation failed");
+        parsed
+    }
+
+    #[test]
+    fn diagnostics_ignore_disabled_apple_target_configuration() {
+        let config = parse_config(
+            r#"
+[package]
+name = "mylib"
+
+[targets.apple]
+enabled = false
+include_macos = true
+ios_architectures = ["arm64"]
+simulator_architectures = ["arm64"]
+macos_architectures = ["arm64"]
+"#,
+        );
+
+        assert_eq!(
+            configured_apple_targets_for_diagnostics(Some(&config)),
+            RustTarget::ALL_IOS.to_vec()
+        );
+    }
+
+    #[test]
+    fn diagnostics_ignore_disabled_android_target_configuration() {
+        let config = parse_config(
+            r#"
+[package]
+name = "mylib"
+
+[targets.android]
+enabled = false
+architectures = ["arm64"]
+"#,
+        );
+
+        assert_eq!(
+            configured_android_targets_for_diagnostics(Some(&config)),
+            RustTarget::ALL_ANDROID.to_vec()
+        );
+    }
+
+    #[test]
+    fn diagnostics_ignore_disabled_wasm_target_configuration() {
+        let config = parse_config(
+            r#"
+[package]
+name = "mylib"
+
+[targets.wasm]
+enabled = false
+triple = "wasm32-wasip1"
+"#,
+        );
+
+        assert_eq!(
+            configured_wasm_target_triple_for_diagnostics(Some(&config)),
+            None
+        );
+    }
+
+    #[test]
+    fn doctor_falls_back_to_defaults_when_config_load_fails() {
+        let resolved = resolve_doctor_config(Err(CliError::Config(
+            crate::config::ConfigError::Validation("bad config".to_string()),
+        )));
+
+        assert!(resolved.config.is_none());
+        assert!(resolved.warning.as_deref().is_some_and(|warning| {
+            warning.contains("using default Apple/Android/WASM target checks")
+        }));
+    }
 }

@@ -11,14 +11,20 @@ pub struct DoctorOptions {
     pub android: bool,
     pub android_targets: Vec<RustTarget>,
     pub wasm: bool,
+    pub wasm_target_triple: Option<String>,
+    pub config_warning: Option<String>,
 }
 
 pub fn run_doctor(options: DoctorOptions) -> Result<()> {
-    let required_targets = required_targets(&options);
-    let check = EnvironmentCheck::run(&required_targets);
+    let required_triples = required_target_triples(&options);
+    let check = EnvironmentCheck::run_with_required_triples(&required_triples);
 
     println!("boltffi doctor");
     println!();
+    if let Some(warning) = options.config_warning.as_deref() {
+        println!("Warning: {}", warning);
+        println!();
+    }
     print_environment(&check, &options);
     println!();
     print_config_summary();
@@ -26,24 +32,30 @@ pub fn run_doctor(options: DoctorOptions) -> Result<()> {
     Ok(())
 }
 
-fn required_targets(options: &DoctorOptions) -> Vec<RustTarget> {
+fn required_target_triples(options: &DoctorOptions) -> Vec<String> {
     let apple_targets = options
         .apple
         .then(|| options.apple_targets.iter().copied())
         .into_iter()
-        .flatten();
+        .flatten()
+        .map(|target| target.triple().to_string());
 
     let android_targets = options
         .android
         .then(|| options.android_targets.iter().copied())
         .into_iter()
-        .flatten();
+        .flatten()
+        .map(|target| target.triple().to_string());
 
     let wasm_targets = options
         .wasm
-        .then(|| RustTarget::ALL_WASM.iter().cloned())
-        .into_iter()
-        .flatten();
+        .then(|| {
+            options
+                .wasm_target_triple
+                .clone()
+                .unwrap_or_else(|| RustTarget::WASM32_UNKNOWN_UNKNOWN.triple().to_string())
+        })
+        .into_iter();
 
     apple_targets
         .chain(android_targets)
@@ -99,15 +111,20 @@ fn print_environment(check: &EnvironmentCheck, options: &DoctorOptions) {
     }
 
     if options.wasm {
+        let wasm_target = options
+            .wasm_target_triple
+            .as_deref()
+            .unwrap_or(RustTarget::WASM32_UNKNOWN_UNKNOWN.triple());
         println!();
         println!(
-            "WASM target {}",
+            "WASM target {} ({})",
             readiness(
                 check
                     .installed_targets
                     .iter()
-                    .any(|target| target == RustTarget::WASM32_UNKNOWN_UNKNOWN.triple())
-            )
+                    .any(|target| target == wasm_target)
+            ),
+            wasm_target
         );
     }
 }
@@ -218,6 +235,48 @@ fn print_config_summary() {
         Err(error) => {
             println!("Config: {} (invalid: {})", config_path.display(), error);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{DoctorOptions, required_target_triples};
+    use crate::target::RustTarget;
+
+    #[test]
+    fn uses_configured_wasm_target_triple() {
+        let options = DoctorOptions {
+            apple: false,
+            apple_targets: Vec::new(),
+            android: false,
+            android_targets: Vec::new(),
+            wasm: true,
+            wasm_target_triple: Some("wasm32-wasip1".to_string()),
+            config_warning: None,
+        };
+
+        assert_eq!(
+            required_target_triples(&options),
+            vec!["wasm32-wasip1".to_string()]
+        );
+    }
+
+    #[test]
+    fn defaults_wasm_target_triple_when_not_configured() {
+        let options = DoctorOptions {
+            apple: false,
+            apple_targets: Vec::new(),
+            android: false,
+            android_targets: Vec::new(),
+            wasm: true,
+            wasm_target_triple: None,
+            config_warning: None,
+        };
+
+        assert_eq!(
+            required_target_triples(&options),
+            vec![RustTarget::WASM32_UNKNOWN_UNKNOWN.triple().to_string()]
+        );
     }
 }
 
