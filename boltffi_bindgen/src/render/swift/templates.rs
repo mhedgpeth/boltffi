@@ -308,6 +308,7 @@ mod tests {
     };
     use crate::ir::types::{PrimitiveType, TypeExpr};
     use crate::render::swift::plan::{
+        CompositeFieldMapping, DirectBufferCompositeMapping, SwiftAsyncConversion,
         SwiftAsyncResult, SwiftCallback, SwiftCallbackMethod, SwiftCallbackParam, SwiftClass,
         SwiftConstructor, SwiftConversion, SwiftEnumStyle, SwiftFunction, SwiftMethod, SwiftParam,
         SwiftReturn, SwiftStream, SwiftStreamMode, SwiftVariantPayload,
@@ -1019,6 +1020,43 @@ mod tests {
     }
 
     #[test]
+    fn async_function_returning_direct_composite_uses_direct_completion() {
+        let func = SwiftFunction {
+            name: "fetchPoint".to_string(),
+            mode: SwiftCallMode::Async {
+                start: "boltffi_fetch_point".to_string(),
+                poll: "boltffi_fetch_point_poll".to_string(),
+                complete: "boltffi_fetch_point_complete".to_string(),
+                cancel: "boltffi_fetch_point_cancel".to_string(),
+                free: "boltffi_fetch_point_free".to_string(),
+                result: Box::new(SwiftAsyncResult::Direct {
+                    swift_type: "Point".to_string(),
+                    conversion: SwiftAsyncConversion::Composite(DirectBufferCompositeMapping {
+                        swift_record_type: "Point".to_string(),
+                        fields: vec![
+                            CompositeFieldMapping {
+                                swift_name: "x".to_string(),
+                                c_name: "x".to_string(),
+                            },
+                            CompositeFieldMapping {
+                                swift_name: "y".to_string(),
+                                c_name: "y".to_string(),
+                            },
+                        ],
+                    }),
+                }),
+            },
+            params: vec![],
+            returns: SwiftReturn::Void,
+            doc: None,
+        };
+
+        let rendered = render_function(&func, "boltffi");
+        assert!(rendered.contains("let rawResult = try await boltffiAsyncCallDirect("));
+        assert!(rendered.contains("return Point(x: rawResult.x, y: rawResult.y)"));
+    }
+
+    #[test]
     fn snapshot_callback_trait_simple() {
         let callback = SwiftCallback {
             protocol_name: "DataHandler".to_string(),
@@ -1038,6 +1076,9 @@ mod tests {
                     call_arg: "data".to_string(),
                     ffi_args: vec!["dataPtr".to_string(), "dataLen".to_string()],
                     proxy_ffi_args: vec!["dataPtr".to_string(), "dataLen".to_string()],
+                    proxy_wrapper_code: None,
+                    proxy_closure_wrap_open: None,
+                    proxy_closure_wrap_close: None,
                     decode_prelude: Some(
                         "let data = Data(bytes: dataPtr!, count: Int(dataLen))".to_string(),
                     ),
@@ -1072,6 +1113,9 @@ mod tests {
                     call_arg: "input".to_string(),
                     ffi_args: vec!["inputPtr".to_string(), "inputLen".to_string()],
                     proxy_ffi_args: vec!["inputPtr".to_string(), "inputLen".to_string()],
+                    proxy_wrapper_code: None,
+                    proxy_closure_wrap_open: None,
+                    proxy_closure_wrap_close: None,
                     decode_prelude: Some(
                         "let input = String(decoding: UnsafeBufferPointer(start: inputPtr, count: Int(inputLen)), as: UTF8.self)".to_string(),
                     ),
@@ -1403,6 +1447,9 @@ mod tests {
                     call_arg: "result".to_string(),
                     ffi_args: vec!["resultPtr".to_string(), "resultLen".to_string()],
                     proxy_ffi_args: vec!["resultPtr".to_string(), "resultLen".to_string()],
+                    proxy_wrapper_code: None,
+                    proxy_closure_wrap_open: None,
+                    proxy_closure_wrap_close: None,
                     decode_prelude: Some(
                         "let result = String(decoding: UnsafeBufferPointer(start: resultPtr, count: Int(resultLen)), as: UTF8.self)".to_string(),
                     ),
@@ -1415,6 +1462,81 @@ mod tests {
             doc: None,
         };
         insta::assert_snapshot!(render_callback(&callback));
+    }
+
+    #[test]
+    fn callback_proxy_returns_wrapped_encoded_arguments_as_an_expression() {
+        let callback = SwiftCallback {
+            protocol_name: "MessageFormatter".to_string(),
+            wrapper_class: "MessageFormatterWrapper".to_string(),
+            vtable_var: "messageFormatterVtable".to_string(),
+            vtable_type: "MessageFormatterVtable".to_string(),
+            bridge_name: "MessageFormatterBridge".to_string(),
+            register_fn: "boltffi_register_message_formatter".to_string(),
+            create_fn: "boltffi_create_message_formatter".to_string(),
+            supports_foreign_wrap: true,
+            methods: vec![SwiftCallbackMethod {
+                swift_name: "formatMessage".to_string(),
+                ffi_name: "format_message".to_string(),
+                params: vec![
+                    SwiftCallbackParam {
+                        label: "scope".to_string(),
+                        swift_type: "String".to_string(),
+                        call_arg: "scope".to_string(),
+                        ffi_args: vec!["scope".to_string(), "scopeLen".to_string()],
+                        proxy_ffi_args: vec![
+                            "scopeBuf.baseAddress!".to_string(),
+                            "UInt(scopeBuf.count)".to_string(),
+                        ],
+                        proxy_wrapper_code: Some(
+                            "let scopeBytes = boltffiEncode { writer in writer.writeString(scope) }"
+                                .to_string(),
+                        ),
+                        proxy_closure_wrap_open: Some(
+                            "scopeBytes.withUnsafeBufferPointer { scopeBuf in".to_string(),
+                        ),
+                        proxy_closure_wrap_close: Some("}".to_string()),
+                        decode_prelude: Some(
+                            "let scope = { var reader = WireReader(ptr: scope!, len: Int(scopeLen)); return reader.readString() }()".to_string(),
+                        ),
+                    },
+                    SwiftCallbackParam {
+                        label: "message".to_string(),
+                        swift_type: "String".to_string(),
+                        call_arg: "message".to_string(),
+                        ffi_args: vec!["message".to_string(), "messageLen".to_string()],
+                        proxy_ffi_args: vec![
+                            "messageBuf.baseAddress!".to_string(),
+                            "UInt(messageBuf.count)".to_string(),
+                        ],
+                        proxy_wrapper_code: Some(
+                            "let messageBytes = boltffiEncode { writer in writer.writeString(message) }"
+                                .to_string(),
+                        ),
+                        proxy_closure_wrap_open: Some(
+                            "messageBytes.withUnsafeBufferPointer { messageBuf in".to_string(),
+                        ),
+                        proxy_closure_wrap_close: Some("}".to_string()),
+                        decode_prelude: Some(
+                            "let message = { var reader = WireReader(ptr: message!, len: Int(messageLen)); return reader.readString() }()".to_string(),
+                        ),
+                    },
+                ],
+                returns: SwiftReturn::FromWireBuffer {
+                    swift_type: "String".to_string(),
+                    decode: read_string(offset("pos")),
+                    encode: write_string("result"),
+                },
+                execution_kind: ExecutionKind::Sync,
+                has_out_param: true,
+                doc: None,
+            }],
+            doc: None,
+        };
+
+        let rendered = render_callback(&callback);
+        assert!(rendered.contains("return scopeBytes.withUnsafeBufferPointer { scopeBuf in"));
+        assert!(rendered.contains("messageBytes.withUnsafeBufferPointer { messageBuf in"));
     }
 
     #[test]

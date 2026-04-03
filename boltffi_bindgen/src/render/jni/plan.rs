@@ -71,6 +71,9 @@ pub struct JniAsyncFunction {
 pub enum JniAsyncCompleteKind {
     Void,
     WireEncoded,
+    BlittableStruct {
+        c_type: String,
+    },
     Direct {
         jni_return: String,
         c_type: String,
@@ -87,16 +90,21 @@ impl JniAsyncCompleteKind {
         matches!(self, Self::WireEncoded)
     }
 
+    pub fn is_blittable_struct(&self) -> bool {
+        matches!(self, Self::BlittableStruct { .. })
+    }
+
     pub fn jni_return(&self) -> &str {
         match self {
             Self::Void => "void",
-            Self::WireEncoded => "jbyteArray",
+            Self::WireEncoded | Self::BlittableStruct { .. } => "jbyteArray",
             Self::Direct { jni_return, .. } => jni_return,
         }
     }
 
     pub fn c_type(&self) -> &str {
         match self {
+            Self::BlittableStruct { c_type } => c_type,
             Self::Direct { c_type, .. } => c_type,
             _ => "",
         }

@@ -213,6 +213,16 @@ impl SwiftAsyncResult {
         match self {
             Self::Direct { conversion, .. } => Some(match conversion {
                 SwiftAsyncConversion::None => raw_var.to_string(),
+                SwiftAsyncConversion::Composite(mapping) => format!(
+                    "{}({})",
+                    mapping.swift_record_type,
+                    mapping
+                        .fields
+                        .iter()
+                        .map(|field| format!("{}: {}.{}", field.swift_name, raw_var, field.c_name))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
                 SwiftAsyncConversion::Handle {
                     class_name,
                     nullable,
@@ -242,6 +252,7 @@ impl SwiftAsyncResult {
 #[derive(Debug, Clone)]
 pub enum SwiftAsyncConversion {
     None,
+    Composite(DirectBufferCompositeMapping),
     Handle { class_name: String, nullable: bool },
     Callback { protocol: String, nullable: bool },
 }
@@ -865,6 +876,9 @@ pub struct SwiftCallbackParam {
     pub call_arg: String,
     pub ffi_args: Vec<String>,
     pub proxy_ffi_args: Vec<String>,
+    pub proxy_wrapper_code: Option<String>,
+    pub proxy_closure_wrap_open: Option<String>,
+    pub proxy_closure_wrap_close: Option<String>,
     pub decode_prelude: Option<String>,
 }
 
@@ -993,6 +1007,43 @@ impl SwiftCallbackMethod {
             | SwiftReturn::FromDirectBuffer { .. }
             | SwiftReturn::Throws { .. } => None,
         }
+    }
+
+    pub fn proxy_wrapper_codes(&self) -> Vec<&str> {
+        self.params
+            .iter()
+            .filter_map(|param| param.proxy_wrapper_code.as_deref())
+            .collect()
+    }
+
+    pub fn proxy_closure_opens(&self) -> Vec<&str> {
+        self.params
+            .iter()
+            .filter_map(|param| param.proxy_closure_wrap_open.as_deref())
+            .collect()
+    }
+
+    pub fn proxy_outer_closure_open(&self) -> Option<&str> {
+        self.params
+            .iter()
+            .find_map(|param| param.proxy_closure_wrap_open.as_deref())
+    }
+
+    pub fn proxy_inner_closure_opens(&self) -> Vec<&str> {
+        let mut opened_closures = self
+            .params
+            .iter()
+            .filter_map(|param| param.proxy_closure_wrap_open.as_deref());
+        let _outer_closure = opened_closures.next();
+        opened_closures.collect()
+    }
+
+    pub fn proxy_closure_closes(&self) -> Vec<&str> {
+        self.params
+            .iter()
+            .rev()
+            .filter_map(|param| param.proxy_closure_wrap_close.as_deref())
+            .collect()
     }
 }
 

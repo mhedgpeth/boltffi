@@ -986,7 +986,15 @@ impl<'a> SwiftLowerer<'a> {
 
     fn lower_callback_param(&self, def: &ParamDef, param: &AbiParam) -> SwiftCallbackParam {
         let label = camel_case(param.name.as_str());
-        let (swift_type, ffi_args, proxy_ffi_args, decode_prelude) = match &param.role {
+        let (
+            swift_type,
+            ffi_args,
+            proxy_ffi_args,
+            proxy_wrapper_code,
+            proxy_closure_wrap_open,
+            proxy_closure_wrap_close,
+            decode_prelude,
+        ) = match &param.role {
             ParamRole::Input {
                 transport: Transport::Scalar(ScalarOrigin::CStyleEnum { .. }),
                 ..
@@ -997,6 +1005,9 @@ impl<'a> SwiftLowerer<'a> {
                     swift_type.clone(),
                     vec![raw_label.clone()],
                     vec![format!("{}.rawValue", label)],
+                    None,
+                    None,
+                    None,
                     Some(format!(
                         "let {} = {}(rawValue: {})!",
                         label, swift_type, raw_label
@@ -1011,18 +1022,33 @@ impl<'a> SwiftLowerer<'a> {
                 vec![label.clone()],
                 vec![label.clone()],
                 None,
+                None,
+                None,
+                None,
             ),
             ParamRole::Input {
                 transport: Transport::Span(SpanContent::Encoded(_)),
+                encode_ops: Some(encode_ops),
                 decode_ops: Some(decode_ops),
                 ..
             } => {
                 let len_name = format!("{}Len", label);
                 let reader_decode = emit::emit_reader_read(decode_ops);
+                let writer_encode = emit::emit_writer_write(encode_ops);
                 (
                     self.swift_type(&def.type_expr),
                     vec![label.clone(), len_name.clone()],
-                    vec![label.clone(), len_name.clone()],
+                    vec![
+                        format!("{}Buf.baseAddress!", label),
+                        format!("UInt({}Buf.count)", label),
+                    ],
+                    Some(format!(
+                        "let {label}Bytes = boltffiEncode {{ writer in {writer_encode} }}",
+                    )),
+                    Some(format!(
+                        "{label}Bytes.withUnsafeBufferPointer {{ {label}Buf in",
+                    )),
+                    Some("}".to_string()),
                     Some(format!(
                         "let {} = {{ var reader = WireReader(ptr: {}!, len: Int({})); return {} }}()",
                         label, label, len_name, reader_decode
@@ -1041,6 +1067,9 @@ impl<'a> SwiftLowerer<'a> {
             call_arg: label,
             ffi_args,
             proxy_ffi_args,
+            proxy_wrapper_code,
+            proxy_closure_wrap_open,
+            proxy_closure_wrap_close,
             decode_prelude,
         }
     }
@@ -2174,14 +2203,13 @@ impl<'a> SwiftLowerer<'a> {
                 });
                 self.encoded_async_result(decode_ops, throws, error, returns)
             }
-            Some(Transport::Composite(_)) => {
-                let decode_ops = result_shape.decode_ops.clone().unwrap_or_else(|| ReadSeq {
-                    size: SizeExpr::Fixed(0),
-                    ops: vec![],
-                    shape: WireShape::Value,
-                });
-                self.encoded_async_result(decode_ops, throws, error, returns)
-            }
+            Some(Transport::Composite(layout)) => SwiftAsyncResult::Direct {
+                swift_type: self.swift_return_value_type(returns),
+                conversion: SwiftAsyncConversion::Composite(DirectBufferCompositeMapping {
+                    swift_record_type: self.swift_name_for_record(&layout.record_id),
+                    fields: self.composite_field_mappings(layout),
+                }),
+            },
             Some(Transport::Handle { class_id, nullable }) => SwiftAsyncResult::Direct {
                 swift_type: if *nullable {
                     format!("{}?", self.swift_name_for_class(class_id))
