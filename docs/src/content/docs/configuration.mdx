@@ -65,6 +65,26 @@ include_macos = true
 
 This adds macOS slices to your xcframework, making it usable in Mac Catalyst apps and native macOS applications.
 
+### Apple Slice Selection
+
+BoltFFI resolves Apple slices from `boltffi.toml` instead of always packaging the full default matrix. By default it builds:
+
+- iOS device: `arm64`
+- iOS Simulator: `arm64`, `x86_64`
+- macOS: disabled unless `include_macos = true`
+
+You can narrow that matrix explicitly:
+
+```toml
+[targets.apple]
+ios_architectures = ["arm64"]
+simulator_architectures = ["arm64"]
+include_macos = true
+macos_architectures = ["arm64"]
+```
+
+`macos_architectures` only applies when `include_macos = true`. When omitted, BoltFFI keeps the current defaults.
+
 ### Swift Module Name
 
 The generated Swift code is organized into a module. By default, BoltFFI converts your package name to PascalCase (`mylib` becomes `MyLib`). Override this if you want a different name:
@@ -547,6 +567,9 @@ name = "mylib"
 output = "dist/apple"
 deployment_target = "15.0"
 include_macos = true
+ios_architectures = ["arm64"]
+simulator_architectures = ["arm64", "x86_64"]
+macos_architectures = ["arm64", "x86_64"]
 
 [targets.apple.swift]
 module_name = "MyLib"

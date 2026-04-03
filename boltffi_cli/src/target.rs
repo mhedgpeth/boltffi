@@ -20,6 +20,61 @@ pub enum Architecture {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum AppleIosArchitecture {
+    #[serde(rename = "arm64")]
+    Arm64,
+}
+
+impl AppleIosArchitecture {
+    pub const ALL: &'static [Self] = &[Self::Arm64];
+
+    pub const fn canonical_name(self) -> &'static str {
+        match self {
+            Self::Arm64 => "arm64",
+        }
+    }
+
+    pub const fn rust_target(self) -> RustTarget {
+        match self {
+            Self::Arm64 => RustTarget::IOS_ARM64,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum AppleArchitecture {
+    #[serde(rename = "arm64")]
+    Arm64,
+    #[serde(rename = "x86_64")]
+    X86_64,
+}
+
+impl AppleArchitecture {
+    pub const ALL: &'static [Self] = &[Self::Arm64, Self::X86_64];
+
+    pub const fn canonical_name(self) -> &'static str {
+        match self {
+            Self::Arm64 => "arm64",
+            Self::X86_64 => "x86_64",
+        }
+    }
+
+    pub const fn simulator_rust_target(self) -> RustTarget {
+        match self {
+            Self::Arm64 => RustTarget::IOS_SIM_ARM64,
+            Self::X86_64 => RustTarget::IOS_SIM_X86_64,
+        }
+    }
+
+    pub const fn macos_rust_target(self) -> RustTarget {
+        match self {
+            Self::Arm64 => RustTarget::MACOS_ARM64,
+            Self::X86_64 => RustTarget::MACOS_X86_64,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum AndroidArchitecture {
     #[serde(rename = "arm64")]
     Arm64,
@@ -183,6 +238,30 @@ pub fn resolve_android_targets(architectures: &[AndroidArchitecture]) -> Vec<Rus
         .collect()
 }
 
+pub fn resolve_apple_ios_targets(architectures: &[AppleIosArchitecture]) -> Vec<RustTarget> {
+    architectures
+        .iter()
+        .copied()
+        .map(AppleIosArchitecture::rust_target)
+        .collect()
+}
+
+pub fn resolve_apple_simulator_targets(architectures: &[AppleArchitecture]) -> Vec<RustTarget> {
+    architectures
+        .iter()
+        .copied()
+        .map(AppleArchitecture::simulator_rust_target)
+        .collect()
+}
+
+pub fn resolve_apple_macos_targets(architectures: &[AppleArchitecture]) -> Vec<RustTarget> {
+    architectures
+        .iter()
+        .copied()
+        .map(AppleArchitecture::macos_rust_target)
+        .collect()
+}
+
 impl Platform {
     pub fn is_apple(&self) -> bool {
         matches!(
@@ -229,26 +308,15 @@ impl BuiltLibrary {
             })
             .collect()
     }
-
-    pub fn discover_for_profile(
-        target_dir: &Path,
-        lib_name: &str,
-        profile_directory_name: &str,
-    ) -> Vec<Self> {
-        let all_targets = RustTarget::ALL_IOS
-            .iter()
-            .chain(RustTarget::ALL_MACOS)
-            .chain(RustTarget::ALL_ANDROID)
-            .chain(RustTarget::ALL_WASM);
-
-        let targets: Vec<_> = all_targets.copied().collect();
-        Self::discover_for_targets(target_dir, lib_name, profile_directory_name, &targets)
-    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{AndroidArchitecture, BuiltLibrary, Platform, RustTarget, resolve_android_targets};
+    use super::{
+        AndroidArchitecture, AppleArchitecture, AppleIosArchitecture, BuiltLibrary, Platform,
+        RustTarget, resolve_android_targets, resolve_apple_ios_targets,
+        resolve_apple_macos_targets, resolve_apple_simulator_targets,
+    };
     use std::fs;
     use std::path::Path;
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -292,6 +360,47 @@ mod tests {
                 "armv7-linux-androideabi",
                 "x86_64-linux-android",
             ]
+        );
+    }
+
+    #[test]
+    fn resolves_apple_ios_architectures_to_targets() {
+        let targets = resolve_apple_ios_targets(&[AppleIosArchitecture::Arm64]);
+
+        assert_eq!(
+            targets
+                .iter()
+                .map(|target| target.triple())
+                .collect::<Vec<_>>(),
+            vec!["aarch64-apple-ios"]
+        );
+    }
+
+    #[test]
+    fn resolves_apple_simulator_architectures_to_targets() {
+        let targets =
+            resolve_apple_simulator_targets(&[AppleArchitecture::Arm64, AppleArchitecture::X86_64]);
+
+        assert_eq!(
+            targets
+                .iter()
+                .map(|target| target.triple())
+                .collect::<Vec<_>>(),
+            vec!["aarch64-apple-ios-sim", "x86_64-apple-ios"]
+        );
+    }
+
+    #[test]
+    fn resolves_apple_macos_architectures_to_targets() {
+        let targets =
+            resolve_apple_macos_targets(&[AppleArchitecture::Arm64, AppleArchitecture::X86_64]);
+
+        assert_eq!(
+            targets
+                .iter()
+                .map(|target| target.triple())
+                .collect::<Vec<_>>(),
+            vec!["aarch64-apple-darwin", "x86_64-apple-darwin"]
         );
     }
 

@@ -81,6 +81,9 @@ fn create_default_config(package_name: &str) -> Config {
                 output: PathBuf::from("dist/apple"),
                 deployment_target: "16.0".to_string(),
                 include_macos: false,
+                ios_architectures: None,
+                simulator_architectures: None,
+                macos_architectures: None,
                 swift: AppleSwiftConfig {
                     module_name: Some(module_name),
                     output: None,

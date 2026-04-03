@@ -1,4 +1,8 @@
-use crate::target::{AndroidArchitecture, RustTarget, resolve_android_targets};
+use crate::target::{
+    AndroidArchitecture, AppleArchitecture, AppleIosArchitecture, RustTarget,
+    resolve_android_targets, resolve_apple_ios_targets, resolve_apple_macos_targets,
+    resolve_apple_simulator_targets,
+};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -186,6 +190,9 @@ pub struct AppleConfig {
     pub deployment_target: String,
     #[serde(default)]
     pub include_macos: bool,
+    pub ios_architectures: Option<Vec<AppleIosArchitecture>>,
+    pub simulator_architectures: Option<Vec<AppleArchitecture>>,
+    pub macos_architectures: Option<Vec<AppleArchitecture>>,
     #[serde(default)]
     pub swift: AppleSwiftConfig,
     #[serde(default)]
@@ -425,6 +432,9 @@ impl Default for AppleConfig {
             output: default_apple_output(),
             deployment_target: default_apple_deployment_target(),
             include_macos: false,
+            ios_architectures: None,
+            simulator_architectures: None,
+            macos_architectures: None,
             swift: AppleSwiftConfig::default(),
             header: HeaderConfig::default(),
             xcframework: XcframeworkConfig::default(),
@@ -574,6 +584,26 @@ impl Config {
             }
         }
 
+        if self.is_apple_enabled() {
+            validate_non_empty_unique(
+                self.targets.apple.ios_architectures.as_deref(),
+                "targets.apple.ios_architectures",
+                AppleIosArchitecture::canonical_name,
+            )?;
+            validate_non_empty_unique(
+                self.targets.apple.simulator_architectures.as_deref(),
+                "targets.apple.simulator_architectures",
+                AppleArchitecture::canonical_name,
+            )?;
+            if self.apple_include_macos() {
+                validate_non_empty_unique(
+                    self.targets.apple.macos_architectures.as_deref(),
+                    "targets.apple.macos_architectures",
+                    AppleArchitecture::canonical_name,
+                )?;
+            }
+        }
+
         Ok(())
     }
 
@@ -624,6 +654,56 @@ impl Config {
 
     pub fn apple_include_macos(&self) -> bool {
         self.targets.apple.include_macos
+    }
+
+    pub fn apple_ios_architectures(&self) -> &[AppleIosArchitecture] {
+        self.targets
+            .apple
+            .ios_architectures
+            .as_deref()
+            .unwrap_or(AppleIosArchitecture::ALL)
+    }
+
+    pub fn apple_simulator_architectures(&self) -> &[AppleArchitecture] {
+        self.targets
+            .apple
+            .simulator_architectures
+            .as_deref()
+            .unwrap_or(AppleArchitecture::ALL)
+    }
+
+    pub fn apple_macos_architectures(&self) -> &[AppleArchitecture] {
+        self.targets
+            .apple
+            .macos_architectures
+            .as_deref()
+            .unwrap_or(AppleArchitecture::ALL)
+    }
+
+    pub fn apple_ios_targets(&self) -> Vec<RustTarget> {
+        resolve_apple_ios_targets(self.apple_ios_architectures())
+    }
+
+    pub fn apple_simulator_targets(&self) -> Vec<RustTarget> {
+        resolve_apple_simulator_targets(self.apple_simulator_architectures())
+    }
+
+    pub fn apple_macos_targets(&self) -> Vec<RustTarget> {
+        self.targets
+            .apple
+            .macos_architectures
+            .as_deref()
+            .map(resolve_apple_macos_targets)
+            .unwrap_or_else(|| RustTarget::ALL_MACOS.to_vec())
+    }
+
+    pub fn apple_targets(&self) -> Vec<RustTarget> {
+        let mut targets = self.apple_ios_targets();
+        targets.extend(self.apple_simulator_targets());
+        if self.apple_include_macos() {
+            targets.extend(self.apple_macos_targets());
+        }
+        targets
     }
 
     pub fn apple_deployment_target(&self) -> &str {
@@ -1087,6 +1167,38 @@ fn normalize_module_name(input: &str) -> String {
     }
 }
 
+fn validate_non_empty_unique<T, F>(
+    values: Option<&[T]>,
+    field_name: &str,
+    canonical_name: F,
+) -> Result<(), ConfigError>
+where
+    T: Copy + Eq + std::hash::Hash,
+    F: Fn(T) -> &'static str,
+{
+    let Some(values) = values else {
+        return Ok(());
+    };
+
+    if values.is_empty() {
+        return Err(ConfigError::Validation(format!(
+            "{field_name} must be non-empty when provided"
+        )));
+    }
+
+    let mut seen = HashSet::new();
+    for value in values {
+        if !seen.insert(*value) {
+            return Err(ConfigError::Validation(format!(
+                "{field_name} contains duplicate architecture '{}'",
+                canonical_name(*value)
+            )));
+        }
+    }
+
+    Ok(())
+}
+
 fn to_pascal_case(input: &str) -> String {
     input
         .split(['_', '-'])
@@ -1170,6 +1282,172 @@ include_macos = false
 
         assert_eq!(config.targets.apple.deployment_target, "16.0");
         assert!(!config.targets.apple.include_macos);
+    }
+
+    #[test]
+    fn defaults_apple_architectures_to_ios_and_simulator_defaults() {
+        let config = parse_config(
+            r#"
+[package]
+name = "mylib"
+"#,
+        );
+
+        assert_eq!(
+            config
+                .apple_ios_architectures()
+                .iter()
+                .map(|architecture| architecture.canonical_name())
+                .collect::<Vec<_>>(),
+            vec!["arm64"]
+        );
+        assert_eq!(
+            config
+                .apple_simulator_architectures()
+                .iter()
+                .map(|architecture| architecture.canonical_name())
+                .collect::<Vec<_>>(),
+            vec!["arm64", "x86_64"]
+        );
+        assert_eq!(
+            config
+                .apple_targets()
+                .iter()
+                .map(|target| target.triple())
+                .collect::<Vec<_>>(),
+            vec![
+                "aarch64-apple-ios",
+                "aarch64-apple-ios-sim",
+                "x86_64-apple-ios",
+            ]
+        );
+    }
+
+    #[test]
+    fn includes_macos_targets_only_when_enabled() {
+        let config = parse_config(
+            r#"
+[package]
+name = "mylib"
+
+[targets.apple]
+include_macos = true
+"#,
+        );
+
+        assert_eq!(
+            config
+                .apple_targets()
+                .iter()
+                .map(|target| target.triple())
+                .collect::<Vec<_>>(),
+            vec![
+                "aarch64-apple-ios",
+                "aarch64-apple-ios-sim",
+                "x86_64-apple-ios",
+                "aarch64-apple-darwin",
+                "x86_64-apple-darwin",
+            ]
+        );
+    }
+
+    #[test]
+    fn ignores_macos_architectures_when_macos_is_disabled() {
+        let config = parse_config(
+            r#"
+[package]
+name = "mylib"
+
+[targets.apple]
+macos_architectures = ["x86_64"]
+"#,
+        );
+
+        assert_eq!(
+            config
+                .apple_targets()
+                .iter()
+                .map(|target| target.triple())
+                .collect::<Vec<_>>(),
+            vec![
+                "aarch64-apple-ios",
+                "aarch64-apple-ios-sim",
+                "x86_64-apple-ios",
+            ]
+        );
+    }
+
+    #[test]
+    fn allows_empty_macos_architectures_when_macos_is_disabled() {
+        let parsed: Config = toml::from_str(
+            r#"
+[package]
+name = "mylib"
+
+[targets.apple]
+include_macos = false
+macos_architectures = []
+"#,
+        )
+        .expect("toml parse failed");
+
+        assert!(parsed.validate().is_ok());
+    }
+
+    #[test]
+    fn rejects_empty_apple_ios_architectures() {
+        let parsed: Config = toml::from_str(
+            r#"
+[package]
+name = "mylib"
+
+[targets.apple]
+ios_architectures = []
+"#,
+        )
+        .expect("toml parse failed");
+
+        assert!(matches!(
+            parsed.validate(),
+            Err(ConfigError::Validation(message))
+                if message == "targets.apple.ios_architectures must be non-empty when provided"
+        ));
+    }
+
+    #[test]
+    fn rejects_duplicate_apple_simulator_architectures() {
+        let parsed: Config = toml::from_str(
+            r#"
+[package]
+name = "mylib"
+
+[targets.apple]
+simulator_architectures = ["arm64", "arm64"]
+"#,
+        )
+        .expect("toml parse failed");
+
+        assert!(matches!(
+            parsed.validate(),
+            Err(ConfigError::Validation(message))
+                if message
+                    == "targets.apple.simulator_architectures contains duplicate architecture 'arm64'"
+        ));
+    }
+
+    #[test]
+    fn rejects_invalid_apple_ios_architectures() {
+        let parsed = toml::from_str::<Config>(
+            r#"
+[package]
+name = "mylib"
+
+[targets.apple]
+ios_architectures = ["x86_64"]
+"#,
+        );
+
+        assert!(parsed.is_err());
     }
 
     #[test]

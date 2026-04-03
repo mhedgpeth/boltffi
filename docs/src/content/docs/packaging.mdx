@@ -163,6 +163,8 @@ boltffi pack apple --release
 
 This builds for arm64 (device) and arm64/x86_64 (simulator), generates Swift bindings and a C header, creates an xcframework, and generates a SwiftPM package.
 
+Those slices come from `targets.apple.ios_architectures` and `targets.apple.simulator_architectures`. If you enable macOS, `targets.apple.macos_architectures` is included too.
+
 ### Output Structure
 
 ```
@@ -201,6 +203,20 @@ boltffi pack apple --release
 ```
 
 The xcframework will include an additional `macos-arm64_x86_64` slice.
+
+### Restricting Apple Slices
+
+To package only a subset of Apple slices, configure them explicitly:
+
+```toml
+[targets.apple]
+ios_architectures = ["arm64"]
+simulator_architectures = ["arm64"]
+include_macos = true
+macos_architectures = ["arm64"]
+```
+
+`boltffi pack apple --no-build` validates exactly those configured slices. Stale artifacts for old simulator or macOS architectures are ignored.
 
 ### SwiftPM Layouts
 
@@ -597,5 +613,4 @@ Or build everything at once:
 ```bash
 boltffi release all
 ```
-
 

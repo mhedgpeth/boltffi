@@ -172,10 +172,17 @@ fn pack_apple(config: &Config, options: PackAppleOptions, reporter: &Reporter) -
 
     let build_cargo_args = resolve_build_cargo_args(config, &options.cargo_args);
     let build_profile = resolve_build_profile(options.release, &build_cargo_args);
+    let apple_targets = config.apple_targets();
 
     if !options.no_build {
         let step = reporter.step("Building Apple targets");
-        build_apple_targets(config, options.release, &build_cargo_args, &step)?;
+        build_apple_targets(
+            config,
+            &apple_targets,
+            options.release,
+            &build_cargo_args,
+            &step,
+        )?;
         step.finish_success();
     }
 
@@ -188,18 +195,21 @@ fn pack_apple(config: &Config, options: PackAppleOptions, reporter: &Reporter) -
         step.finish_success();
     }
 
-    let libraries = discover_built_libraries(
+    let libraries = discover_built_libraries_for_targets(
         &config.crate_artifact_name(),
         build_profile.output_directory_name(),
+        &apple_targets,
     )?;
     let apple_libraries: Vec<_> = libraries
         .into_iter()
         .filter(|lib| lib.target.platform().is_apple())
         .collect();
 
-    if apple_libraries.is_empty() {
-        return Err(CliError::NoLibrariesFound {
+    let missing_targets = missing_built_libraries(&apple_targets, &apple_libraries);
+    if !missing_targets.is_empty() {
+        return Err(CliError::MissingBuiltLibraries {
             platform: "Apple".to_string(),
+            targets: missing_targets,
         });
     }
 
@@ -682,6 +692,7 @@ fn build_jvm_native_library(
 
 fn build_apple_targets(
     config: &Config,
+    targets: &[RustTarget],
     release: bool,
     build_cargo_args: &[String],
     step: &Step,
@@ -701,11 +712,7 @@ fn build_apple_targets(
         on_output,
     };
     let builder = Builder::new(config, build_options);
-
-    let mut results = builder.build_ios()?;
-    if config.apple_include_macos() {
-        results.extend(builder.build_macos()?);
-    }
+    let results = builder.build_targets(targets)?;
 
     if all_successful(&results) {
         return Ok(());
@@ -1124,18 +1131,6 @@ fn generate_wasm_readme(
 #[derive(Deserialize)]
 struct CargoMetadataTargetDirectory {
     target_directory: PathBuf,
-}
-
-fn discover_built_libraries(
-    crate_artifact_name: &str,
-    profile_directory_name: &str,
-) -> Result<Vec<BuiltLibrary>> {
-    let target_directory = cargo_target_directory()?;
-    Ok(BuiltLibrary::discover_for_profile(
-        &target_directory,
-        crate_artifact_name,
-        profile_directory_name,
-    ))
 }
 
 fn discover_built_libraries_for_targets(

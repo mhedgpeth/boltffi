@@ -327,10 +327,10 @@ fn execute_command(
             } else {
                 None
             };
-            let include_macos = config
+            let apple_targets = config
                 .as_ref()
-                .map(|c| c.apple_include_macos())
-                .unwrap_or(false);
+                .map(|c| c.apple_targets())
+                .unwrap_or_else(|| crate::target::RustTarget::ALL_IOS.to_vec());
             let android_targets = config
                 .as_ref()
                 .map(|c| c.android_targets())
@@ -342,7 +342,7 @@ fn execute_command(
                 } else {
                     true
                 },
-                include_macos,
+                apple_targets,
                 android: if explicit_target_selected {
                     android
                 } else {
@@ -368,6 +368,10 @@ fn execute_command(
                 } else {
                     true
                 },
+                apple_targets: config
+                    .as_ref()
+                    .map(|c| c.apple_targets())
+                    .unwrap_or_else(|| crate::target::RustTarget::ALL_IOS.to_vec()),
                 android: if explicit_target_selected {
                     android
                 } else {
@@ -542,7 +546,7 @@ fn run_release(
     let check_options = CheckOptions {
         fix: false,
         apple: config.is_apple_enabled(),
-        include_macos: config.apple_include_macos(),
+        apple_targets: config.apple_targets(),
         android: config.is_android_enabled(),
         android_targets: config.android_targets(),
         wasm: config.is_wasm_enabled(),

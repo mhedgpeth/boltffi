@@ -80,6 +80,16 @@ Android ABI selection is configurable in `boltffi.toml`:
 architectures = ["arm64"]
 ```
 
+Apple slice selection is configurable too:
+
+```toml
+[targets.apple]
+ios_architectures = ["arm64"]
+simulator_architectures = ["arm64"]
+include_macos = true
+macos_architectures = ["arm64"]
+```
+
 When `architectures` is omitted, BoltFFI keeps the existing default Android matrix:
 `arm64`, `armv7`, `x86_64`, and `x86`. `boltffi pack android --no-build` now validates that each
 configured ABI already has a built Rust static library and ignores stale artifacts for

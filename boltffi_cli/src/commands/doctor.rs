@@ -7,6 +7,7 @@ use crate::target::RustTarget;
 
 pub struct DoctorOptions {
     pub apple: bool,
+    pub apple_targets: Vec<RustTarget>,
     pub android: bool,
     pub android_targets: Vec<RustTarget>,
     pub wasm: bool,
@@ -28,7 +29,7 @@ pub fn run_doctor(options: DoctorOptions) -> Result<()> {
 fn required_targets(options: &DoctorOptions) -> Vec<RustTarget> {
     let apple_targets = options
         .apple
-        .then(|| RustTarget::ALL_IOS.iter().cloned())
+        .then(|| options.apple_targets.iter().copied())
         .into_iter()
         .flatten();
 
@@ -66,6 +67,13 @@ fn print_environment(check: &EnvironmentCheck, options: &DoctorOptions) {
     println!();
     println!("Apple tooling: {}", readiness(check.is_ready_for_apple()));
     if options.apple {
+        options.apple_targets.iter().for_each(|target| {
+            let installed = check
+                .installed_targets
+                .iter()
+                .any(|triple| triple == target.triple());
+            println!("  target {}: {}", target.triple(), readiness(installed));
+        });
         println!("  xcode-select: {}", readiness(check.tools.xcode_cli));
         println!("  xcodebuild: {}", readiness(check.tools.xcodebuild));
         println!("  lipo: {}", readiness(check.tools.lipo));
@@ -119,6 +127,42 @@ fn print_config_summary() {
             println!(
                 "  targets.apple.output: {}",
                 config.apple_output().display()
+            );
+            println!(
+                "  targets.apple.include_macos: {}",
+                config.apple_include_macos()
+            );
+            println!(
+                "  targets.apple.ios_architectures: {}",
+                config
+                    .apple_ios_architectures()
+                    .iter()
+                    .map(|architecture| architecture.canonical_name())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
+            println!(
+                "  targets.apple.simulator_architectures: {}",
+                config
+                    .apple_simulator_architectures()
+                    .iter()
+                    .map(|architecture| architecture.canonical_name())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
+            println!(
+                "  targets.apple.macos_architectures: {}{}",
+                config
+                    .apple_macos_architectures()
+                    .iter()
+                    .map(|architecture| architecture.canonical_name())
+                    .collect::<Vec<_>>()
+                    .join(", "),
+                if config.apple_include_macos() {
+                    ""
+                } else {
+                    " (ignored unless include_macos = true)"
+                }
             );
             println!(
                 "  targets.apple.swift.output: {}",

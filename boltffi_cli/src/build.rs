@@ -156,16 +156,8 @@ impl<'a> Builder<'a> {
             .collect()
     }
 
-    pub fn build_ios(&self) -> Result<Vec<BuildResult>> {
-        self.build_targets(RustTarget::ALL_IOS)
-    }
-
     pub fn build_android(&self, targets: &[RustTarget]) -> Result<Vec<BuildResult>> {
         self.build_targets(targets)
-    }
-
-    pub fn build_macos(&self) -> Result<Vec<BuildResult>> {
-        self.build_targets(RustTarget::ALL_MACOS)
     }
 
     pub fn build_host(&self) -> Result<BuildResult> {

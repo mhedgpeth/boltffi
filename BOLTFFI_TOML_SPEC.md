@@ -69,6 +69,13 @@ All platform-specific configuration lives under `[targets.*]`. Each target can b
   - Default: `16.0`
 - `include_macos` (bool): Whether `boltffi pack apple` also builds macOS targets.
   - Default: `false`
+- `ios_architectures` (`["arm64"]`, optional): iOS device slices to build/package.
+  - Default: `["arm64"]`
+- `simulator_architectures` (`["arm64", "x86_64"]`, optional): iOS Simulator slices to build/package.
+  - Default: `["arm64", "x86_64"]`
+- `macos_architectures` (`["arm64", "x86_64"]`, optional): macOS slices to build/package when `include_macos = true`.
+  - Default: `["arm64", "x86_64"]`
+  - Ignored unless `include_macos = true`
 
 ### `[targets.apple.swift]` (optional)
 
