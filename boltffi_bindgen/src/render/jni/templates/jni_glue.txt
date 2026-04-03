@@ -742,6 +742,14 @@ JNIEXPORT {{ func.complete_kind.jni_return() }} JNICALL {{ func.jni_complete_nam
 {%- if func.complete_kind.is_void() %}
     FfiStatus _status;
     {{ func.ffi_complete }}((RustFutureHandle)future, &_status);
+{%- elif func.complete_kind.is_blittable_struct() %}
+    FfiStatus _status;
+    {{ func.complete_kind.c_type() }} _result = {{ func.ffi_complete }}((RustFutureHandle)future, &_status);
+    jbyteArray _arr = (*env)->NewByteArray(env, (jsize)sizeof(_result));
+    if (_arr != NULL) {
+        (*env)->SetByteArrayRegion(env, _arr, 0, (jsize)sizeof(_result), (const jbyte*)&_result);
+    }
+    return _arr;
 {%- elif func.complete_kind.is_wire_encoded() %}
     FfiStatus _status;
     FfiBuf_u8 _buf = {{ func.ffi_complete }}((RustFutureHandle)future, &_status);
@@ -886,6 +894,14 @@ JNIEXPORT {{ func.complete_kind.jni_return() }} JNICALL {{ func.jni_complete_nam
 {%- if func.complete_kind.is_void() %}
     FfiStatus _status;
     {{ func.ffi_complete }}((RustFutureHandle)future, &_status);
+{%- elif func.complete_kind.is_blittable_struct() %}
+    FfiStatus _status;
+    {{ func.complete_kind.c_type() }} _result = {{ func.ffi_complete }}((RustFutureHandle)future, &_status);
+    jbyteArray _arr = (*env)->NewByteArray(env, (jsize)sizeof(_result));
+    if (_arr != NULL) {
+        (*env)->SetByteArrayRegion(env, _arr, 0, (jsize)sizeof(_result), (const jbyte*)&_result);
+    }
+    return _arr;
 {%- elif func.complete_kind.is_wire_encoded() %}
     FfiStatus _status;
     FfiBuf_u8 _buf = {{ func.ffi_complete }}((RustFutureHandle)future, &_status);
