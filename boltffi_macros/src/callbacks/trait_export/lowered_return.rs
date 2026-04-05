@@ -1,5 +1,6 @@
 use boltffi_ffi_rules::transport::{
-    ReturnInvocationContext, ReturnPlatform, ValueReturnMethod, ValueReturnStrategy,
+    DirectBufferReturnMethod, EncodedReturnStrategy, ReturnInvocationContext, ReturnPlatform,
+    ValueReturnMethod, ValueReturnStrategy,
 };
 use syn::Type;
 
@@ -22,6 +23,19 @@ impl LoweredCallbackReturn {
         platform: ReturnPlatform,
     ) -> ValueReturnMethod {
         self.resolved_return.value_return_method(context, platform)
+    }
+
+    pub(super) fn encoded_return_strategy(&self) -> Option<EncodedReturnStrategy> {
+        self.resolved_return.encoded_return_strategy()
+    }
+
+    pub(super) fn direct_buffer_return_method(
+        &self,
+        context: ReturnInvocationContext,
+        platform: ReturnPlatform,
+    ) -> Option<DirectBufferReturnMethod> {
+        self.resolved_return
+            .direct_buffer_return_method(context, platform)
     }
 
     pub(super) fn uses_wire_payload(&self) -> bool {

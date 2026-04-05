@@ -21,7 +21,6 @@ pub(super) struct CallbackReturnType<'a> {
 }
 
 pub(super) struct ParsedResultTypes {
-    pub(super) ok: Type,
     pub(super) err: Type,
 }
 
@@ -50,10 +49,8 @@ impl<'a> CallbackReturnType<'a> {
             syn::GenericArgument::Type(ty) => Some(ty.clone()),
             _ => None,
         });
-        Some(ParsedResultTypes {
-            ok: types.next()?,
-            err: types.next()?,
-        })
+        types.next()?;
+        Some(ParsedResultTypes { err: types.next()? })
     }
 }
 
@@ -279,7 +276,7 @@ fn expand_ffi_trait(item_trait: syn::ItemTrait) -> Result<proc_macro2::TokenStre
 
     let concrete_impl = quote! {
         #[cfg(not(target_arch = "wasm32"))]
-        impl ::boltffi::__private::FromCallbackHandle for #foreign_name {
+        impl ::boltffi::__private::ArcFromCallbackHandle for #foreign_name {
             unsafe fn arc_from_callback_handle(handle: ::boltffi::__private::CallbackHandle) -> std::sync::Arc<Self> {
                 debug_assert!(!handle.is_null());
                 std::sync::Arc::new(Self {
@@ -287,7 +284,10 @@ fn expand_ffi_trait(item_trait: syn::ItemTrait) -> Result<proc_macro2::TokenStre
                     handle: handle.handle(),
                 })
             }
+        }
 
+        #[cfg(not(target_arch = "wasm32"))]
+        impl ::boltffi::__private::BoxFromCallbackHandle for #foreign_name {
             unsafe fn box_from_callback_handle(handle: ::boltffi::__private::CallbackHandle) -> Box<Self> {
                 debug_assert!(!handle.is_null());
                 Box::new(Self {
@@ -298,14 +298,17 @@ fn expand_ffi_trait(item_trait: syn::ItemTrait) -> Result<proc_macro2::TokenStre
         }
 
         #[cfg(target_arch = "wasm32")]
-        impl ::boltffi::__private::FromCallbackHandle for #foreign_name {
+        impl ::boltffi::__private::ArcFromCallbackHandle for #foreign_name {
             unsafe fn arc_from_callback_handle(handle: ::boltffi::__private::CallbackHandle) -> std::sync::Arc<Self> {
                 debug_assert!(!handle.is_null());
                 std::sync::Arc::new(Self {
                     handle: handle.handle() as u32,
                 })
             }
+        }
 
+        #[cfg(target_arch = "wasm32")]
+        impl ::boltffi::__private::BoxFromCallbackHandle for #foreign_name {
             unsafe fn box_from_callback_handle(handle: ::boltffi::__private::CallbackHandle) -> Box<Self> {
                 debug_assert!(!handle.is_null());
                 Box::new(Self {
@@ -318,7 +321,7 @@ fn expand_ffi_trait(item_trait: syn::ItemTrait) -> Result<proc_macro2::TokenStre
     let dyn_impl = if is_object_safe {
         quote! {
             #[cfg(not(target_arch = "wasm32"))]
-            impl ::boltffi::__private::FromCallbackHandle for dyn #trait_name {
+            impl ::boltffi::__private::ArcFromCallbackHandle for dyn #trait_name {
                 unsafe fn arc_from_callback_handle(handle: ::boltffi::__private::CallbackHandle) -> std::sync::Arc<Self> {
                     debug_assert!(!handle.is_null());
                     let foreign = #foreign_name {
@@ -327,7 +330,10 @@ fn expand_ffi_trait(item_trait: syn::ItemTrait) -> Result<proc_macro2::TokenStre
                     };
                     std::sync::Arc::new(foreign)
                 }
+            }
 
+            #[cfg(not(target_arch = "wasm32"))]
+            impl ::boltffi::__private::BoxFromCallbackHandle for dyn #trait_name {
                 unsafe fn box_from_callback_handle(handle: ::boltffi::__private::CallbackHandle) -> Box<Self> {
                     debug_assert!(!handle.is_null());
                     let foreign = #foreign_name {
@@ -339,7 +345,7 @@ fn expand_ffi_trait(item_trait: syn::ItemTrait) -> Result<proc_macro2::TokenStre
             }
 
             #[cfg(target_arch = "wasm32")]
-            impl ::boltffi::__private::FromCallbackHandle for dyn #trait_name {
+            impl ::boltffi::__private::ArcFromCallbackHandle for dyn #trait_name {
                 unsafe fn arc_from_callback_handle(handle: ::boltffi::__private::CallbackHandle) -> std::sync::Arc<Self> {
                     debug_assert!(!handle.is_null());
                     let foreign = #foreign_name {
@@ -347,7 +353,10 @@ fn expand_ffi_trait(item_trait: syn::ItemTrait) -> Result<proc_macro2::TokenStre
                     };
                     std::sync::Arc::new(foreign)
                 }
+            }
 
+            #[cfg(target_arch = "wasm32")]
+            impl ::boltffi::__private::BoxFromCallbackHandle for dyn #trait_name {
                 unsafe fn box_from_callback_handle(handle: ::boltffi::__private::CallbackHandle) -> Box<Self> {
                     debug_assert!(!handle.is_null());
                     let foreign = #foreign_name {

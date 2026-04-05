@@ -212,8 +212,7 @@ pub struct TsCallbackMethod {
     pub proxy_export_name: String,
     pub proxy_params: Vec<TsParam>,
     pub return_type: Option<String>,
-    pub direct_import_return_type: Option<String>,
-    pub encoded_return: Option<TsEncodedCallbackReturn>,
+    pub import_return: TsCallbackImportReturn,
     pub proxy_return_route: TsOutputRoute,
     pub doc: Option<String>,
 }
@@ -238,6 +237,14 @@ impl TsCallbackMethod {
     pub fn proxy_call_args(&self) -> String {
         flatten_ffi_args(&self.proxy_params).join(", ")
     }
+}
+
+#[derive(Debug, Clone)]
+pub enum TsCallbackImportReturn {
+    Void,
+    Direct { wasm_type: String },
+    Encoded(TsEncodedCallbackReturn),
+    PackedUtf8,
 }
 
 #[derive(Debug, Clone)]

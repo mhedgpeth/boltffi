@@ -202,7 +202,8 @@ final class {{ callback.callbacks_class_name() }} {
 {% match ret %}
 {% when crate::render::java::plan::JavaBridgeReturn::Result with (result_return) %}
 {% if result_return.has_exception_class() %}
-                if (callbackThrowable instanceof {{ result_return.exception_class() }} exception) {
+                if (callbackThrowable instanceof {{ result_return.exception_class() }}) {
+                    {{ result_return.exception_class() }} exception = ({{ result_return.exception_class() }}) callbackThrowable;
                     BoltFFIResult<{{ result_return.ok_java_type }}, {{ result_return.err_java_type }}> result = BoltFFIResult.err(exception.getError());
                     try (WireWriter wire = new WireWriter({{ result_return.encode_size_expr }})) {
                         {{ result_return.encode_expr }};
@@ -212,7 +213,8 @@ final class {{ callback.callbacks_class_name() }} {
                 }
 {% endif %}
 {% if result_return.error_capture.is_string %}
-                if (callbackThrowable instanceof RuntimeException exception) {
+                if (callbackThrowable instanceof RuntimeException) {
+                    RuntimeException exception = (RuntimeException) callbackThrowable;
                     BoltFFIResult<{{ result_return.ok_java_type }}, {{ result_return.err_java_type }}> result = BoltFFIResult.err(exception.getMessage());
                     try (WireWriter wire = new WireWriter({{ result_return.encode_size_expr }})) {
                         {{ result_return.encode_expr }};

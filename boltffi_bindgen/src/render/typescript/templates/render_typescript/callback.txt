@@ -169,8 +169,8 @@ export function {{ callback.wrap_handle_fn }}(handle: number): {{ callback.inter
 {%- endif %}
 
 {%- for method in callback.methods %}
-{% match method.encoded_return %}
-{% when Some with (encoded_return) %}
+{% match method.import_return %}
+{% when TsCallbackImportReturn::Encoded with (encoded_return) %}
 _callbackImports["{{ method.import_name }}"] = (handle: number, out_ptr: number{% for param in method.params %}{% match param.kind %}{% when TsCallbackParamKind::Primitive with { import_ts_type, .. } %}, {{ param.name }}: {{ import_ts_type }}{% when TsCallbackParamKind::WireEncoded with { .. } %}, {{ param.name }}_ptr: number, {{ param.name }}_len: number{% endmatch %}{% endfor %}): void => {
   const impl = _{{ callback.trait_name_snake }}_lookup(handle);
   {%- for param in method.params %}{% match param.kind %}{% when TsCallbackParamKind::WireEncoded with { decode_expr } %}
@@ -180,23 +180,29 @@ _callbackImports["{{ method.import_name }}"] = (handle: number, out_ptr: number{
   {{ encoded_return.encode_expr }};
   _module.writeBufDescriptor(out_ptr, writer.ptr, writer.len, writer.capacity);
 };
-{% when None %}
-{% match method.direct_import_return_type %}
-{% when Some with (direct_import_return_type) %}
-_callbackImports["{{ method.import_name }}"] = (handle: number{% for param in method.params %}{% match param.kind %}{% when TsCallbackParamKind::Primitive with { import_ts_type, .. } %}, {{ param.name }}: {{ import_ts_type }}{% when TsCallbackParamKind::WireEncoded with { .. } %}, {{ param.name }}_ptr: number, {{ param.name }}_len: number{% endmatch %}{% endfor %}): {{ direct_import_return_type }} => {
+{% when TsCallbackImportReturn::Direct with { wasm_type } %}
+_callbackImports["{{ method.import_name }}"] = (handle: number{% for param in method.params %}{% match param.kind %}{% when TsCallbackParamKind::Primitive with { import_ts_type, .. } %}, {{ param.name }}: {{ import_ts_type }}{% when TsCallbackParamKind::WireEncoded with { .. } %}, {{ param.name }}_ptr: number, {{ param.name }}_len: number{% endmatch %}{% endfor %}): {{ wasm_type }} => {
   const impl = _{{ callback.trait_name_snake }}_lookup(handle);
   {%- for param in method.params %}{% match param.kind %}{% when TsCallbackParamKind::WireEncoded with { decode_expr } %}
   const {{ param.name }} = (() => { const reader = new WireReader(_module.readFromMemory({{ param.name }}_ptr, {{ param.name }}_len).buffer as ArrayBuffer); return {{ decode_expr }}; })();{% when TsCallbackParamKind::Primitive with { .. } %}{% endmatch %}{% endfor %}
   return {% if callback.closure_fn_type.is_some() %}impl({% else %}impl.{{ method.ts_name }}({% endif %}{% for param in method.params %}{% match param.kind %}{% when TsCallbackParamKind::Primitive with { call_expr, .. } %}{{ call_expr }}{% when TsCallbackParamKind::WireEncoded with { .. } %}{{ param.name }}{% endmatch %}{% if !loop.last %}, {% endif %}{% endfor %});
 };
-{% when None %}
+{% when TsCallbackImportReturn::PackedUtf8 %}
+_callbackImports["{{ method.import_name }}"] = (handle: number{% for param in method.params %}{% match param.kind %}{% when TsCallbackParamKind::Primitive with { import_ts_type, .. } %}, {{ param.name }}: {{ import_ts_type }}{% when TsCallbackParamKind::WireEncoded with { .. } %}, {{ param.name }}_ptr: number, {{ param.name }}_len: number{% endmatch %}{% endfor %}): bigint => {
+  const impl = _{{ callback.trait_name_snake }}_lookup(handle);
+  {%- for param in method.params %}{% match param.kind %}{% when TsCallbackParamKind::WireEncoded with { decode_expr } %}
+  const {{ param.name }} = (() => { const reader = new WireReader(_module.readFromMemory({{ param.name }}_ptr, {{ param.name }}_len).buffer as ArrayBuffer); return {{ decode_expr }}; })();{% when TsCallbackParamKind::Primitive with { .. } %}{% endmatch %}{% endfor %}
+  const result: string = {% if callback.closure_fn_type.is_some() %}impl({% else %}impl.{{ method.ts_name }}({% endif %}{% for param in method.params %}{% match param.kind %}{% when TsCallbackParamKind::Primitive with { call_expr, .. } %}{{ call_expr }}{% when TsCallbackParamKind::WireEncoded with { .. } %}{{ param.name }}{% endmatch %}{% if !loop.last %}, {% endif %}{% endfor %});
+  const result_alloc = _module.allocString(result);
+  return (BigInt(result_alloc.len) << 32n) | BigInt(result_alloc.ptr >>> 0);
+};
+{% when TsCallbackImportReturn::Void %}
 _callbackImports["{{ method.import_name }}"] = (handle: number{% for param in method.params %}{% match param.kind %}{% when TsCallbackParamKind::Primitive with { import_ts_type, .. } %}, {{ param.name }}: {{ import_ts_type }}{% when TsCallbackParamKind::WireEncoded with { .. } %}, {{ param.name }}_ptr: number, {{ param.name }}_len: number{% endmatch %}{% endfor %}): void => {
   const impl = _{{ callback.trait_name_snake }}_lookup(handle);
   {%- for param in method.params %}{% match param.kind %}{% when TsCallbackParamKind::WireEncoded with { decode_expr } %}
   const {{ param.name }} = (() => { const reader = new WireReader(_module.readFromMemory({{ param.name }}_ptr, {{ param.name }}_len).buffer as ArrayBuffer); return {{ decode_expr }}; })();{% when TsCallbackParamKind::Primitive with { .. } %}{% endmatch %}{% endfor %}
   {% if callback.closure_fn_type.is_some() %}impl({% else %}impl.{{ method.ts_name }}({% endif %}{% for param in method.params %}{% match param.kind %}{% when TsCallbackParamKind::Primitive with { call_expr, .. } %}{{ call_expr }}{% when TsCallbackParamKind::WireEncoded with { .. } %}{{ param.name }}{% endmatch %}{% if !loop.last %}, {% endif %}{% endfor %});
 };
-{% endmatch %}
 {% endmatch %}
 {%- endfor %}
 

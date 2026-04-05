@@ -4,7 +4,9 @@ use syn::Ident;
 
 use boltffi_ffi_rules::callback as callback_naming;
 use boltffi_ffi_rules::primitive::Primitive;
-use boltffi_ffi_rules::transport::{ReturnInvocationContext, ReturnPlatform, ValueReturnMethod};
+use boltffi_ffi_rules::transport::{
+    EncodedReturnStrategy, ReturnInvocationContext, ReturnPlatform, ValueReturnMethod,
+};
 
 use super::ParamLoweringState;
 use super::transform::is_primitive_vec_inner;
@@ -313,8 +315,30 @@ impl<'a> CallbackBindingBuilder<'a> {
             return_abi
                 .value_return_method(ReturnInvocationContext::InlineClosure, ReturnPlatform::Wasm)
         });
+        let packed_utf8_return = return_abi.as_ref().is_some_and(|return_abi| {
+            return_abi.encoded_return_strategy() == Some(EncodedReturnStrategy::Utf8String)
+        });
 
-        if matches!(
+        if packed_utf8_return {
+            let return_type = returns.unwrap();
+
+            quote! {
+                #[cfg(target_arch = "wasm32")]
+                let #name = {
+                    #[allow(improper_ctypes)]
+                    unsafe extern "C" {
+                        fn #call_import_ident(handle: u32 #extern_params_tokens) -> u64;
+                        fn #free_import_ident(handle: u32);
+                    }
+                    let #owner_name = ::boltffi::__private::WasmCallbackOwner::new(#name, #free_import_ident);
+                    move |#closure_params_tokens| -> #return_type {
+                        #(#wire_values)*
+                        let packed = unsafe { #call_import_ident(#owner_name.handle() #(, #call_args)*) };
+                        unsafe { ::boltffi::__private::take_packed_utf8_string(packed) }
+                    }
+                };
+            }
+        } else if matches!(
             wasm_return_method,
             None | Some(ValueReturnMethod::DirectReturn)
         ) {
@@ -646,7 +670,7 @@ impl<'a> SyncCallbackParamLowerer<'a> {
             #[cfg(target_arch = "wasm32")]
             let #name = ::boltffi::__private::CallbackHandle::from_wasm_handle(#name);
             let #name = unsafe {
-                <#foreign_type as ::boltffi::__private::FromCallbackHandle>::box_from_callback_handle(#name)
+                <#foreign_type as ::boltffi::__private::BoxFromCallbackHandle>::box_from_callback_handle(#name)
             };
         });
         acc.call_args.push(quote! { *#name });
@@ -672,7 +696,7 @@ impl<'a> SyncCallbackParamLowerer<'a> {
                 #[cfg(target_arch = "wasm32")]
                 let #name = ::boltffi::__private::CallbackHandle::from_wasm_handle(#name);
                 let #name: Box<dyn #trait_path> = unsafe {
-                    <dyn #trait_path as ::boltffi::__private::FromCallbackHandle>::box_from_callback_handle(#name)
+                    <dyn #trait_path as ::boltffi::__private::BoxFromCallbackHandle>::box_from_callback_handle(#name)
                 };
             },
             TraitObjectParamKind::Arc => quote! {
@@ -681,7 +705,7 @@ impl<'a> SyncCallbackParamLowerer<'a> {
                 #[cfg(target_arch = "wasm32")]
                 let #name = ::boltffi::__private::CallbackHandle::from_wasm_handle(#name);
                 let #name: ::std::sync::Arc<dyn #trait_path> = unsafe {
-                    <dyn #trait_path as ::boltffi::__private::FromCallbackHandle>::arc_from_callback_handle(#name)
+                    <dyn #trait_path as ::boltffi::__private::ArcFromCallbackHandle>::arc_from_callback_handle(#name)
                 };
             },
             TraitObjectParamKind::OptionBoxed => quote! {
@@ -691,7 +715,7 @@ impl<'a> SyncCallbackParamLowerer<'a> {
                     None
                 } else {
                     Some(unsafe {
-                        <dyn #trait_path as ::boltffi::__private::FromCallbackHandle>::box_from_callback_handle(#name)
+                        <dyn #trait_path as ::boltffi::__private::BoxFromCallbackHandle>::box_from_callback_handle(#name)
                     })
                 };
             },
@@ -702,7 +726,7 @@ impl<'a> SyncCallbackParamLowerer<'a> {
                     None
                 } else {
                     Some(unsafe {
-                        <dyn #trait_path as ::boltffi::__private::FromCallbackHandle>::arc_from_callback_handle(#name)
+                        <dyn #trait_path as ::boltffi::__private::ArcFromCallbackHandle>::arc_from_callback_handle(#name)
                     })
                 };
             },
@@ -756,7 +780,7 @@ impl<'a> AsyncCallbackParamLowerer<'a> {
             #[cfg(target_arch = "wasm32")]
             let #name = ::boltffi::__private::CallbackHandle::from_wasm_handle(#name);
             let #boxed_name = unsafe {
-                <#foreign_type as ::boltffi::__private::FromCallbackHandle>::box_from_callback_handle(#name)
+                <#foreign_type as ::boltffi::__private::BoxFromCallbackHandle>::box_from_callback_handle(#name)
             };
         });
         acc.move_vars.push(boxed_name.clone());

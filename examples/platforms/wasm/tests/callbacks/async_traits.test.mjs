@@ -1,4 +1,5 @@
 import { assert, assertRejectsWithCode, demo } from "../support/index.mjs";
+import { wireErr, wireOk } from "@boltffi/runtime";
 
 export async function run() {
   const asyncFetcher = {

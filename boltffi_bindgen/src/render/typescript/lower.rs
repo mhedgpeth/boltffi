@@ -919,52 +919,78 @@ impl<'a> TypeScriptLowerer<'a> {
                     })
                     .collect();
 
-                let (return_type, direct_import_return_type, encoded_return) = match &abi_method
-                    .returns
-                {
-                    ReturnShape {
-                        transport: None, ..
-                    } => (None, None, None),
-                    ReturnShape {
-                        transport: Some(Transport::Scalar(origin)),
-                        decode_ops: None,
-                        ..
-                    } => {
-                        let ts_type = ts_abi_type(&AbiType::from(origin.primitive()));
-                        (Some(ts_type.clone()), Some(ts_type), None)
-                    }
-                    ReturnShape {
-                        encode_ops: Some(encode_ops),
-                        ..
-                    } => {
-                        let ts_type = match &method_def.returns {
-                            ReturnDef::Value(ty) => emit::ts_type(ty),
-                            ReturnDef::Result { ok, .. } => emit::ts_type(ok),
-                            _ => "unknown".to_string(),
-                        };
-                        let encode_expr = emit::emit_writer_write(encode_ops, "writer", "result");
-                        let size_expr = emit::emit_size_expr(&encode_ops.size, "result");
-                        (
-                            Some(ts_type),
-                            None,
-                            Some(TsEncodedCallbackReturn {
-                                encode_expr,
-                                size_expr,
-                            }),
-                        )
-                    }
-                    ReturnShape {
-                        transport: Some(Transport::Handle { .. } | Transport::Callback { .. }),
-                        ..
-                    } => (Some("number".to_string()), Some("number".to_string()), None),
-                    ReturnShape {
-                        transport: Some(Transport::Scalar(origin)),
-                        ..
-                    } => {
-                        let ts_type = ts_abi_type(&AbiType::from(origin.primitive()));
-                        (Some(ts_type.clone()), Some(ts_type), None)
-                    }
-                    _ => (None, None, None),
+                let (return_type, import_return) = match &method_def.returns {
+                    ReturnDef::Value(TypeExpr::String) => (
+                        Some("string".to_string()),
+                        TsCallbackImportReturn::PackedUtf8,
+                    ),
+                    _ => match &abi_method.returns {
+                        ReturnShape {
+                            transport: None, ..
+                        } => (None, TsCallbackImportReturn::Void),
+                        ReturnShape {
+                            transport: Some(Transport::Scalar(origin)),
+                            decode_ops: None,
+                            ..
+                        } => {
+                            let ts_type = ts_abi_type(&AbiType::from(origin.primitive()));
+                            (
+                                Some(ts_type.clone()),
+                                TsCallbackImportReturn::Direct { wasm_type: ts_type },
+                            )
+                        }
+                        ReturnShape { contract, .. }
+                            if matches!(
+                                contract.value_strategy(),
+                                ValueReturnStrategy::Buffer(EncodedReturnStrategy::Utf8String)
+                            ) =>
+                        {
+                            (
+                                Some("string".to_string()),
+                                TsCallbackImportReturn::PackedUtf8,
+                            )
+                        }
+                        ReturnShape {
+                            encode_ops: Some(encode_ops),
+                            ..
+                        } => {
+                            let ts_type = match &method_def.returns {
+                                ReturnDef::Value(ty) => emit::ts_type(ty),
+                                ReturnDef::Result { ok, .. } => emit::ts_type(ok),
+                                _ => "unknown".to_string(),
+                            };
+                            let encode_expr =
+                                emit::emit_writer_write(encode_ops, "writer", "result");
+                            let size_expr = emit::emit_size_expr(&encode_ops.size, "result");
+                            (
+                                Some(ts_type),
+                                TsCallbackImportReturn::Encoded(TsEncodedCallbackReturn {
+                                    encode_expr,
+                                    size_expr,
+                                }),
+                            )
+                        }
+                        ReturnShape {
+                            transport: Some(Transport::Handle { .. } | Transport::Callback { .. }),
+                            ..
+                        } => (
+                            Some("number".to_string()),
+                            TsCallbackImportReturn::Direct {
+                                wasm_type: "number".to_string(),
+                            },
+                        ),
+                        ReturnShape {
+                            transport: Some(Transport::Scalar(origin)),
+                            ..
+                        } => {
+                            let ts_type = ts_abi_type(&AbiType::from(origin.primitive()));
+                            (
+                                Some(ts_type.clone()),
+                                TsCallbackImportReturn::Direct { wasm_type: ts_type },
+                            )
+                        }
+                        _ => (None, TsCallbackImportReturn::Void),
+                    },
                 };
                 let (_, proxy_return_route) =
                     self.select_output_route(&abi_method.returns, TsExecutionModel::Sync);
@@ -976,8 +1002,7 @@ impl<'a> TypeScriptLowerer<'a> {
                     proxy_export_name,
                     proxy_params,
                     return_type,
-                    direct_import_return_type,
-                    encoded_return,
+                    import_return,
                     proxy_return_route,
                     doc: method_def.doc.clone(),
                 })
@@ -2524,6 +2549,56 @@ mod tests {
             )
         );
         assert_eq!(callback_param.ffi_args(), vec!["callback_handle"]);
+    }
+
+    #[test]
+    fn sync_callback_string_return_uses_packed_utf8_routes() {
+        let mut contract = empty_contract();
+        contract.catalog.insert_callback(callback_trait(
+            "MessageFormatter",
+            vec![CallbackMethodDef {
+                id: MethodId::new("format_message"),
+                params: vec![
+                    ParamDef {
+                        name: ParamName::new("scope"),
+                        type_expr: TypeExpr::String,
+                        passing: ParamPassing::Value,
+                        doc: None,
+                    },
+                    ParamDef {
+                        name: ParamName::new("message"),
+                        type_expr: TypeExpr::String,
+                        passing: ParamPassing::Value,
+                        doc: None,
+                    },
+                ],
+                returns: ReturnDef::Value(TypeExpr::String),
+                execution_kind: ExecutionKind::Sync,
+                doc: None,
+            }],
+        ));
+
+        let module = lower_contract(&contract);
+        let callback = module
+            .callbacks
+            .iter()
+            .find(|callback| callback.interface_name == "MessageFormatter")
+            .expect("message formatter callback should be lowered");
+        let method = callback
+            .methods
+            .iter()
+            .find(|method| method.ts_name == "formatMessage")
+            .expect("formatMessage callback method should be lowered");
+
+        assert!(method.proxy_return_route.is_raw_packed());
+        assert_eq!(
+            method.proxy_return_route.decode_expr(),
+            "_module.takePackedUtf8String(packed)"
+        );
+        assert!(matches!(
+            method.import_return,
+            TsCallbackImportReturn::PackedUtf8
+        ));
     }
 
     #[test]

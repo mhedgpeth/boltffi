@@ -6,7 +6,10 @@ use super::CallbackReturnType;
 use super::lowered_return::LoweredCallbackReturn;
 use crate::callbacks::snake_case_ident;
 use crate::index::custom_types;
-use crate::lowering::returns::model::{ReturnLoweringContext, ValueReturnStrategy};
+use crate::lowering::returns::model::{
+    DirectBufferReturnMethod, EncodedReturnStrategy, ReturnInvocationContext,
+    ReturnLoweringContext, ReturnPlatform, ValueReturnStrategy,
+};
 
 pub(super) struct WasmMethodExpansion {
     pub(super) extern_import: TokenStream,
@@ -61,12 +64,30 @@ impl<'a> WasmCallbackMethodExpander<'a> {
             .as_ref()
             .map(|ty| LoweredCallbackReturn::new(ty, self.return_lowering));
 
+        let packed_utf8_return = lowered_return.as_ref().is_some_and(|lowered_return| {
+            lowered_return.encoded_return_strategy() == Some(EncodedReturnStrategy::Utf8String)
+                && lowered_return.direct_buffer_return_method(
+                    ReturnInvocationContext::SyncExport,
+                    ReturnPlatform::Wasm,
+                ) == Some(DirectBufferReturnMethod::Packed)
+        });
         let wire_return = lowered_return
             .as_ref()
             .is_some_and(LoweredCallbackReturn::uses_wire_payload);
 
         let (extern_import, impl_body) = if let Some(ref return_type) = return_type {
-            if wire_return {
+            if packed_utf8_return {
+                (
+                    quote! {
+                        fn #import_name(handle: u32, #(#ffi_param_types),*) -> u64;
+                    },
+                    quote! {
+                        #(#prelude_stmts)*
+                        let packed = unsafe { #import_name(self.handle, #(#call_args),*) };
+                        unsafe { ::boltffi::__private::take_packed_utf8_string(packed) }
+                    },
+                )
+            } else if wire_return {
                 (
                     quote! {
                         fn #import_name(
@@ -216,7 +237,6 @@ impl<'a> WasmCallbackMethodExpander<'a> {
         match return_type {
             Some(return_type) => {
                 if let Some(result_types) = CallbackReturnType::new(return_type).result_types() {
-                    let ok_type = result_types.ok;
                     let err_type = result_types.err;
                     quote! {
                         std::future::poll_fn(move |cx| {
@@ -236,9 +256,9 @@ impl<'a> WasmCallbackMethodExpander<'a> {
                                             )
                                         ));
                                     }
-                                    let ok_value: #ok_type = ::boltffi::__private::wire::decode(&result.data)
+                                    let value: #return_type = ::boltffi::__private::wire::decode(&result.data)
                                         .expect("wire decode async callback return");
-                                    std::task::Poll::Ready(Ok(ok_value))
+                                    std::task::Poll::Ready(value)
                                 }
                                 None => std::task::Poll::Pending,
                             }

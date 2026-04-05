@@ -1101,14 +1101,32 @@ impl<'a> JavaLowerer<'a> {
         }
 
         let (native_type, native_expr) = match ty {
-            TypeExpr::String => (
-                "byte[]".to_string(),
-                format!(
-                    "{}.getBytes(java.nio.charset.StandardCharsets.UTF_8)",
-                    field_name
-                ),
-            ),
-            TypeExpr::Bytes => ("byte[]".to_string(), field_name.to_string()),
+            TypeExpr::String => {
+                if let Some(binding_name) = input_bindings.binding_name_for(source_name) {
+                    (
+                        "ByteBuffer".to_string(),
+                        format!("{}.toBuffer()", binding_name),
+                    )
+                } else {
+                    (
+                        "byte[]".to_string(),
+                        format!(
+                            "{}.getBytes(java.nio.charset.StandardCharsets.UTF_8)",
+                            field_name
+                        ),
+                    )
+                }
+            }
+            TypeExpr::Bytes => {
+                if let Some(binding_name) = input_bindings.binding_name_for(source_name) {
+                    (
+                        "ByteBuffer".to_string(),
+                        format!("{}.toBuffer()", binding_name),
+                    )
+                } else {
+                    ("byte[]".to_string(), field_name.to_string())
+                }
+            }
             TypeExpr::Record(record_id) if matches!(abi_transport, Some(Transport::Composite(layout)) if &layout.record_id == record_id) =>
             {
                 let binding_name = input_bindings
@@ -4633,6 +4651,41 @@ mod tests {
         assert_eq!(param.jni_type, "java.nio.ByteBuffer");
         assert!(param.decode_expr.contains("WireReader.decodeBuffer"));
         assert!(param.decode_expr.contains("reader.readIntArray()"));
+    }
+
+    #[test]
+    fn callback_proxy_string_params_use_wire_writer_buffers() {
+        let mut contract = empty_contract();
+        contract.catalog.insert_callback(CallbackTraitDef {
+            id: CallbackId::new("Formatter"),
+            methods: vec![callback_method(
+                "format",
+                vec![
+                    param("scope", TypeExpr::String),
+                    param("message", TypeExpr::String),
+                ],
+                ReturnDef::Value(TypeExpr::String),
+                ExecutionKind::Sync,
+            )],
+            kind: CallbackKind::Trait,
+            doc: None,
+        });
+
+        let module = lower(&contract);
+        let callback = module
+            .callbacks
+            .iter()
+            .find(|callback| callback.interface_name == "Formatter")
+            .expect("callback should be lowered");
+        let method = &callback.sync_methods[0];
+
+        assert_eq!(method.proxy.params[0].native_type, "ByteBuffer");
+        assert_eq!(method.proxy.params[1].native_type, "ByteBuffer");
+        assert_eq!(method.proxy.params[0].native_expr, "_wire_scope.toBuffer()");
+        assert_eq!(
+            method.proxy.params[1].native_expr,
+            "_wire_message.toBuffer()"
+        );
     }
 
     #[test]

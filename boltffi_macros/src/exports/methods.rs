@@ -21,7 +21,7 @@ use crate::lowering::params::{FfiParams, transform_method_params, transform_meth
 use crate::lowering::returns::lower::{encoded_return_body, encoded_return_buffer_expression};
 use crate::lowering::returns::model::{
     ResolvedReturn, ReturnInvocationContext, ReturnLoweringContext, ReturnPlatform,
-    WasmOptionScalarEncoding,
+    ValueReturnStrategy, WasmOptionScalarEncoding,
 };
 use boltffi_ffi_rules::transport::EncodedReturnStrategy;
 
@@ -1245,7 +1245,29 @@ fn generate_async_method_export(
         InstanceMethodExport::new(&visibility, export_names.entry(), type_name, ffi_params)
             .render_async_entry(entry_body);
 
-    let wasm_complete = if return_abi.is_passable_value() {
+    let wasm_complete = if matches!(
+        return_abi.value_return_strategy(),
+        ValueReturnStrategy::CompositeValue
+    ) {
+        AsyncWasmCompleteExport {
+            params: quote! {
+                out: *mut ::boltffi::__private::FfiBuf,
+                handle: ::boltffi::__private::RustFutureHandle,
+                _out_status: *mut ::boltffi::__private::FfiStatus
+            },
+            return_type: quote! {},
+            body: quote! {
+                if out.is_null() {
+                    return;
+                }
+                let buf = match ::boltffi::__private::rustfuture::rust_future_complete::<#rust_return_type>(handle) {
+                    Some(result) => ::boltffi::__private::FfiBuf::from_vec(vec![result]),
+                    None => ::boltffi::__private::FfiBuf::empty(),
+                };
+                out.write(buf);
+            },
+        }
+    } else if return_abi.is_passable_value() {
         let rust_type = return_abi.rust_type();
         AsyncWasmCompleteExport {
             params: quote! { handle: ::boltffi::__private::RustFutureHandle },

@@ -1001,8 +1001,9 @@ mod tests {
                     input_route: TsInputRoute::Direct,
                 }],
                 return_type: Some("number".to_string()),
-                direct_import_return_type: Some("number".to_string()),
-                encoded_return: None,
+                import_return: TsCallbackImportReturn::Direct {
+                    wasm_type: "number".to_string(),
+                },
                 proxy_return_route: TsOutputRoute::direct(String::new()),
                 doc: None,
             }],

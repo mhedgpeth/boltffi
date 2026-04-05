@@ -1,4 +1,6 @@
-use boltffi_ffi_rules::transport::{ReturnInvocationContext, ReturnPlatform, ValueReturnMethod};
+use boltffi_ffi_rules::transport::{
+    EncodedReturnStrategy, ReturnInvocationContext, ReturnPlatform, ValueReturnMethod,
+};
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
 
@@ -513,6 +515,8 @@ impl<'a> LocalHandleMethodExpander<'a> {
             ),
             ValueReturnMethod::WriteToOutBufferParts
         );
+        let packed_utf8_return =
+            lowered_return.encoded_return_strategy() == Some(EncodedReturnStrategy::Utf8String);
         let callback_result_name = format_ident!("callback_result");
 
         if uses_wire_payload {
@@ -536,6 +540,13 @@ impl<'a> LocalHandleMethodExpander<'a> {
                     ));
                 }
             };
+            let packed_result_expression = if packed_utf8_return {
+                quote! {
+                    ::boltffi::__private::FfiBuf::from_vec(#callback_result_name.into_bytes())
+                }
+            } else {
+                wire_encode_expression
+            };
 
             return Ok(quote! {
                 #[cfg(target_arch = "wasm32")]
@@ -547,7 +558,7 @@ impl<'a> LocalHandleMethodExpander<'a> {
                     let callback_impl = #local_registry_lookup_name(handle);
                     #(#decode_steps)*
                     let #callback_result_name: #return_type = #invoke_expression;
-                    let callback_buffer = #wire_encode_expression;
+                    let callback_buffer = #packed_result_expression;
                     callback_buffer.into_packed()
                 }
             });
