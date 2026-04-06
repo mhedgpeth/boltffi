@@ -49,34 +49,32 @@ export class Database {
   async query(sql: string): Promise<QueryResult> {
     this._assertNotDisposed();
     const sql_alloc = _module.allocString(sql);
-    const handle = (() => {
-      try {
-        return (_exports.boltffi_database_query as Function)(this._handle, sql_alloc.ptr, sql_alloc.len);
-      } finally {
-        _module.freeAlloc(sql_alloc);
-      }
-    })();
-    const awaitedHandle = await _module.asyncManager.pollAsync(
-      handle,
-      (futureHandle: number) => (_exports.boltffi_database_query_poll_sync as Function)(futureHandle),
-      (futureHandle: number) => (_exports.boltffi_database_query_panic_message as Function)(futureHandle),
-      (futureHandle: number) => (_exports.boltffi_database_query_free as Function)(futureHandle)
-    );
-    const outPtr = _module.allocBufDescriptor();
-    let completeCompleted = false;
     try {
-      (_exports.boltffi_database_query_complete as Function)(outPtr, awaitedHandle, 0);
-      completeCompleted = true;
-      const reader = _module.readerFromBuf(outPtr);
-      const result = QueryResultCodec.decode(reader);
-      return result;
-    } finally {
-      if (completeCompleted) {
-        _module.freeBuf(outPtr);
-      } else {
-        _module.freeBufDescriptor(outPtr);
+      const handle = (_exports.boltffi_database_query as Function)(this._handle, sql_alloc.ptr, sql_alloc.len);
+      const awaitedHandle = await _module.asyncManager.pollAsync(
+        handle,
+        (futureHandle: number) => (_exports.boltffi_database_query_poll_sync as Function)(futureHandle),
+        (futureHandle: number) => (_exports.boltffi_database_query_panic_message as Function)(futureHandle),
+        (futureHandle: number) => (_exports.boltffi_database_query_free as Function)(futureHandle)
+      );
+      const outPtr = _module.allocBufDescriptor();
+      let completeCompleted = false;
+      try {
+        (_exports.boltffi_database_query_complete as Function)(outPtr, awaitedHandle, 0);
+        completeCompleted = true;
+        const reader = _module.readerFromBuf(outPtr);
+        const result = QueryResultCodec.decode(reader);
+        return result;
+      } finally {
+        if (completeCompleted) {
+          _module.freeBuf(outPtr);
+        } else {
+          _module.freeBufDescriptor(outPtr);
+        }
+        (_exports.boltffi_database_query_free as Function)(awaitedHandle);
       }
-      (_exports.boltffi_database_query_free as Function)(awaitedHandle);
+    } finally {
+      _module.freeAlloc(sql_alloc);
     }
   }
 }

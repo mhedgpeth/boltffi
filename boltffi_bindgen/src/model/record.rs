@@ -10,6 +10,8 @@ pub struct Record {
     pub name: String,
     #[serde(default = "default_true")]
     pub is_repr_c: bool,
+    #[serde(default)]
+    pub is_error: bool,
     pub fields: Vec<RecordField>,
     #[serde(default)]
     pub constructors: Vec<Constructor>,
@@ -28,6 +30,7 @@ impl Record {
         Self {
             name: name.into(),
             is_repr_c: true,
+            is_error: false,
             fields: Vec::new(),
             constructors: Vec::new(),
             methods: Vec::new(),
@@ -38,6 +41,11 @@ impl Record {
 
     pub fn with_repr_c(mut self, is_repr_c: bool) -> Self {
         self.is_repr_c = is_repr_c;
+        self
+    }
+
+    pub fn as_error(mut self) -> Self {
+        self.is_error = true;
         self
     }
 

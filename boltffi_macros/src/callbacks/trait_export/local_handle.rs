@@ -638,7 +638,16 @@ impl<'a> LocalHandleMethodExpander<'a> {
         let pointer_name = format_ident!("{}_ptr", param_name);
         let length_name = format_ident!("{}_len", param_name);
 
-        let decode_steps = if contains_custom_types(param_type, self.custom_types) {
+        let decode_steps = if Self::is_borrowed_utf8_str(param_type) {
+            let owned_string_name = format_ident!("{}_owned", param_name);
+            vec![quote! {
+                let #owned_string_name: String = ::boltffi::__private::wire::decode(unsafe {
+                    ::core::slice::from_raw_parts(#pointer_name, #length_name)
+                })
+                .expect("wire decode local callback parameter");
+                let #param_name: #param_type = &#owned_string_name;
+            }]
+        } else if contains_custom_types(param_type, self.custom_types) {
             let wire_type = wire_type_for(param_type, self.custom_types);
             let wire_value_name = format_ident!("{}_wire_value", param_name);
             let from_wire_expression =
@@ -668,6 +677,23 @@ impl<'a> LocalHandleMethodExpander<'a> {
             call_arg: quote! { #param_name },
         }
     }
+
+    fn is_borrowed_utf8_str(param_type: &syn::Type) -> bool {
+        let syn::Type::Reference(reference_type) = param_type else {
+            return false;
+        };
+
+        reference_type.mutability.is_none()
+            && matches!(
+                reference_type.elem.as_ref(),
+                syn::Type::Path(type_path)
+                    if type_path
+                        .path
+                        .segments
+                        .last()
+                        .is_some_and(|segment| segment.ident == "str")
+            )
+    }
 }
 
 #[derive(Default)]
@@ -681,4 +707,75 @@ struct LocalHandleParam {
     ffi_params: Vec<TokenStream>,
     decode_steps: Vec<TokenStream>,
     call_arg: TokenStream,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::index::custom_types::CustomTypeRegistry;
+    use crate::index::data_types::DataTypeRegistry;
+    use crate::lowering::returns::model::ReturnLoweringContext;
+    use quote::{format_ident, quote};
+    use syn::parse_quote;
+
+    fn return_lowering() -> ReturnLoweringContext<'static> {
+        let custom_types = Box::leak(Box::new(CustomTypeRegistry::default()));
+        let data_types = Box::leak(Box::new(DataTypeRegistry::default()));
+        ReturnLoweringContext::new(custom_types, data_types)
+    }
+
+    fn local_handle_method_expander(
+        method: &'static syn::TraitItemFn,
+    ) -> LocalHandleMethodExpander<'static> {
+        let trait_name_snake = Box::leak(Box::new(format_ident!("progress_handler")));
+        let local_state_name = Box::leak(Box::new(format_ident!(
+            "__BoltffiLocalProgressHandlerState"
+        )));
+        let local_registry_lookup_name = Box::leak(Box::new(format_ident!(
+            "__boltffi_local_progress_handler_lookup"
+        )));
+        let custom_types = Box::leak(Box::new(CustomTypeRegistry::default()));
+        let return_lowering = Box::leak(Box::new(return_lowering()));
+
+        LocalHandleMethodExpander::new(
+            method,
+            trait_name_snake,
+            local_state_name,
+            local_registry_lookup_name,
+            custom_types,
+            return_lowering,
+        )
+    }
+
+    fn decode_tokens_for(param_type: syn::Type) -> String {
+        let method: &'static syn::TraitItemFn = Box::leak(Box::new(parse_quote! {
+            fn on_complete(&self, value: String);
+        }));
+        let expander = local_handle_method_expander(method);
+        let lowered_param = expander.lower_param(&format_ident!("value"), &param_type);
+        let decode_steps = lowered_param.decode_steps;
+        quote! { #(#decode_steps)* }.to_string()
+    }
+
+    #[test]
+    fn borrowed_str_callback_params_decode_into_owned_string_storage() {
+        let decode_tokens = decode_tokens_for(parse_quote!(&str));
+
+        assert!(
+            decode_tokens
+                .contains("let value_owned : String = :: boltffi :: __private :: wire :: decode")
+        );
+        assert!(decode_tokens.contains("let value : & str = & value_owned ;"));
+    }
+
+    #[test]
+    fn owned_string_callback_params_keep_direct_decode_path() {
+        let decode_tokens = decode_tokens_for(parse_quote!(String));
+
+        assert!(
+            decode_tokens
+                .contains("let value : String = :: boltffi :: __private :: wire :: decode")
+        );
+        assert!(!decode_tokens.contains("value_owned"));
+    }
 }

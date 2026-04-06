@@ -11,6 +11,11 @@ final class CustomTypesTests: XCTestCase {
         let datetime: UtcDateTime = 1_701_234_567_890
         XCTAssertEqual(echoDatetime(dt: datetime), datetime)
         XCTAssertEqual(datetimeToMillis(dt: datetime), 1_701_234_567_890)
+        XCTAssertTrue(formatTimestamp(timestamp: datetime).contains("2023"))
+
+        let event = Event(name: "launch", timestamp: datetime)
+        let echoedEvent = echoEvent(event: event)
+        XCTAssertEqual(echoedEvent, event)
+        XCTAssertEqual(eventTimestamp(event: event), datetime)
     }
 }
-

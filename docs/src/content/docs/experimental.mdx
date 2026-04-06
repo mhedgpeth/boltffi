@@ -1,0 +1,47 @@
+---
+title: "Experimental Features"
+description: "Enable and manage experimental BoltFFI features such as TypeScript async streams."
+---
+
+# Experimental Features
+
+Some BoltFFI features are behind an experimental flag. The API for these features may change between releases, so they require an explicit opt-in.
+
+Java bindings are now generally available and no longer require experimental opt-in.
+
+| Feature | Key | Status |
+|---------|-----|--------|
+| TS async streams | `typescript.async_streams` | Functional |
+
+## Enabling
+
+### CLI flag
+
+Pass `--experimental` to include experimental targets during that command run:
+
+```bash
+boltffi generate all --experimental
+boltffi pack all --experimental
+```
+
+### Config file
+
+Add the feature key to `experimental` in `boltffi.toml`:
+
+```toml
+experimental = ["typescript.async_streams"]
+```
+
+The CLI flag applies to a single command. The config array applies to every build.
+
+## Feature Details
+
+### TypeScript Async Streams
+
+**Key:** `typescript.async_streams`
+
+Enables `AsyncIterable` stream generation for TypeScript/WASM targets. Without this flag, stream methods are skipped during TypeScript codegen.
+
+## Graduating from Experimental
+
+When a feature stabilizes, it moves out of the experimental list. The `--experimental` flag and config entry are no longer required. Existing code continues to work without changes.

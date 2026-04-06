@@ -70,7 +70,11 @@ impl JavaModule {
     }
 
     pub fn uses_completable_future(&self) -> bool {
-        self.has_async() || self.has_async_callbacks()
+        self.has_async() || self.has_async_callbacks() || self.has_streams()
+    }
+
+    pub fn has_streams(&self) -> bool {
+        self.classes.iter().any(|c| c.has_streams())
     }
 
     pub fn has_wire_params(&self) -> bool {
@@ -90,7 +94,9 @@ impl JavaModule {
     }
 
     pub fn has_data_enums(&self) -> bool {
-        self.enums.iter().any(|e| !e.is_c_style() && !e.is_error())
+        self.enums
+            .iter()
+            .any(|enumeration| enumeration.is_sealed() || enumeration.is_abstract())
     }
 
     pub fn has_closures(&self) -> bool {
@@ -114,6 +120,7 @@ impl JavaModule {
 
 #[derive(Debug, Clone)]
 pub struct JavaEnum {
+    pub doc: Option<String>,
     pub class_name: String,
     pub kind: JavaEnumKind,
     pub value_type: String,
@@ -137,7 +144,10 @@ impl JavaEnum {
     }
 
     pub fn is_error(&self) -> bool {
-        matches!(self.kind, JavaEnumKind::Error)
+        matches!(
+            self.kind,
+            JavaEnumKind::Error | JavaEnumKind::ErrorAbstractClass
+        )
     }
 
     pub fn is_sealed(&self) -> bool {
@@ -145,7 +155,10 @@ impl JavaEnum {
     }
 
     pub fn is_abstract(&self) -> bool {
-        matches!(self.kind, JavaEnumKind::AbstractClass)
+        matches!(
+            self.kind,
+            JavaEnumKind::AbstractClass | JavaEnumKind::ErrorAbstractClass
+        )
     }
 
     pub fn has_constructors(&self) -> bool {
@@ -177,10 +190,12 @@ pub enum JavaEnumKind {
     Error,
     SealedInterface,
     AbstractClass,
+    ErrorAbstractClass,
 }
 
 #[derive(Debug, Clone)]
 pub struct JavaEnumVariant {
+    pub doc: Option<String>,
     pub name: String,
     pub tag: i128,
     pub fields: Vec<JavaEnumField>,
@@ -190,10 +205,18 @@ impl JavaEnumVariant {
     pub fn is_unit(&self) -> bool {
         self.fields.is_empty()
     }
+
+    pub fn message_field_name(&self) -> Option<&str> {
+        self.fields
+            .iter()
+            .find(|field| field.name == "message" && field.java_type == "String")
+            .map(|field| field.name.as_str())
+    }
 }
 
 #[derive(Debug, Clone)]
 pub struct JavaEnumField {
+    pub doc: Option<String>,
     pub name: String,
     pub java_type: String,
     pub wire_decode_expr: String,
@@ -205,15 +228,24 @@ pub struct JavaEnumField {
 
 #[derive(Debug, Clone)]
 pub struct JavaRecord {
+    pub doc: Option<String>,
     pub shape: JavaRecordShape,
+    pub is_error: bool,
     pub class_name: String,
     pub fields: Vec<JavaRecordField>,
+    pub default_constructors: Vec<JavaRecordDefaultConstructor>,
     pub blittable_layout: Option<JavaBlittableLayout>,
     pub constructors: Vec<JavaValueTypeConstructor>,
     pub methods: Vec<JavaValueTypeMethod>,
 }
 
 impl JavaRecord {
+    pub fn message_field(&self) -> Option<&JavaRecordField> {
+        self.fields
+            .iter()
+            .find(|field| field.name == "message" && field.java_type == "String")
+    }
+
     pub fn is_empty(&self) -> bool {
         self.fields.is_empty()
     }
@@ -223,11 +255,15 @@ impl JavaRecord {
     }
 
     pub fn uses_native_record_syntax(&self) -> bool {
-        matches!(self.shape, JavaRecordShape::NativeRecord)
+        matches!(self.shape, JavaRecordShape::NativeRecord) && !self.is_error
     }
 
     pub fn has_constructors(&self) -> bool {
         !self.constructors.is_empty()
+    }
+
+    pub fn has_default_constructors(&self) -> bool {
+        !self.default_constructors.is_empty()
     }
 
     pub fn has_static_methods(&self) -> bool {
@@ -272,13 +308,27 @@ pub enum JavaRecordShape {
 
 #[derive(Debug, Clone)]
 pub struct JavaRecordField {
+    pub doc: Option<String>,
     pub name: String,
     pub java_type: String,
+    pub default_value: Option<String>,
     pub wire_decode_expr: String,
     pub wire_size_expr: String,
     pub wire_encode_expr: String,
     pub equals_expr: String,
     pub hash_expr: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct JavaRecordDefaultConstructor {
+    pub params: Vec<JavaRecordDefaultConstructorParam>,
+    pub arguments: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct JavaRecordDefaultConstructorParam {
+    pub name: String,
+    pub java_type: String,
 }
 
 #[derive(Debug, Clone)]
@@ -310,6 +360,7 @@ pub enum JavaReturnRender {
         err_decode_expr: String,
         err_is_string: bool,
         err_exception_class: Option<String>,
+        err_throw_direct: bool,
     },
 }
 
@@ -385,6 +436,22 @@ impl JavaReturnPlan {
                 err_exception_class: Some(_),
                 ..
             }
+        ) || matches!(
+            self.render,
+            JavaReturnRender::Result {
+                err_throw_direct: true,
+                ..
+            }
+        )
+    }
+
+    pub fn result_err_throws_directly(&self) -> bool {
+        matches!(
+            self.render,
+            JavaReturnRender::Result {
+                err_throw_direct: true,
+                ..
+            }
         )
     }
 
@@ -433,6 +500,7 @@ impl JavaReturnPlan {
 
 #[derive(Debug, Clone)]
 pub struct JavaFunction {
+    pub doc: Option<String>,
     pub name: String,
     pub ffi_name: String,
     pub params: Vec<JavaParam>,
@@ -526,6 +594,7 @@ pub struct JavaNativeParam {
 
 #[derive(Debug, Clone)]
 pub struct JavaValueTypeConstructor {
+    pub doc: Option<String>,
     pub name: String,
     pub params: Vec<JavaParam>,
     pub native_params: Vec<JavaNativeParam>,
@@ -537,6 +606,7 @@ pub struct JavaValueTypeConstructor {
 
 #[derive(Debug, Clone)]
 pub struct JavaValueTypeMethod {
+    pub doc: Option<String>,
     pub name: String,
     pub ffi_name: String,
     pub is_static: bool,
@@ -548,11 +618,35 @@ pub struct JavaValueTypeMethod {
 }
 
 #[derive(Debug, Clone)]
+pub struct JavaStream {
+    pub doc: Option<String>,
+    pub name: String,
+    pub item_type: String,
+    pub pop_batch_items_expr: String,
+    pub subscribe: String,
+    pub poll: String,
+    pub pop_batch: String,
+    pub wait: String,
+    pub unsubscribe: String,
+    pub free: String,
+    pub mode: JavaStreamMode,
+}
+
+#[derive(Debug, Clone)]
+pub enum JavaStreamMode {
+    Async,
+    Batch,
+    Callback,
+}
+
+#[derive(Debug, Clone)]
 pub struct JavaClass {
+    pub doc: Option<String>,
     pub class_name: String,
     pub ffi_free: String,
     pub constructors: Vec<JavaConstructor>,
     pub methods: Vec<JavaClassMethod>,
+    pub streams: Vec<JavaStream>,
 }
 
 impl JavaClass {
@@ -568,6 +662,10 @@ impl JavaClass {
 
     pub fn has_async_methods(&self) -> bool {
         self.methods.iter().any(|m| m.async_call.is_some())
+    }
+
+    pub fn has_streams(&self) -> bool {
+        !self.streams.is_empty()
     }
 
     pub fn has_wire_params(&self) -> bool {
@@ -590,6 +688,7 @@ pub enum JavaConstructorKind {
 
 #[derive(Debug, Clone)]
 pub struct JavaConstructor {
+    pub doc: Option<String>,
     pub kind: JavaConstructorKind,
     pub name: String,
     pub is_fallible: bool,
@@ -606,6 +705,7 @@ impl JavaConstructor {
 
 #[derive(Debug, Clone)]
 pub struct JavaClassMethod {
+    pub doc: Option<String>,
     pub name: String,
     pub ffi_name: String,
     pub is_static: bool,
@@ -632,6 +732,8 @@ impl JavaClassMethod {
 
 #[derive(Debug, Clone)]
 pub struct JavaClosureInterface {
+    pub doc: Option<String>,
+    pub invoke_doc: Option<String>,
     pub interface_name: String,
     pub callback_id: String,
     pub callbacks_class_name: String,
@@ -672,6 +774,7 @@ impl JavaClosureInterface {
 
 #[derive(Debug, Clone)]
 pub struct JavaCallbackTrait {
+    pub doc: Option<String>,
     pub interface_name: String,
     pub callback_id: String,
     pub supports_cleaner: bool,
@@ -863,6 +966,7 @@ pub struct JavaCallbackErrorCapture {
 
 #[derive(Debug, Clone)]
 pub struct JavaSyncCallbackMethod {
+    pub doc: Option<String>,
     pub name: String,
     pub ffi_name: String,
     pub params: Vec<JavaBridgeParam>,
@@ -880,6 +984,7 @@ impl JavaSyncCallbackMethod {
 
 #[derive(Debug, Clone)]
 pub struct JavaAsyncCallbackMethod {
+    pub doc: Option<String>,
     pub name: String,
     pub ffi_name: String,
     pub params: Vec<JavaBridgeParam>,

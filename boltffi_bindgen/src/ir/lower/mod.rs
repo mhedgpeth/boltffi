@@ -799,6 +799,7 @@ mod tests {
         let record_id = RecordId::new("Point");
         contract.catalog.insert_record(RecordDef {
             is_repr_c: true,
+            is_error: false,
             id: record_id.clone(),
             fields: vec![
                 FieldDef {
@@ -832,6 +833,7 @@ mod tests {
         let record_id = RecordId::new("Person");
         contract.catalog.insert_record(RecordDef {
             is_repr_c: true,
+            is_error: false,
             id: record_id.clone(),
             fields: vec![
                 FieldDef {
@@ -991,6 +993,7 @@ mod tests {
         let record_id = RecordId::new("Packed");
         contract.catalog.insert_record(RecordDef {
             is_repr_c: true,
+            is_error: false,
             id: record_id.clone(),
             fields: vec![
                 FieldDef {
@@ -1045,6 +1048,7 @@ mod tests {
         let record_id = RecordId::new("Vec2");
         contract.catalog.insert_record(RecordDef {
             is_repr_c: true,
+            is_error: false,
             id: record_id.clone(),
             fields: vec![
                 FieldDef {
@@ -1084,6 +1088,7 @@ mod tests {
         let record_id = RecordId::new("Vec2");
         contract.catalog.insert_record(RecordDef {
             is_repr_c: true,
+            is_error: false,
             id: record_id.clone(),
             fields: vec![
                 FieldDef {
@@ -1128,6 +1133,7 @@ mod tests {
         let record_id = RecordId::new("Vec2");
         contract.catalog.insert_record(RecordDef {
             is_repr_c: true,
+            is_error: false,
             id: record_id.clone(),
             fields: vec![
                 FieldDef {
@@ -1395,6 +1401,7 @@ mod tests {
         let record_id = RecordId::new("Message");
         contract.catalog.insert_record(RecordDef {
             is_repr_c: true,
+            is_error: false,
             id: record_id.clone(),
             fields: vec![
                 FieldDef {
@@ -1486,6 +1493,7 @@ mod tests {
         let record_id = RecordId::new("Point");
         contract.catalog.insert_record(RecordDef {
             is_repr_c: true,
+            is_error: false,
             id: record_id.clone(),
             fields: vec![
                 FieldDef {
@@ -1650,8 +1658,9 @@ mod tests {
             ReturnDef::Value(TypeExpr::Record(RecordId::new("Point"))),
         );
         contract.catalog.insert_record(RecordDef {
-            id: RecordId::new("Point"),
             is_repr_c: true,
+            is_error: false,
+            id: RecordId::new("Point"),
             fields: vec![
                 FieldDef {
                     name: FieldName::new("x"),
@@ -1697,8 +1706,9 @@ mod tests {
 
     fn blittable_point_record() -> RecordDef {
         RecordDef {
-            id: RecordId::new("Point"),
             is_repr_c: true,
+            is_error: false,
+            id: RecordId::new("Point"),
             fields: vec![
                 FieldDef {
                     name: FieldName::new("x"),
@@ -1722,8 +1732,9 @@ mod tests {
 
     fn wire_encoded_person_record() -> RecordDef {
         RecordDef {
-            id: RecordId::new("Person"),
             is_repr_c: true,
+            is_error: false,
+            id: RecordId::new("Person"),
             fields: vec![
                 FieldDef {
                     name: FieldName::new("name"),

@@ -53,4 +53,14 @@ impl EventBus {
     pub fn subscribe_points(&self) -> Arc<EventSubscription<Point>> {
         self.point_producer.subscribe()
     }
+
+    #[ffi_stream(item = i32, mode = "batch")]
+    pub fn subscribe_values_batch(&self) -> Arc<EventSubscription<i32>> {
+        self.int_producer.subscribe()
+    }
+
+    #[ffi_stream(item = i32, mode = "callback")]
+    pub fn subscribe_values_callback(&self) -> Arc<EventSubscription<i32>> {
+        self.int_producer.subscribe()
+    }
 }

@@ -24,7 +24,10 @@ const {
 } = Astro.props;
 const siteUrl = Astro.site ?? new URL('https://boltffi.dev');
 const pageTitle = `${title} | BoltFFI`;
-const resolvedCanonicalUrl = canonicalUrl ?? new URL(Astro.url.pathname, siteUrl).toString();
+const rawCanonical = canonicalUrl ?? new URL(Astro.url.pathname, siteUrl).toString();
+const resolvedCanonicalUrl = rawCanonical.endsWith('/') && rawCanonical !== siteUrl.toString() + '/'
+  ? rawCanonical.slice(0, -1)
+  : rawCanonical;
 const resolvedOpenGraphImageUrl = new URL(openGraphImagePath, siteUrl).toString();
 const structuredDataDocuments = Array.isArray(structuredData)
   ? structuredData

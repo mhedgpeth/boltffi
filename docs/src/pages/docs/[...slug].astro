@@ -4,6 +4,27 @@ import DocsLayout from '../../layouts/DocsLayout.astro';
 
 type JsonLdDocument = Record<string, unknown>;
 
+const PAGE_ORDER = [
+  'overview',
+  'getting-started',
+  'installation',
+  'quick-start',
+  'types',
+  'records',
+  'classes',
+  'functions',
+  'async',
+  'callbacks',
+  'streaming',
+  'errors',
+  'custom-types',
+  'packaging',
+  'configuration',
+  'experimental',
+  'async-internals',
+  'tutorial',
+];
+
 export async function getStaticPaths() {
   const docs = await getCollection('docs');
   return docs.map(entry => ({
@@ -14,6 +35,13 @@ export async function getStaticPaths() {
 
 const { entry } = Astro.props;
 const { Content } = await render(entry);
+
+const allDocs = await getCollection('docs');
+const currentIndex = PAGE_ORDER.indexOf(entry.id);
+const prevSlug = currentIndex > 0 ? PAGE_ORDER[currentIndex - 1] : null;
+const nextSlug = currentIndex < PAGE_ORDER.length - 1 ? PAGE_ORDER[currentIndex + 1] : null;
+const prevEntry = prevSlug ? allDocs.find(d => d.id === prevSlug) : null;
+const nextEntry = nextSlug ? allDocs.find(d => d.id === nextSlug) : null;
 const activeSection = entry.id;
 const title = entry.data.title || entry.id.charAt(0).toUpperCase() + entry.id.slice(1).replace(/-/g, ' ');
 const description = entry.data.description;
@@ -87,4 +115,20 @@ const structuredData: JsonLdDocument[] = [breadcrumbStructuredData, pageStructur
   structuredData={structuredData}
 >
   <Content />
+  {(prevEntry || nextEntry) && (
+    <nav class="mt-16 pt-8 border-t border-border flex justify-between items-center not-prose">
+      {prevEntry ? (
+        <a href={`/docs/${prevEntry.id}`} class="group flex flex-col items-start gap-1 text-sm text-muted-foreground hover:text-foreground transition-colors">
+          <span class="text-xs uppercase tracking-wider">Previous</span>
+          <span class="font-medium text-foreground group-hover:text-primary transition-colors">{prevEntry.data.title}</span>
+        </a>
+      ) : <div />}
+      {nextEntry ? (
+        <a href={`/docs/${nextEntry.id}`} class="group flex flex-col items-end gap-1 text-sm text-muted-foreground hover:text-foreground transition-colors">
+          <span class="text-xs uppercase tracking-wider">Next</span>
+          <span class="font-medium text-foreground group-hover:text-primary transition-colors">{nextEntry.data.title}</span>
+        </a>
+      ) : <div />}
+    </nav>
+  )}
 </DocsLayout>

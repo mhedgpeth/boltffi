@@ -679,8 +679,12 @@ impl<'a> JniLowerer<'a> {
 
         let jni_params = self.format_jni_params(&params);
 
-        let return_meta = self.return_meta_for_shape(&func.returns, Some(&abi_call.returns));
-        let complete_kind = self.async_complete_kind(&return_meta);
+        let complete_kind = match &abi_call.mode {
+            CallMode::Async(async_call) => {
+                self.async_complete_kind_for_shape(&func.returns, &async_call.result)
+            }
+            CallMode::Sync => unreachable!("async function lowering requires async abi call"),
+        };
 
         JniAsyncFunction {
             ffi_name: ffi_name.clone(),
@@ -719,8 +723,12 @@ impl<'a> JniLowerer<'a> {
 
         let jni_params = self.format_jni_params(&params);
 
-        let return_meta = self.return_meta_for_shape(&method.returns, Some(&abi_call.returns));
-        let complete_kind = self.async_complete_kind(&return_meta);
+        let complete_kind = match &abi_call.mode {
+            CallMode::Async(async_call) => {
+                self.async_complete_kind_for_shape(&method.returns, &async_call.result)
+            }
+            CallMode::Sync => unreachable!("async method lowering requires async abi call"),
+        };
 
         JniAsyncFunction {
             ffi_name: ffi_name.clone(),
@@ -1357,6 +1365,24 @@ impl<'a> JniLowerer<'a> {
             }
         } else {
             JniAsyncCompleteKind::WireEncoded
+        }
+    }
+
+    fn async_complete_kind_for_shape(
+        &self,
+        returns: &ReturnDef,
+        ret_shape: &ReturnShape,
+    ) -> JniAsyncCompleteKind {
+        match (ret_shape.value_return_strategy(), &ret_shape.transport) {
+            (ValueReturnStrategy::CompositeValue, Some(Transport::Composite(layout))) => {
+                JniAsyncCompleteKind::BlittableStruct {
+                    c_type: format!("___{}", layout.record_id.as_str()),
+                }
+            }
+            _ => {
+                let return_meta = self.return_meta_for_shape(returns, Some(ret_shape));
+                self.async_complete_kind(&return_meta)
+            }
         }
     }
 
@@ -2918,6 +2944,27 @@ mod tests {
     }
 
     #[test]
+    fn async_complete_kind_uses_blittable_struct_for_direct_record_results() {
+        let contract = contract_with_blittable_point();
+        let lowerer = lowerer_from_contract(&contract);
+        let ret_shape = closure_return_shape_from_contract(
+            contract_with_blittable_point(),
+            ReturnDef::Value(TypeExpr::Record("Point".into())),
+        );
+
+        let complete_kind = lowerer.async_complete_kind_for_shape(
+            &ReturnDef::Value(TypeExpr::Record("Point".into())),
+            &ret_shape,
+        );
+
+        assert!(matches!(
+            complete_kind,
+            JniAsyncCompleteKind::BlittableStruct { .. }
+        ));
+        assert_eq!(complete_kind.c_type(), "___Point");
+    }
+
+    #[test]
     fn closure_return_bytes_is_wire_encoded() {
         let lowerer = test_lowerer();
         let ret = lowerer.closure_return_info(&closure_return_shape_from_contract(
@@ -3006,6 +3053,7 @@ mod tests {
         catalog.insert_record(RecordDef {
             id: RecordId::new("Point"),
             is_repr_c: true,
+            is_error: false,
             fields: vec![
                 FieldDef {
                     name: FieldName::new("x"),
@@ -3075,6 +3123,7 @@ mod tests {
         catalog.insert_record(RecordDef {
             id: RecordId::new("Message"),
             is_repr_c: false,
+            is_error: false,
             fields: vec![FieldDef {
                 name: FieldName::new("text"),
                 type_expr: TypeExpr::String,
@@ -3353,6 +3402,7 @@ mod tests {
         contract.catalog.insert_record(RecordDef {
             id: RecordId::new("Point"),
             is_repr_c: true,
+            is_error: false,
             fields: vec![
                 FieldDef {
                     name: FieldName::new("x"),

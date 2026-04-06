@@ -19,6 +19,7 @@ pub struct KotlinModule {
     pub native: KotlinNative,
     pub api_style: KotlinApiStyle,
     pub module_object_name: Option<String>,
+    pub has_async_runtime: bool,
     pub has_streams: bool,
 }
 
@@ -118,10 +119,17 @@ pub struct KotlinRecord {
     pub class_name: String,
     pub fields: Vec<KotlinRecordField>,
     pub is_blittable: bool,
+    pub is_error: bool,
     pub struct_size: usize,
     pub constructors: Vec<KotlinConstructor>,
     pub methods: Vec<KotlinMethod>,
     pub doc: Option<String>,
+}
+
+impl KotlinRecord {
+    pub fn message_field(&self) -> Option<&KotlinRecordField> {
+        self.fields.iter().find(|field| field.name == "message")
+    }
 }
 
 #[derive(Clone)]
@@ -553,7 +561,7 @@ impl KotlinWireWriter {
                 size_expr,
                 encode_expr,
             } => format!(
-                "val {binding_name} = WireWriterPool.acquire({size_expr})\n        run {{\n            val wire = {binding_name}.writer\n            {encode_expr}\n        }}"
+                "val {binding_name} = WireWriterPool.acquire({size_expr})\n        kotlin.run {{\n            val wire = {binding_name}.writer\n            {encode_expr}\n        }}"
             ),
             Self::PackedBuffer {
                 binding_name,

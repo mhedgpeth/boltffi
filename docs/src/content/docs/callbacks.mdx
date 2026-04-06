@@ -15,7 +15,7 @@ Target language code can flow into Rust through closures and traits. Pass a clos
 Use closures when you need a single callback function. Accept `impl Fn`, `impl FnMut`, or `impl FnOnce` as a parameter, and BoltFFI generates a function type in the target language. The caller passes a lambda or closure, and Rust invokes it during execution. This works for iteration, mapping, filtering, and simple event handlers. Closures work in both standalone functions and class methods.
 
 <CodeComparison
-  title="Closure callback"
+  title=""
   rust={`#[export]
 pub fn foreach_item(
     items: &[i32],
@@ -23,37 +23,44 @@ pub fn foreach_item(
 ) {
     items.iter().for_each(|&x| callback(x));
 }`}
-  swift={`// Generated
-func foreachItem(
+  swift={`func foreachItem(
     items: [Int32],
     callback: (Int32) -> Void
 )
 
-// Usage
 var sum: Int32 = 0
 foreachItem(items: [1, 2, 3]) { value in
     sum += value
 }`}
-  kotlin={`// Generated
-fun foreachItem(
+  kotlin={`fun foreachItem(
     items: IntArray,
     callback: (Int) -> Unit
 )
 
-// Usage
 var sum = 0
 foreachItem(intArrayOf(1, 2, 3)) { value ->
     sum += value
 }`}
-  typescript={`// Generated
-type ForeachCallback = (value: number) => void
+  java={`@FunctionalInterface
+public interface ForeachItemCallback {
+    void invoke(int value);
+}
 
-declare function foreachItem(
+static void foreachItem(
+    int[] items,
+    ForeachItemCallback callback)
+
+int[] sum = {0};
+foreachItem(
+    new int[]{1, 2, 3},
+    v -> sum[0] += v);`}
+  typescript={`type ForeachCallback = (value: number) => void
+
+function foreachItem(
     items: number[],
     callback: ForeachCallback
 ): void
 
-// Usage
 let sum = 0
 foreachItem([1, 2, 3], (value) => {
     sum += value
@@ -65,7 +72,7 @@ foreachItem([1, 2, 3], (value) => {
 Closures can return values. The return type becomes part of the generated function signature.
 
 <CodeComparison
-  title="Closure with return value"
+  title=""
   rust={`#[export]
 pub fn transform(
     items: &[i32],
@@ -73,31 +80,35 @@ pub fn transform(
 ) -> Vec<i32> {
     items.iter().map(|&x| f(x)).collect()
 }`}
-  swift={`// Generated
-func transform(
+  swift={`func transform(
     items: [Int32],
     f: (Int32) -> Int32
 ) -> [Int32]
 
-// Usage
 let doubled = transform(items: [1, 2, 3]) { $0 * 2 }`}
-  kotlin={`// Generated
-fun transform(
+  kotlin={`fun transform(
     items: IntArray,
     f: (Int) -> Int
 ): IntArray
 
-// Usage
 val doubled = transform(intArrayOf(1, 2, 3)) { it * 2 }`}
-  typescript={`// Generated
-type TransformFn = (value: number) => number
+  java={`@FunctionalInterface
+public interface TransformF {
+    int invoke(int value);
+}
 
-declare function transform(
+static int[] transform(
+    int[] items, TransformF f)
+
+int[] doubled = transform(
+    new int[]{1, 2, 3}, v -> v * 2);`}
+  typescript={`type TransformFn = (value: number) => number
+
+function transform(
     items: number[],
     f: TransformFn
 ): number[]
 
-// Usage
 const doubled = transform([1, 2, 3], (v) => v * 2)`}
 />
 
@@ -106,7 +117,7 @@ const doubled = transform([1, 2, 3], (v) => v * 2)`}
 Use traits when you need multiple related callback methods. Define a trait with `#[export]` and BoltFFI generates a protocol or interface in the target language. The target language implements this protocol, and Rust receives an object that can call any of its methods. This pattern works well for progress handlers, event listeners, and delegate protocols. Like closures, trait callbacks work in both standalone functions and class methods.
 
 <CodeComparison
-  title="Trait callback"
+  title=""
   rust={`#[export]
 pub trait ProgressHandler {
     fn on_progress(&self, percent: f64);
@@ -123,8 +134,7 @@ pub fn download(
     // ... work ...
     handler.on_complete("Done");
 }`}
-  swift={`// Generated
-protocol ProgressHandlerProtocol {
+  swift={`protocol ProgressHandler {
     func onProgress(percent: Double)
     func onComplete(result: String)
     func onError(error: String)
@@ -132,11 +142,10 @@ protocol ProgressHandlerProtocol {
 
 func download(
     url: String,
-    handler: ProgressHandlerProtocol
+    handler: ProgressHandler
 )
 
-// Usage
-class MyHandler: ProgressHandlerProtocol {
+class MyHandler: ProgressHandler {
     func onProgress(percent: Double) {
         print("Progress: \\(percent)%")
     }
@@ -148,9 +157,9 @@ class MyHandler: ProgressHandlerProtocol {
     }
 }
 
-download(url: "https://example.com", handler: MyHandler())`}
-  kotlin={`// Generated
-interface ProgressHandlerProtocol {
+download(url: "https://example.com",
+    handler: MyHandler())`}
+  kotlin={`interface ProgressHandler {
     fun onProgress(percent: Double)
     fun onComplete(result: String)
     fun onError(error: String)
@@ -158,11 +167,10 @@ interface ProgressHandlerProtocol {
 
 fun download(
     url: String,
-    handler: ProgressHandlerProtocol
+    handler: ProgressHandler
 )
 
-// Usage
-class MyHandler : ProgressHandlerProtocol {
+val handler = object : ProgressHandler {
     override fun onProgress(percent: Double) {
         println("Progress: $percent%")
     }
@@ -174,21 +182,40 @@ class MyHandler : ProgressHandlerProtocol {
     }
 }
 
-download("https://example.com", MyHandler())`}
-  typescript={`// Generated
-interface ProgressHandler {
+download("https://example.com", handler)`}
+  java={`public interface ProgressHandler {
+    void onProgress(double percent);
+    void onComplete(String result);
+    void onError(String error);
+}
+
+static void download(
+    String url, ProgressHandler handler)
+
+download("https://example.com",
+    new ProgressHandler() {
+        public void onProgress(double percent) {
+            System.out.println(percent + "%");
+        }
+        public void onComplete(String result) {
+            System.out.println("Done: " + result);
+        }
+        public void onError(String error) {
+            System.out.println("Error: " + error);
+        }
+    });`}
+  typescript={`interface ProgressHandler {
     onProgress(percent: number): void
     onComplete(result: string): void
     onError(error: string): void
 }
 
-declare function download(
+function download(
     url: string,
     handler: ProgressHandler
 ): void
 
-// Usage
-const handler: ProgressHandler = {
+download("https://example.com", {
     onProgress(percent) {
         console.log(\`Progress: \${percent}%\`)
     },
@@ -198,9 +225,7 @@ const handler: ProgressHandler = {
     onError(error) {
         console.log(\`Error: \${error}\`)
     }
-}
-
-download("https://example.com", handler)`}
+})`}
 />
 
 ### Ownership
@@ -208,7 +233,7 @@ download("https://example.com", handler)`}
 Trait callbacks can be passed as `Box<dyn Trait>` or `Arc<dyn Trait>`. Use `Box` when the callback is used once or owned by a single call. Use `Arc` when the callback needs to be shared across multiple calls or stored for later use. The choice affects how the target language object is retained.
 
 <CodeComparison
-  title="Box vs Arc ownership"
+  title=""
   rust={`#[export]
 pub fn single_use(handler: Box<dyn ProgressHandler>) {
     handler.on_complete("done");
@@ -221,24 +246,27 @@ pub fn shared_use(handler: Arc<dyn ProgressHandler>) {
     handler.on_progress(50.0);
 }`}
   swift={`// Both accept the same protocol
-func singleUse(handler: ProgressHandlerProtocol)
-func sharedUse(handler: ProgressHandlerProtocol)
+func singleUse(handler: ProgressHandler)
+func sharedUse(handler: ProgressHandler)
 
-// Usage is identical from Swift side
 singleUse(handler: MyHandler())
 sharedUse(handler: MyHandler())`}
   kotlin={`// Both accept the same interface
-fun singleUse(handler: ProgressHandlerProtocol)
-fun sharedUse(handler: ProgressHandlerProtocol)
+fun singleUse(handler: ProgressHandler)
+fun sharedUse(handler: ProgressHandler)
 
-// Usage is identical from Kotlin side
 singleUse(MyHandler())
 sharedUse(MyHandler())`}
-  typescript={`// Both accept the same interface
-declare function singleUse(handler: ProgressHandler): void
-declare function sharedUse(handler: ProgressHandler): void
+  java={`// Both accept the same interface
+static void singleUse(ProgressHandler handler)
+static void sharedUse(ProgressHandler handler)
 
-// Usage is identical from TypeScript side
+singleUse(myHandler);
+sharedUse(myHandler);`}
+  typescript={`// Both accept the same interface
+function singleUse(handler: ProgressHandler): void
+function sharedUse(handler: ProgressHandler): void
+
 singleUse(handler)
 sharedUse(handler)`}
 />
@@ -248,7 +276,7 @@ sharedUse(handler)`}
 Trait methods can be async. Mark the trait with `#[async_trait]` and use `async fn` for methods that need to perform async work on the target language side. When Rust calls an async method, it awaits the result before continuing.
 
 <CodeComparison
-  title="Async trait callback"
+  title=""
   rust={`use async_trait::async_trait;
 
 #[async_trait]
@@ -258,64 +286,74 @@ pub trait DataProvider {
 }
 
 #[export]
-pub async fn process(provider: Box<dyn DataProvider>) -> String {
+pub async fn process(
+    provider: Box<dyn DataProvider>
+) -> String {
     let data = provider.fetch("config").await;
     format!("Got: {}", data)
 }`}
-  swift={`// Generated
-protocol DataProviderProtocol {
+  swift={`protocol DataProvider {
     func fetch(key: String) async -> String
 }
 
 func process(
-    provider: DataProviderProtocol
+    provider: DataProvider
 ) async -> String
 
-// Usage
-class MyProvider: DataProviderProtocol {
+class MyProvider: DataProvider {
     func fetch(key: String) async -> String {
-        // can do async work here
         return "value for \\(key)"
     }
 }
 
-let result = await process(provider: MyProvider())`}
-  kotlin={`// Generated
-interface DataProviderProtocol {
+let result = await process(
+    provider: MyProvider())`}
+  kotlin={`interface DataProvider {
     suspend fun fetch(key: String): String
 }
 
 suspend fun process(
-    provider: DataProviderProtocol
+    provider: DataProvider
 ): String
 
-// Usage
-class MyProvider : DataProviderProtocol {
-    override suspend fun fetch(key: String): String {
-        // can do async work here
+class MyProvider : DataProvider {
+    override suspend fun fetch(
+        key: String
+    ): String {
         return "value for $key"
     }
 }
 
 val result = process(MyProvider())`}
-  typescript={`// Generated
-interface DataProvider {
+  java={`public interface DataProvider {
+    // Java 8+
+    CompletableFuture<String> fetch(
+        String key);
+}
+
+// Java 21+ (virtual threads)
+static String process(DataProvider provider)
+
+// Java 8+ (CompletableFuture)
+static CompletableFuture<String> process(
+    DataProvider provider)
+
+String result = process(key ->
+    CompletableFuture.completedFuture(
+        "value for " + key));`}
+  typescript={`interface DataProvider {
     fetch(key: string): Promise<string>
 }
 
-declare async function process(
+async function process(
     provider: DataProvider
 ): Promise<string>
 
-// Usage
-const provider: DataProvider = {
+const result = await process({
     async fetch(key) {
-        // can do async work here
         return \`value for \${key}\`
     }
-}
-
-const result = await process(provider)`}
+})`}
 />
 
 ### Storing Traits
@@ -323,7 +361,7 @@ const result = await process(provider)`}
 Trait objects can be stored in class fields for later use. The target language object remains alive as long as the Rust class holds the reference.
 
 <CodeComparison
-  title="Storing trait objects"
+  title=""
   rust={`pub struct Engine {
     logger: Box<dyn Logger>,
 }
@@ -338,40 +376,41 @@ impl Engine {
         self.logger.log("Working...");
     }
 }`}
-  swift={`// Generated
-public class Engine {
-    public init(logger: LoggerProtocol)
+  swift={`public class Engine {
+    public init(logger: Logger)
     public func doWork()
 }
 
-// Usage
 let engine = Engine(logger: MyLogger())
 engine.doWork()`}
-  kotlin={`// Generated
-class Engine(logger: LoggerProtocol) {
+  kotlin={`class Engine(logger: Logger) {
     fun doWork()
 }
 
-// Usage
 val engine = Engine(MyLogger())
 engine.doWork()`}
-  typescript={`// Generated
-interface Logger {
+  java={`public final class Engine
+    implements AutoCloseable {
+    public Engine(Logger logger)
+    public void doWork()
+}
+
+Engine engine = new Engine(myLogger);
+engine.doWork();
+engine.close();`}
+  typescript={`interface Logger {
     log(message: string): void
 }
 
-declare class Engine {
-    private constructor()
+class Engine {
     static new(logger: Logger): Engine
     doWork(): void
     dispose(): void
 }
 
-// Usage
-const logger: Logger = {
+const engine = Engine.new({
     log(message) { console.log(message) }
-}
-const engine = Engine.new(logger)
+})
 engine.doWork()
 engine.dispose()`}
 />

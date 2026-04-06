@@ -10,9 +10,9 @@
 {%- else %}
 {{ self::kdoc_block(doc, "") }}data class {{ class_name }}(
 {%- for field in fields %}
-{{ self::kdoc_block(field.doc, "    ") }}    val {{ field.name }}: {{ field.kotlin_type }}{% if field.has_default() %} = {{ field.default_expr() }}{% endif %}{% if !loop.last %},{% endif %}
+{{ self::kdoc_block(field.doc, "    ") }}    {% if is_error && field.name == "message" %}override {% endif %}val {{ field.name }}: {{ field.kotlin_type }}{% if field.has_default() %} = {{ field.default_expr() }}{% endif %}{% if !loop.last %},{% endif %}
 {%- endfor %}
-) {
+) {% if is_error %}: Exception({% match message_field_name %}{% when Some with (message_field_name) %}{{ message_field_name }}{% when None %}""{% endmatch %}){% endif %}{
     companion object {
 {%- if is_blittable %}
         const val SIZE_BYTES: Int = {{ struct_size }}

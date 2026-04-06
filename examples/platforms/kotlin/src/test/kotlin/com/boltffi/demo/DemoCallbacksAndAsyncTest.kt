@@ -75,6 +75,20 @@ class DemoCallbacksAndAsyncTest {
             override fun mapStatus(status: Status): Status = if (status == Status.PENDING) Status.ACTIVE else Status.INACTIVE
         }
         val flipper = makeStatusFlipper()
+        val messageFormatter = object : MessageFormatter {
+            override fun formatMessage(scope: String, message: String): String = "$scope::${message.uppercase()}"
+        }
+        val optionalMessageCallback = object : OptionalMessageCallback {
+            override fun findMessage(key: Int): String? = key.takeIf { it > 0 }?.let { "message:$it" }
+        }
+        val resultMessageCallback = object : ResultMessageCallback {
+            override fun renderMessage(key: Int): String {
+                if (key < 0) {
+                    throw MathError.NegativeInput
+                }
+                return "message:$key"
+            }
+        }
         val multiMethod = object : MultiMethodCallback {
             override fun methodA(x: Int): Int = x + 1
             override fun methodB(x: Int, y: Int): Int = x * y
@@ -116,6 +130,17 @@ class DemoCallbacksAndAsyncTest {
         assertEquals(Status.ACTIVE, mapStatus(statusMapper, Status.PENDING))
         assertEquals(Status.INACTIVE, flipper.mapStatus(Status.ACTIVE))
         assertEquals(Status.PENDING, mapStatus(flipper, Status.INACTIVE))
+        assertEquals("sync::BORROWED STRINGS", formatMessageWithCallback(messageFormatter, "sync", "borrowed strings"))
+        assertEquals("boxed::BORROWED STRINGS", formatMessageWithBoxedCallback(messageFormatter, "boxed", "borrowed strings"))
+        assertEquals("optional::BORROWED STRINGS", formatMessageWithOptionalCallback(messageFormatter, "optional", "borrowed strings"))
+        assertEquals("fallback::message", formatMessageWithOptionalCallback(null, "fallback", "message"))
+        val prefixer = makeMessagePrefixer("prefix")
+        assertEquals("prefix::scope::message", prefixer.formatMessage("scope", "message"))
+        assertEquals("prefix::sync::formatter", formatMessageWithCallback(prefixer, "sync", "formatter"))
+        assertEquals("message:7", invokeOptionalMessageCallback(optionalMessageCallback, 7))
+        assertNull(invokeOptionalMessageCallback(optionalMessageCallback, 0))
+        assertEquals("message:8", invokeResultMessageCallback(resultMessageCallback, 8))
+        assertEquals(MathError.NegativeInput, assertFailsWith<MathError> { invokeResultMessageCallback(resultMessageCallback, -1) })
         assertContentEquals(intArrayOf(1, 4, 9), processVec(vecProcessor, intArrayOf(1, 2, 3)))
         assertEquals(21, invokeMultiMethod(multiMethod, 3, 4))
         assertEquals(21, invokeMultiMethodBoxed(multiMethod, 3, 4))
@@ -176,15 +201,56 @@ class DemoCallbacksAndAsyncTest {
             val asyncFetcher = object : AsyncFetcher {
                 override suspend fun fetchValue(key: Int): Int = key * 100
                 override suspend fun fetchString(input: String): String = input.uppercase()
+                override suspend fun fetchJoinedMessage(scope: String, message: String): String =
+                    "$scope::${message.uppercase()}"
+            }
+            val asyncPointTransformer = object : AsyncPointTransformer {
+                override suspend fun transformPoint(point: Point): Point = Point(point.x + 50.0, point.y + 60.0)
             }
             val asyncOptionFetcher = object : AsyncOptionFetcher {
                 override suspend fun find(key: Int): Long? = key.takeIf { it > 0 }?.toLong()?.times(1000L)
             }
+            val asyncOptionalMessageFetcher = object : AsyncOptionalMessageFetcher {
+                override suspend fun findMessage(key: Int): String? = key.takeIf { it > 0 }?.let { "async-message:$it" }
+            }
+            val asyncResultFormatter = object : AsyncResultFormatter {
+                override suspend fun renderMessage(scope: String, message: String): String {
+                    if (scope.isEmpty()) {
+                        throw MathError.NegativeInput
+                    }
+                    return "$scope::${message.uppercase()}"
+                }
+
+                override suspend fun transformPoint(point: Point, status: Status): Point {
+                    if (status == Status.INACTIVE) {
+                        throw MathError.NegativeInput
+                    }
+                    return Point(point.x + 500.0, point.y + 600.0)
+                }
+            }
 
             assertEquals(500, fetchWithAsyncCallback(asyncFetcher, 5))
             assertEquals("BOLTFFI", fetchStringWithAsyncCallback(asyncFetcher, "boltffi"))
+            assertEquals("async::BORROWED STRINGS", fetchJoinedMessageWithAsyncCallback(asyncFetcher, "async", "borrowed strings"))
+            assertPointEquals(51.0, 62.0, transformPointWithAsyncCallback(asyncPointTransformer, Point(1.0, 2.0)))
             assertEquals(7_000L, invokeAsyncOptionFetcher(asyncOptionFetcher, 7))
             assertNull(invokeAsyncOptionFetcher(asyncOptionFetcher, 0))
+            assertEquals("async-message:9", invokeAsyncOptionalMessageFetcher(asyncOptionalMessageFetcher, 9))
+            assertNull(invokeAsyncOptionalMessageFetcher(asyncOptionalMessageFetcher, 0))
+            assertEquals("async::RESULT", renderMessageWithAsyncResultCallback(asyncResultFormatter, "async", "result"))
+            assertPointEquals(503.0, 604.0, transformPointWithAsyncResultCallback(asyncResultFormatter, Point(3.0, 4.0), Status.ACTIVE))
+            assertEquals(
+                MathError.NegativeInput,
+                assertFailsWith<MathError> {
+                    renderMessageWithAsyncResultCallback(asyncResultFormatter, "", "result")
+                }
+            )
+            assertEquals(
+                MathError.NegativeInput,
+                assertFailsWith<MathError> {
+                    transformPointWithAsyncResultCallback(asyncResultFormatter, Point(3.0, 4.0), Status.INACTIVE)
+                }
+            )
         }
     }
 }

@@ -5,7 +5,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.CompletableFuture;
 {%- endif %}
 
-public final class {{ class.class_name }} implements AutoCloseable {
+{{ self::javadoc_block(class.doc, "") }}public final class {{ class.class_name }} implements AutoCloseable {
     private final long handle;
     private final AtomicBoolean closed = new AtomicBoolean(false);
 
@@ -14,7 +14,7 @@ public final class {{ class.class_name }} implements AutoCloseable {
     }
 {%- for ctor in class.constructors %}{% if !ctor.is_factory() %}
 
-    public {{ class.class_name }}({% for param in ctor.params %}{{ param.java_type }} {{ param.name }}{% if !loop.last %}, {% endif %}{% endfor %}) {
+{{ self::javadoc_block(ctor.doc, "    ") }}    public {{ class.class_name }}({% for param in ctor.params %}{{ param.java_type }} {{ param.name }}{% if !loop.last %}, {% endif %}{% endfor %}) {
         this({{ class.class_name }}.createHandle{{ loop.index0 }}({% for param in ctor.params %}{{ param.name }}{% if !loop.last %}, {% endif %}{% endfor %}));
     }
 
@@ -63,7 +63,7 @@ public final class {{ class.class_name }} implements AutoCloseable {
 {%- if class.has_factory_constructors() || class.has_static_methods() || class.has_async_methods() %}
 {%- for ctor in class.constructors %}{% if ctor.is_factory() %}
 
-    public static {{ class.class_name }} {{ ctor.name }}({% for param in ctor.params %}{{ param.java_type }} {{ param.name }}{% if !loop.last %}, {% endif %}{% endfor %}) {
+{{ self::javadoc_block(ctor.doc, "    ") }}    public static {{ class.class_name }} {{ ctor.name }}({% for param in ctor.params %}{{ param.java_type }} {{ param.name }}{% if !loop.last %}, {% endif %}{% endfor %}) {
 {%- for binding in ctor.input_bindings.direct_composites %}
         {{ binding.declaration() }};
 {%- endfor %}
@@ -97,7 +97,7 @@ public final class {{ class.class_name }} implements AutoCloseable {
 {%- endif %}{% endfor %}
 {%- for method in class.methods %}{% if method.is_static && !method.is_async() %}
 
-    public static {{ method.return_type }} {{ method.name }}({% for param in method.params %}{{ param.java_type }} {{ param.name }}{% if !loop.last %}, {% endif %}{% endfor %}) {
+{{ self::javadoc_block(method.doc, "    ") }}    public static {{ method.return_type }} {{ method.name }}({% for param in method.params %}{{ param.java_type }} {{ param.name }}{% if !loop.last %}, {% endif %}{% endfor %}) {
 {%- for binding in method.input_bindings.direct_composites %}
         {{ binding.declaration() }};
 {%- endfor %}
@@ -130,7 +130,9 @@ public final class {{ class.class_name }} implements AutoCloseable {
         if (_buf == null) throw new RuntimeException("FFI call returned null buffer");
         WireReader reader = new WireReader(_buf);
         if (reader.readI8() != 0) {
-{%- if method.return_plan.result_has_typed_exception() %}
+{%- if method.return_plan.result_err_throws_directly() %}
+            throw {{ method.return_plan.result_err_decode() }};
+{%- elif method.return_plan.result_has_typed_exception() %}
             throw new {{ method.return_plan.result_err_exception_class() }}({{ method.return_plan.result_err_decode() }});
 {%- elif method.return_plan.result_err_is_string() %}
             throw new RuntimeException({{ method.return_plan.result_err_decode() }});
@@ -180,7 +182,9 @@ public final class {{ class.class_name }} implements AutoCloseable {
             if (_buf == null) throw new RuntimeException("FFI call returned null buffer");
             WireReader reader = new WireReader(_buf);
             if (reader.readI8() != 0) {
-{%- if method.return_plan.result_has_typed_exception() %}
+{%- if method.return_plan.result_err_throws_directly() %}
+                throw {{ method.return_plan.result_err_decode() }};
+{%- elif method.return_plan.result_has_typed_exception() %}
                 throw new {{ method.return_plan.result_err_exception_class() }}({{ method.return_plan.result_err_decode() }});
 {%- elif method.return_plan.result_err_is_string() %}
                 throw new RuntimeException({{ method.return_plan.result_err_decode() }});
@@ -201,18 +205,18 @@ public final class {{ class.class_name }} implements AutoCloseable {
 {%- let ac = method.async_call.as_ref().unwrap() %}
 {% if async_mode.is_virtual_thread() %}
 {%- if ac.complete_return_plan.is_void() %}
-    public{% if method.is_static %} static{% endif %} void {{ method.name }}({% for param in method.params %}{{ param.java_type }} {{ param.name }}{% if !loop.last %}, {% endif %}{% endfor %}) {
+{{ self::javadoc_block(method.doc, "    ") }}    public{% if method.is_static %} static{% endif %} void {{ method.name }}({% for param in method.params %}{{ param.java_type }} {{ param.name }}{% if !loop.last %}, {% endif %}{% endfor %}) {
         BoltFFIAsync.callAsyncVoid(
 {%- else %}
-    public{% if method.is_static %} static{% endif %} {{ method.return_type }} {{ method.name }}({% for param in method.params %}{{ param.java_type }} {{ param.name }}{% if !loop.last %}, {% endif %}{% endfor %}) {
+{{ self::javadoc_block(method.doc, "    ") }}    public{% if method.is_static %} static{% endif %} {{ method.return_type }} {{ method.name }}({% for param in method.params %}{{ param.java_type }} {{ param.name }}{% if !loop.last %}, {% endif %}{% endfor %}) {
         return BoltFFIAsync.callAsync(
 {%- endif %}
 {%- else %}
 {%- if ac.complete_return_plan.is_void() %}
-    public{% if method.is_static %} static{% endif %} CompletableFuture<Void> {{ method.name }}({% for param in method.params %}{{ param.java_type }} {{ param.name }}{% if !loop.last %}, {% endif %}{% endfor %}) {
+{{ self::javadoc_block(method.doc, "    ") }}    public{% if method.is_static %} static{% endif %} CompletableFuture<Void> {{ method.name }}({% for param in method.params %}{{ param.java_type }} {{ param.name }}{% if !loop.last %}, {% endif %}{% endfor %}) {
         return BoltFFIAsync.callAsyncVoid(
 {%- else %}
-    public{% if method.is_static %} static{% endif %} CompletableFuture<{{ method.boxed_return_type() }}> {{ method.name }}({% for param in method.params %}{{ param.java_type }} {{ param.name }}{% if !loop.last %}, {% endif %}{% endfor %}) {
+{{ self::javadoc_block(method.doc, "    ") }}    public{% if method.is_static %} static{% endif %} CompletableFuture<{{ method.boxed_return_type() }}> {{ method.name }}({% for param in method.params %}{{ param.java_type }} {{ param.name }}{% if !loop.last %}, {% endif %}{% endfor %}) {
         return BoltFFIAsync.callAsync(
 {%- endif %}
 {%- endif %}
@@ -269,7 +273,9 @@ public final class {{ class.class_name }} implements AutoCloseable {
                     if (_buf == null) throw new RuntimeException("FFI call returned null buffer");
                     WireReader reader = new WireReader(_buf);
                     if (reader.readI8() != 0) {
-{%- if ac.complete_return_plan.result_has_typed_exception() %}
+{%- if ac.complete_return_plan.result_err_throws_directly() %}
+                        throw {{ ac.complete_return_plan.result_err_decode() }};
+{%- elif ac.complete_return_plan.result_has_typed_exception() %}
                         throw new {{ ac.complete_return_plan.result_err_exception_class() }}({{ ac.complete_return_plan.result_err_decode() }});
 {%- elif ac.complete_return_plan.result_err_is_string() %}
                         throw new RuntimeException({{ ac.complete_return_plan.result_err_decode() }});
@@ -292,7 +298,7 @@ public final class {{ class.class_name }} implements AutoCloseable {
 {%- endif %}
 {%- for method in class.methods %}{% if !method.is_static && !method.is_async() %}
 
-    public {{ method.return_type }} {{ method.name }}({% for param in method.params %}{{ param.java_type }} {{ param.name }}{% if !loop.last %}, {% endif %}{% endfor %}) {
+{{ self::javadoc_block(method.doc, "    ") }}    public {{ method.return_type }} {{ method.name }}({% for param in method.params %}{{ param.java_type }} {{ param.name }}{% if !loop.last %}, {% endif %}{% endfor %}) {
 {%- for binding in method.input_bindings.direct_composites %}
         {{ binding.declaration() }};
 {%- endfor %}
@@ -325,7 +331,9 @@ public final class {{ class.class_name }} implements AutoCloseable {
         if (_buf == null) throw new RuntimeException("FFI call returned null buffer");
         WireReader reader = new WireReader(_buf);
         if (reader.readI8() != 0) {
-{%- if method.return_plan.result_has_typed_exception() %}
+{%- if method.return_plan.result_err_throws_directly() %}
+            throw {{ method.return_plan.result_err_decode() }};
+{%- elif method.return_plan.result_has_typed_exception() %}
             throw new {{ method.return_plan.result_err_exception_class() }}({{ method.return_plan.result_err_decode() }});
 {%- elif method.return_plan.result_err_is_string() %}
             throw new RuntimeException({{ method.return_plan.result_err_decode() }});
@@ -375,7 +383,9 @@ public final class {{ class.class_name }} implements AutoCloseable {
             if (_buf == null) throw new RuntimeException("FFI call returned null buffer");
             WireReader reader = new WireReader(_buf);
             if (reader.readI8() != 0) {
-{%- if method.return_plan.result_has_typed_exception() %}
+{%- if method.return_plan.result_err_throws_directly() %}
+                throw {{ method.return_plan.result_err_decode() }};
+{%- elif method.return_plan.result_has_typed_exception() %}
                 throw new {{ method.return_plan.result_err_exception_class() }}({{ method.return_plan.result_err_decode() }});
 {%- elif method.return_plan.result_err_is_string() %}
                 throw new RuntimeException({{ method.return_plan.result_err_decode() }});
@@ -392,4 +402,54 @@ public final class {{ class.class_name }} implements AutoCloseable {
 {%- endif %}
     }
 {%- endif %}{% endfor %}
+{%- for stream in class.streams %}
+{%- match stream.mode %}
+{%- when crate::render::java::plan::JavaStreamMode::Async %}
+
+{{ self::javadoc_block(stream.doc, "    ") }}    public StreamSubscription<{{ stream.item_type }}> {{ stream.name }}(java.util.function.Consumer<{{ stream.item_type }}> callback) {
+        long subscription = Native.{{ stream.subscribe }}(handle);
+        if (subscription == 0L) return StreamSubscription.callback(() -> {});
+        BoltFFIStreamContext context = new BoltFFIStreamContext(
+            subscription, 16L,
+            Native::{{ stream.pop_batch }},
+            Native::{{ stream.poll }},
+            Native::{{ stream.unsubscribe }},
+            Native::{{ stream.free }},
+            _bytes -> { for ({{ stream.item_type }} item : {{ stream.pop_batch_items_expr }}) callback.accept(item); },
+            () -> {}
+        );
+        context.start();
+        return StreamSubscription.callback(context::requestTermination);
+    }
+{%- when crate::render::java::plan::JavaStreamMode::Batch %}
+
+{{ self::javadoc_block(stream.doc, "    ") }}    public StreamSubscription<{{ stream.item_type }}> {{ stream.name }}() {
+        return StreamSubscription.batch(
+            Native.{{ stream.subscribe }}(handle),
+            Native::{{ stream.pop_batch }},
+            Native::{{ stream.wait }},
+            Native::{{ stream.unsubscribe }},
+            Native::{{ stream.free }},
+            _bytes -> {{ stream.pop_batch_items_expr }}
+        );
+    }
+{%- when crate::render::java::plan::JavaStreamMode::Callback %}
+
+{{ self::javadoc_block(stream.doc, "    ") }}    public StreamSubscription<{{ stream.item_type }}> {{ stream.name }}(java.util.function.Consumer<{{ stream.item_type }}> callback) {
+        long subscription = Native.{{ stream.subscribe }}(handle);
+        if (subscription == 0L) return StreamSubscription.callback(() -> {});
+        BoltFFIStreamContext context = new BoltFFIStreamContext(
+            subscription, 16L,
+            Native::{{ stream.pop_batch }},
+            Native::{{ stream.poll }},
+            Native::{{ stream.unsubscribe }},
+            Native::{{ stream.free }},
+            _bytes -> { for ({{ stream.item_type }} item : {{ stream.pop_batch_items_expr }}) callback.accept(item); },
+            () -> {}
+        );
+        context.start();
+        return StreamSubscription.callback(context::requestTermination);
+    }
+{%- endmatch %}
+{%- endfor %}
 }

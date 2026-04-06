@@ -63,6 +63,7 @@ pub struct PackJavaOptions {
     pub release: bool,
     pub regenerate: bool,
     pub no_build: bool,
+    pub experimental: bool,
     pub cargo_args: Vec<String>,
 }
 
@@ -132,6 +133,7 @@ fn pack_all(config: &Config, options: PackAllOptions, reporter: &Reporter) -> Re
                 release: options.release,
                 regenerate: options.regenerate,
                 no_build: options.no_build,
+                experimental: options.experimental,
                 cargo_args: options.cargo_args.clone(),
             },
             reporter,
@@ -497,7 +499,7 @@ fn pack_java(config: &Config, options: PackJavaOptions, reporter: &Reporter) -> 
             GenerateOptions {
                 target: GenerateTarget::Java,
                 output: Some(config.java_jvm_output()),
-                experimental: true,
+                experimental: options.experimental,
             },
         )?;
         step.finish_success();
@@ -512,7 +514,7 @@ fn pack_java(config: &Config, options: PackJavaOptions, reporter: &Reporter) -> 
 }
 
 fn generate_java_header(config: &Config) -> Result<()> {
-    use boltffi_bindgen::{CHeaderLowerer, ScanFeatures, ir, scan_crate_with_options};
+    use boltffi_bindgen::{CHeaderLowerer, ir, scan_crate_with_pointer_width};
 
     let output_dir = config.java_jvm_output().join("jni");
     let output_path = output_dir.join(format!("{}.h", config.library_name()));
@@ -532,18 +534,11 @@ fn generate_java_header(config: &Config) -> Result<()> {
         64 => Some(64),
         _ => None,
     };
-    let mut module = scan_crate_with_options(
-        &crate_dir,
-        crate_name,
-        host_pointer_width_bits,
-        ScanFeatures {
-            record_methods: config.record_methods_enabled(),
-        },
-    )
-    .map_err(|error| CliError::CommandFailed {
-        command: format!("scan_crate: {}", error),
-        status: None,
-    })?;
+    let mut module = scan_crate_with_pointer_width(&crate_dir, crate_name, host_pointer_width_bits)
+        .map_err(|error| CliError::CommandFailed {
+            command: format!("scan_crate: {}", error),
+            status: None,
+        })?;
 
     let contract = ir::build_contract(&mut module);
     let abi = ir::Lowerer::new(&contract).to_abi_contract();

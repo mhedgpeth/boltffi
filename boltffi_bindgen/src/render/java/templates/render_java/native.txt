@@ -18,7 +18,7 @@ final class Native {
 
     @SuppressWarnings("unused")
     static void boltffiFutureContinuationCallback(long handle, byte pollResult) {
-{%- if module.has_async() %}
+{%- if module.has_async() || module.has_streams() %}
         BoltFFIContinuationMap.complete(handle, pollResult);
 {%- endif %}
     }
@@ -87,6 +87,14 @@ final class Native {
     static native {{ method.native_return_type() }} {{ method.ffi_name }}(long handle{% if !method.params.is_empty() %}, {% endif %}{% for param in method.params %}{{ param.native_type }} {{ param.name }}{% if !loop.last %}, {% endif %}{% endfor %});
 {%- endif %}
 {%- endif %}
+{%- endfor %}
+{%- for stream in class.streams %}
+    static native long {{ stream.subscribe }}(long handle);
+    static native void {{ stream.poll }}(long subscription, long contHandle);
+    static native byte[] {{ stream.pop_batch }}(long subscription, long maxCount);
+    static native int {{ stream.wait }}(long subscription, int timeout);
+    static native void {{ stream.unsubscribe }}(long subscription);
+    static native void {{ stream.free }}(long subscription);
 {%- endfor %}
 {%- endfor %}
 {%- for invoker in module.async_callback_invokers %}

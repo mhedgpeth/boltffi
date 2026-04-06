@@ -249,7 +249,7 @@ impl<Policy: ContinuationSignalPolicy> Default for ContinuationScheduler<Policy>
 
 #[cfg(test)]
 mod tests {
-    use std::sync::{Mutex, OnceLock};
+    use std::sync::{Mutex, MutexGuard, OnceLock};
 
     use super::{ContinuationScheduler, ContinuationSignalPolicy};
 
@@ -284,21 +284,32 @@ mod tests {
         INVOCATION_LOG.get_or_init(|| Mutex::new(Vec::new()))
     }
 
+    fn test_guard() -> &'static Mutex<()> {
+        static TEST_GUARD: OnceLock<Mutex<()>> = OnceLock::new();
+        TEST_GUARD.get_or_init(|| Mutex::new(()))
+    }
+
+    fn lock_unpoisoned<T>(mutex: &'static Mutex<T>) -> MutexGuard<'static, T> {
+        match mutex.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        }
+    }
+
     extern "C" fn test_callback(callback_data: u64, signal: TestSignal) {
-        invocation_log()
-            .lock()
-            .unwrap()
-            .push((callback_data, signal));
+        lock_unpoisoned(invocation_log()).push((callback_data, signal));
     }
 
     fn take_invocations() -> Vec<(u64, TestSignal)> {
-        let mut invocation_log = invocation_log().lock().unwrap();
+        let mut invocation_log = lock_unpoisoned(invocation_log());
         std::mem::take(&mut *invocation_log)
     }
 
     #[test]
     fn wake_after_store_invokes_ready_signal() {
+        let _guard = lock_unpoisoned(test_guard());
         let scheduler = ContinuationScheduler::<TestSignalPolicy>::new();
+        take_invocations();
 
         scheduler.store_continuation(test_callback, 7);
         scheduler.wake();
@@ -308,7 +319,9 @@ mod tests {
 
     #[test]
     fn wake_before_store_invokes_ready_signal_immediately() {
+        let _guard = lock_unpoisoned(test_guard());
         let scheduler = ContinuationScheduler::<TestSignalPolicy>::new();
+        take_invocations();
 
         scheduler.wake();
         scheduler.store_continuation(test_callback, 9);
@@ -318,7 +331,9 @@ mod tests {
 
     #[test]
     fn replacing_stored_continuation_invokes_displaced_signal() {
+        let _guard = lock_unpoisoned(test_guard());
         let scheduler = ContinuationScheduler::<TestSignalPolicy>::new();
+        take_invocations();
 
         scheduler.store_continuation(test_callback, 3);
         scheduler.store_continuation(test_callback, 4);
@@ -328,7 +343,9 @@ mod tests {
 
     #[test]
     fn cancellation_invokes_cancelled_signal() {
+        let _guard = lock_unpoisoned(test_guard());
         let scheduler = ContinuationScheduler::<TestSignalPolicy>::new();
+        take_invocations();
 
         scheduler.store_continuation(test_callback, 11);
         scheduler.cancel();

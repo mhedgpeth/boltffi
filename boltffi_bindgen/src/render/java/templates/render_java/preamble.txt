@@ -13,11 +13,11 @@ import java.util.function.IntFunction;
 {%- if module.uses_completable_future() %}
 import java.util.concurrent.CompletableFuture;
 {%- endif %}
-{%- if module.has_async() || module.has_async_callbacks() %}
+{%- if module.has_async() || module.has_async_callbacks() || module.has_streams() %}
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
 {%- endif %}
-{%- if module.has_async() %}
+{%- if module.has_async() || module.has_streams() %}
 import java.util.concurrent.atomic.AtomicReference;
 {%- endif %}
 
@@ -427,6 +427,10 @@ final class WireReader {
         return result;
     }
 
+    static <T> List<T> readList(byte[] data, IntFunction<T> decoder) {
+        return new WireReader(data).readList(decoder);
+    }
+
     static WireReader fromBuffer(ByteBuffer buffer) {
         byte[] bytes = new byte[buffer.remaining()];
         buffer.get(bytes);
@@ -448,6 +452,53 @@ final class WireReader {
         buf.putInt(values.length);
         for (int v : values) buf.putInt(v);
         return buf.array();
+    }
+
+    static List<Boolean> readPackedBools(byte[] bytes) {
+        List<Boolean> result = new ArrayList<>(bytes.length);
+        for (byte b : bytes) result.add(b != 0);
+        return result;
+    }
+
+    static List<Byte> readPackedBytes(byte[] bytes) {
+        List<Byte> result = new ArrayList<>(bytes.length);
+        for (byte b : bytes) result.add(b);
+        return result;
+    }
+
+    static List<Short> readPackedShorts(byte[] bytes) {
+        java.nio.ShortBuffer buf = ByteBuffer.wrap(bytes).order(ByteOrder.nativeOrder()).asShortBuffer();
+        List<Short> result = new ArrayList<>(buf.remaining());
+        while (buf.hasRemaining()) result.add(buf.get());
+        return result;
+    }
+
+    static List<Integer> readPackedInts(byte[] bytes) {
+        java.nio.IntBuffer buf = ByteBuffer.wrap(bytes).order(ByteOrder.nativeOrder()).asIntBuffer();
+        List<Integer> result = new ArrayList<>(buf.remaining());
+        while (buf.hasRemaining()) result.add(buf.get());
+        return result;
+    }
+
+    static List<Long> readPackedLongs(byte[] bytes) {
+        java.nio.LongBuffer buf = ByteBuffer.wrap(bytes).order(ByteOrder.nativeOrder()).asLongBuffer();
+        List<Long> result = new ArrayList<>(buf.remaining());
+        while (buf.hasRemaining()) result.add(buf.get());
+        return result;
+    }
+
+    static List<Float> readPackedFloats(byte[] bytes) {
+        java.nio.FloatBuffer buf = ByteBuffer.wrap(bytes).order(ByteOrder.nativeOrder()).asFloatBuffer();
+        List<Float> result = new ArrayList<>(buf.remaining());
+        while (buf.hasRemaining()) result.add(buf.get());
+        return result;
+    }
+
+    static List<Double> readPackedDoubles(byte[] bytes) {
+        java.nio.DoubleBuffer buf = ByteBuffer.wrap(bytes).order(ByteOrder.nativeOrder()).asDoubleBuffer();
+        List<Double> result = new ArrayList<>(buf.remaining());
+        while (buf.hasRemaining()) result.add(buf.get());
+        return result;
     }
 }
 {% if module.needs_wire_writer() %}
@@ -710,7 +761,7 @@ final class BoltFFIResult<Ok, Err> {
         return errValue;
     }
 }
-{%- if module.has_async() %}
+{%- if module.has_async() || module.has_streams() %}
 final class BoltFFIContinuationSignal {
     enum DeliveryState { WAITING, PENDING_DELIVERY, READY_DELIVERY, CANCELLED }
 
@@ -1332,4 +1383,367 @@ final class BoltFFIAsync {
     }
 }
 {%- endif %}
+{%- endif %}
+{%- if module.has_streams() %}
+final class BoltFFIStreamContext {
+    private static final byte POLL_CLOSED = 1;
+    private final long subscription;
+    private final long batchSize;
+    private final java.util.function.BiFunction<Long, Long, byte[]> popBatch;
+    private final java.util.function.BiConsumer<Long, Long> poll;
+    private final java.util.function.LongConsumer unsubscribe;
+    private final java.util.function.LongConsumer freeFn;
+    private final java.util.function.Consumer<byte[]> processItems;
+    private final Runnable finish;
+    private final java.util.concurrent.atomic.AtomicInteger lifecycleTag = new java.util.concurrent.atomic.AtomicInteger(0);
+    private final java.util.concurrent.atomic.AtomicInteger callbackTag = new java.util.concurrent.atomic.AtomicInteger(0);
+
+    BoltFFIStreamContext(
+            long subscription, long batchSize,
+            java.util.function.BiFunction<Long, Long, byte[]> popBatch,
+            java.util.function.BiConsumer<Long, Long> poll,
+            java.util.function.LongConsumer unsubscribe,
+            java.util.function.LongConsumer freeFn,
+            java.util.function.Consumer<byte[]> processItems,
+            Runnable finish) {
+        this.subscription = subscription;
+        this.batchSize = batchSize;
+        this.popBatch = popBatch;
+        this.poll = poll;
+        this.unsubscribe = unsubscribe;
+        this.freeFn = freeFn;
+        this.processItems = processItems;
+        this.finish = finish;
+    }
+
+    void start() {
+        registerPoll();
+    }
+
+    void requestTermination() {
+        boolean started = lifecycleTag.compareAndSet(0, 1);
+        if (started) {
+            unsubscribe.accept(subscription);
+            lifecycleTag.compareAndSet(1, 2);
+        }
+        attemptFinalize();
+    }
+
+    private void attemptFinalize() {
+        if (!callbackTag.compareAndSet(0, 0)) return;
+        if (!lifecycleTag.compareAndSet(2, 3)) return;
+        freeFn.accept(subscription);
+        finish.run();
+    }
+
+    private void registerPoll() {
+        if (!lifecycleTag.compareAndSet(0, 0)) {
+            attemptFinalize();
+            return;
+        }
+        CompletableFuture<Byte> future = new CompletableFuture<>();
+        future.thenAccept(this::handlePoll);
+        long contHandle = BoltFFIContinuationMap.insert(future);
+        poll.accept(subscription, contHandle);
+    }
+
+    private void handlePoll(byte pollResult) {
+        boolean isClosed = pollResult == POLL_CLOSED;
+        if (!callbackTag.compareAndSet(0, 1)) {
+            attemptFinalize();
+            return;
+        }
+        try {
+            if (!lifecycleTag.compareAndSet(0, 0)) return;
+            while (true) {
+                byte[] bytes = popBatch.apply(subscription, batchSize);
+                if (bytes == null) throw new RuntimeException("BoltFFI: stream pop_batch failed (null)");
+                if (bytes.length == 0) break;
+                processItems.accept(bytes);
+            }
+        } finally {
+            callbackTag.compareAndSet(1, 0);
+            attemptFinalize();
+        }
+        if (isClosed) {
+            requestTermination();
+            return;
+        }
+        if (!lifecycleTag.compareAndSet(0, 0)) return;
+        registerPoll();
+    }
+
+}
+
+/**
+ * Represents a stream subscription returned by a generated Java binding.
+ *
+ * <p>All subscriptions can be cancelled or closed. Some subscriptions deliver items through a
+ * callback and only support lifecycle operations. Batch subscriptions keep items buffered on the
+ * native side and additionally support waiting, explicit batch reads, and
+ * {@code Flow.Publisher} adaptation.
+ */
+final class StreamSubscription<T> implements AutoCloseable {
+    private enum Mode {
+        BATCH,
+        CALLBACK
+    }
+
+    private final java.util.concurrent.atomic.AtomicBoolean closed = new java.util.concurrent.atomic.AtomicBoolean(false);
+    private final java.util.concurrent.atomic.AtomicBoolean publisherAttached = new java.util.concurrent.atomic.AtomicBoolean(false);
+    private final Mode mode;
+    private final long handle;
+    private final Runnable cancelAction;
+    private final java.util.function.BiFunction<Long, Long, byte[]> popBatchFn;
+    private final java.util.function.BiFunction<Long, Integer, Integer> waitFn;
+    private final java.util.function.Function<byte[], java.util.List<T>> decodeItems;
+
+    private StreamSubscription(
+            Mode mode,
+            long handle,
+            Runnable cancelAction,
+            java.util.function.BiFunction<Long, Long, byte[]> popBatchFn,
+            java.util.function.BiFunction<Long, Integer, Integer> waitFn,
+            java.util.function.Function<byte[], java.util.List<T>> decodeItems) {
+        this.mode = mode;
+        this.handle = handle;
+        this.cancelAction = cancelAction;
+        this.popBatchFn = popBatchFn;
+        this.waitFn = waitFn;
+        this.decodeItems = decodeItems;
+    }
+
+    static <T> StreamSubscription<T> callback(Runnable cancelAction) {
+        return new StreamSubscription<>(Mode.CALLBACK, 0L, cancelAction, null, null, null);
+    }
+
+    static <T> StreamSubscription<T> batch(
+            long handle,
+            java.util.function.BiFunction<Long, Long, byte[]> popBatchFn,
+            java.util.function.BiFunction<Long, Integer, Integer> waitFn,
+            java.util.function.LongConsumer unsubscribeFn,
+            java.util.function.LongConsumer freeFn,
+            java.util.function.Function<byte[], java.util.List<T>> decodeItems) {
+        return new StreamSubscription<>(
+            Mode.BATCH,
+            handle,
+            () -> {
+                if (handle == 0L) return;
+                unsubscribeFn.accept(handle);
+                freeFn.accept(handle);
+            },
+            popBatchFn,
+            waitFn,
+            decodeItems
+        );
+    }
+
+    /**
+     * Reads and removes up to {@code maxCount} items that are currently buffered for this
+     * subscription.
+     *
+     * <p>If no items are buffered, this returns an empty list immediately. This method is only
+     * valid for batch subscriptions; callback-driven subscriptions throw
+     * {@link IllegalStateException} because their items are drained directly into the callback
+     * path instead of being exposed as pull-based batches.
+     */
+    public java.util.List<T> popBatch(long maxCount) {
+        requireBatchMode("popBatch");
+        if (handle == 0L) return java.util.Collections.emptyList();
+        byte[] _bytes = popBatchFn.apply(handle, maxCount);
+        if (_bytes == null) throw new RuntimeException("BoltFFI: stream pop_batch failed (null)");
+        if (_bytes.length == 0) return java.util.Collections.emptyList();
+        return decodeItems.apply(_bytes);
+    }
+
+    /**
+     * Blocks for up to {@code timeout} milliseconds waiting for new items to become available.
+     *
+     * <p>The returned value is the native wait result: a positive value means items are ready,
+     * {@code 0} means the wait timed out, and a negative value means the subscription was closed
+     * or unsubscribed. This method is only valid for batch subscriptions; callback-driven
+     * subscriptions throw {@link IllegalStateException}.
+     */
+    public int waitForItems(int timeout) {
+        requireBatchMode("waitForItems");
+        if (handle == 0L) return -1;
+        return waitFn.apply(handle, timeout);
+    }
+
+    /**
+     * Stops further delivery and releases the underlying native subscription.
+     *
+     * <p>After this call, no more items will be delivered. For batch subscriptions this also
+     * wakes any pending waits and releases the native handle. For callback-driven subscriptions
+     * it stops future callback delivery. Safe to call multiple times.
+     */
+    public void unsubscribe() {
+        close();
+    }
+
+    /**
+     * Cancels this subscription.
+     *
+     * <p>This is an alias for {@link #close()} so callers can use either cancellation-style or
+     * resource-style lifecycle management.
+     */
+    public void cancel() {
+        close();
+    }
+
+    /**
+     * Closes this subscription.
+     *
+     * <p>Batch subscriptions unsubscribe from the underlying native stream and free the native
+     * handle. Callback-driven subscriptions stop future callback delivery. Safe to call multiple
+     * times; only the first call has any effect. Intended for use with try-with-resources and any
+     * other code path that needs deterministic shutdown.
+     */
+    @Override
+    public void close() {
+        if (!closed.compareAndSet(false, true)) return;
+        cancelAction.run();
+    }
+
+{%- if module.java_version.supports_flow_api() %}
+    /**
+     * Exposes a batch subscription as a live {@link java.util.concurrent.Flow.Publisher}.
+     *
+     * <p>The publisher waits for new native items, drains them in batches, and forwards them to
+     * the subscriber according to requested demand until the subscription is closed. Only one
+     * publisher can be attached to a given subscription. This method is only valid for batch
+     * subscriptions; callback-driven subscriptions throw {@link IllegalStateException}.
+     */
+    public java.util.concurrent.Flow.Publisher<T> toPublisher() {
+        requireBatchMode("toPublisher");
+        return subscriber -> {
+            if (handle == 0L) {
+                subscriber.onSubscribe(new java.util.concurrent.Flow.Subscription() {
+                    public void request(long n) {}
+                    public void cancel() {}
+                });
+                subscriber.onComplete();
+                return;
+            }
+            if (!publisherAttached.compareAndSet(false, true)) {
+                subscriber.onSubscribe(new java.util.concurrent.Flow.Subscription() {
+                    public void request(long n) {}
+                    public void cancel() {}
+                });
+                subscriber.onError(new IllegalStateException("Stream publisher already attached"));
+                return;
+            }
+            final class PublisherSubscription implements java.util.concurrent.Flow.Subscription, Runnable {
+                private static final int WAIT_TIMEOUT_MILLIS = 100;
+                private final java.util.concurrent.atomic.AtomicBoolean done = new java.util.concurrent.atomic.AtomicBoolean(false);
+                private final java.util.concurrent.atomic.AtomicLong requested = new java.util.concurrent.atomic.AtomicLong(0L);
+                private final Object demandMonitor = new Object();
+                private final Thread worker = new Thread(this, "boltffi-stream-publisher");
+
+                void start() {
+                    worker.setDaemon(true);
+                    worker.start();
+                }
+
+                @Override
+                public void request(long n) {
+                    if (done.get()) return;
+                    if (n <= 0L) {
+                        fail(new IllegalArgumentException("Flow subscription request must be positive"));
+                        return;
+                    }
+                    addRequested(n);
+                    synchronized (demandMonitor) {
+                        demandMonitor.notifyAll();
+                    }
+                }
+
+                @Override
+                public void cancel() {
+                    if (!done.compareAndSet(false, true)) return;
+                    StreamSubscription.this.close();
+                    synchronized (demandMonitor) {
+                        demandMonitor.notifyAll();
+                    }
+                }
+
+                @Override
+                public void run() {
+                    try {
+                        while (!done.get()) {
+                            waitForDemand();
+                            if (done.get()) return;
+                            long batchSize = Math.max(1L, Math.min(requested.get(), 256L));
+                            byte[] bytes = popBatchFn.apply(handle, batchSize);
+                            if (bytes == null) throw new RuntimeException("BoltFFI: stream pop_batch failed (null)");
+                            if (bytes.length == 0) {
+                                int waitResult = waitFn.apply(handle, WAIT_TIMEOUT_MILLIS);
+                                if (waitResult < 0) {
+                                    complete();
+                                    return;
+                                }
+                                continue;
+                            }
+                            java.util.List<T> items = decodeItems.apply(bytes);
+                            for (T item : items) {
+                                if (done.get()) return;
+                                subscriber.onNext(item);
+                                consumeDemand();
+                            }
+                        }
+                    } catch (Throwable throwable) {
+                        fail(throwable);
+                    }
+                }
+
+                private void waitForDemand() throws InterruptedException {
+                    synchronized (demandMonitor) {
+                        while (!done.get() && requested.get() == 0L) {
+                            demandMonitor.wait();
+                        }
+                    }
+                }
+
+                private void addRequested(long value) {
+                    requested.updateAndGet(current -> {
+                        if (current == Long.MAX_VALUE) return Long.MAX_VALUE;
+                        long next = current + value;
+                        return next < 0L ? Long.MAX_VALUE : next;
+                    });
+                }
+
+                private void consumeDemand() {
+                    requested.updateAndGet(current -> current == Long.MAX_VALUE ? Long.MAX_VALUE : Math.max(0L, current - 1L));
+                }
+
+                private void complete() {
+                    if (!done.compareAndSet(false, true)) return;
+                    try {
+                        subscriber.onComplete();
+                    } finally {
+                        StreamSubscription.this.close();
+                    }
+                }
+
+                private void fail(Throwable throwable) {
+                    if (!done.compareAndSet(false, true)) return;
+                    try {
+                        subscriber.onError(throwable);
+                    } finally {
+                        StreamSubscription.this.close();
+                    }
+                }
+            }
+            PublisherSubscription publisherSubscription = new PublisherSubscription();
+            subscriber.onSubscribe(publisherSubscription);
+            publisherSubscription.start();
+        };
+    }
+{%- endif %}
+
+    private void requireBatchMode(String operation) {
+        if (mode == Mode.BATCH) return;
+        throw new IllegalStateException(operation + " is only available for batch stream subscriptions");
+    }
+}
 {%- endif %}

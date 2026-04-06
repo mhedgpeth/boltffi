@@ -13,8 +13,8 @@ use crate::ir::abi::{
 };
 use crate::ir::contract::FfiContract;
 use crate::ir::definitions::{
-    CallbackKind, CallbackTraitDef, ClassDef, ConstructorDef, EnumDef, FunctionDef, MethodDef,
-    ParamDef, RecordDef, ReturnDef,
+    CallbackKind, CallbackTraitDef, ClassDef, ConstructorDef, EnumDef, EnumRepr, FunctionDef,
+    MethodDef, ParamDef, Receiver, RecordDef, ReturnDef,
 };
 use crate::ir::ids::{CallbackId, EnumId, FieldName, RecordId};
 use crate::ir::ops::{
@@ -22,6 +22,7 @@ use crate::ir::ops::{
 };
 use crate::ir::plan::{AbiType, ScalarOrigin, SpanContent, Transport};
 use crate::ir::types::{PrimitiveType, TypeExpr};
+use crate::render::typescript::TypeScriptLowerError;
 use crate::render::typescript::emit;
 use crate::render::typescript::plan::*;
 use boltffi_ffi_rules::naming::ffi_prefix;
@@ -96,6 +97,85 @@ enum TsExecutionModel {
     AsyncMethod,
 }
 
+#[derive(Clone, Copy)]
+enum TsValueTypeDef<'a> {
+    Record(&'a RecordDef),
+    Enum(&'a EnumDef),
+}
+
+enum TsValueTypeMemberDef<'a> {
+    Constructor(&'a ConstructorDef),
+    Method(&'a MethodDef),
+}
+
+impl<'a> TsValueTypeDef<'a> {
+    fn type_expr(self) -> TypeExpr {
+        match self {
+            Self::Record(record) => TypeExpr::Record(record.id.clone()),
+            Self::Enum(enumeration) => TypeExpr::Enum(enumeration.id.clone()),
+        }
+    }
+
+    fn type_name(self) -> String {
+        match self {
+            Self::Record(record) => naming::to_upper_camel_case(record.id.as_str()),
+            Self::Enum(enumeration) => naming::to_upper_camel_case(enumeration.id.as_str()),
+        }
+    }
+
+    fn is_c_style_enum(self) -> bool {
+        matches!(
+            self,
+            Self::Enum(EnumDef {
+                repr: EnumRepr::CStyle { .. },
+                ..
+            })
+        )
+    }
+
+    fn constructor_calls(self) -> Vec<(CallId, &'a ConstructorDef)> {
+        match self {
+            Self::Record(record) => record.constructor_calls().collect(),
+            Self::Enum(enumeration) => enumeration.constructor_calls().collect(),
+        }
+    }
+
+    fn method_calls(self) -> Vec<(CallId, &'a MethodDef)> {
+        match self {
+            Self::Record(record) => record.method_calls().collect(),
+            Self::Enum(enumeration) => enumeration.method_calls().collect(),
+        }
+    }
+}
+
+impl<'a> TsValueTypeMemberDef<'a> {
+    fn ts_name(&self, owner: TsValueTypeDef<'_>) -> String {
+        match self {
+            Self::Constructor(constructor) => constructor
+                .name()
+                .map(|method_id| camel_case(method_id.as_str()))
+                .unwrap_or_else(|| {
+                    if owner.is_c_style_enum() {
+                        "fromRaw".to_string()
+                    } else {
+                        "new".to_string()
+                    }
+                }),
+            Self::Method(method) => camel_case(method.id.as_str()),
+        }
+    }
+
+    fn source_name(&self) -> String {
+        match self {
+            Self::Constructor(constructor) => constructor
+                .name()
+                .map(|method_id| format!("constructor `{}`", method_id.as_str()))
+                .unwrap_or_else(|| "default constructor".to_string()),
+            Self::Method(method) => format!("method `{}`", method.id.as_str()),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct TypeScriptExperimental {
     pub async_streams: bool,
@@ -123,22 +203,23 @@ impl<'a> TypeScriptLowerer<'a> {
         }
     }
 
-    pub fn lower(&self) -> TsModule {
+    pub fn lower(&self) -> Result<TsModule, TypeScriptLowerError> {
         let index = AbiIndex::new(self.abi);
+        self.validate_top_level_function_names()?;
 
         let records = self
             .contract
             .catalog
             .all_records()
             .map(|def| self.lower_record(def, &index))
-            .collect();
+            .collect::<Result<Vec<_>, _>>()?;
 
         let enums = self
             .contract
             .catalog
             .all_enums()
             .map(|def| self.lower_enum(def, &index))
-            .collect();
+            .collect::<Result<Vec<_>, _>>()?;
 
         let functions: Vec<TsFunction> = self
             .contract
@@ -172,7 +253,7 @@ impl<'a> TypeScriptLowerer<'a> {
 
         let error_exceptions = self.collect_error_exceptions(&functions, &async_functions, &index);
 
-        TsModule {
+        Ok(TsModule {
             module_name: self.module_name.clone(),
             abi_version: 1,
             records,
@@ -183,7 +264,7 @@ impl<'a> TypeScriptLowerer<'a> {
             classes,
             callbacks,
             wasm_imports,
-        }
+        })
     }
 
     fn collect_error_exceptions(
@@ -229,9 +310,15 @@ impl<'a> TypeScriptLowerer<'a> {
             .collect()
     }
 
-    fn lower_record(&self, def: &RecordDef, index: &AbiIndex) -> TsRecord {
+    fn lower_record(
+        &self,
+        def: &RecordDef,
+        index: &AbiIndex,
+    ) -> Result<TsRecord, TypeScriptLowerError> {
         let abi_record = index.record(self.abi, &def.id);
         let name = naming::to_upper_camel_case(def.id.as_str());
+        let value_type = TsValueTypeDef::Record(def);
+        self.validate_value_type_member_names(value_type)?;
 
         let decode_fields = record_decode_fields(abi_record);
         let encode_fields = record_encode_fields(abi_record);
@@ -283,19 +370,23 @@ impl<'a> TypeScriptLowerer<'a> {
             0
         };
 
-        TsRecord {
+        Ok(TsRecord {
             name,
             fields,
+            constructors: self.lower_value_type_constructors(value_type, index),
+            methods: self.lower_value_type_methods(value_type, index),
             is_blittable: abi_record.is_blittable,
             wire_size: abi_record.size,
             tail_padding,
             doc: def.doc.clone(),
-        }
+        })
     }
 
-    fn lower_enum(&self, def: &EnumDef, index: &AbiIndex) -> TsEnum {
+    fn lower_enum(&self, def: &EnumDef, index: &AbiIndex) -> Result<TsEnum, TypeScriptLowerError> {
         let abi_enum = index.enumeration(self.abi, &def.id);
         let name = naming::to_upper_camel_case(def.id.as_str());
+        let value_type = TsValueTypeDef::Enum(def);
+        self.validate_value_type_member_names(value_type)?;
 
         let kind = if abi_enum.is_c_style {
             TsEnumKind::CStyle
@@ -331,12 +422,83 @@ impl<'a> TypeScriptLowerer<'a> {
             })
             .collect();
 
-        TsEnum {
+        Ok(TsEnum {
             name,
             variants,
+            constructors: self.lower_value_type_constructors(value_type, index),
+            methods: self.lower_value_type_methods(value_type, index),
             kind,
             doc: def.doc.clone(),
+        })
+    }
+
+    fn validate_top_level_function_names(&self) -> Result<(), TypeScriptLowerError> {
+        let mut seen_functions = HashMap::<String, String>::new();
+
+        for function in &self.contract.functions {
+            let generated_name = emit::escape_ts_keyword(&camel_case(function.id.as_str()));
+            let source_name = function.id.as_str().to_string();
+
+            if let Some(existing_function) =
+                seen_functions.insert(generated_name.clone(), source_name.clone())
+            {
+                return Err(TypeScriptLowerError::TopLevelFunctionNameCollision {
+                    generated_name,
+                    existing_function,
+                    colliding_function: source_name,
+                });
+            }
         }
+
+        Ok(())
+    }
+
+    fn validate_value_type_member_names(
+        &self,
+        owner: TsValueTypeDef<'_>,
+    ) -> Result<(), TypeScriptLowerError> {
+        let owner_name = owner.type_name();
+        let mut seen_members = HashMap::<String, String>::new();
+
+        for constructor in owner
+            .constructor_calls()
+            .into_iter()
+            .map(|(_, constructor)| TsValueTypeMemberDef::Constructor(constructor))
+        {
+            self.insert_value_type_member_name(owner, &owner_name, &mut seen_members, constructor)?;
+        }
+
+        for method in owner
+            .method_calls()
+            .into_iter()
+            .map(|(_, method)| TsValueTypeMemberDef::Method(method))
+        {
+            self.insert_value_type_member_name(owner, &owner_name, &mut seen_members, method)?;
+        }
+
+        Ok(())
+    }
+
+    fn insert_value_type_member_name(
+        &self,
+        owner: TsValueTypeDef<'_>,
+        owner_name: &str,
+        seen_members: &mut HashMap<String, String>,
+        member: TsValueTypeMemberDef<'_>,
+    ) -> Result<(), TypeScriptLowerError> {
+        let ts_name = member.ts_name(owner);
+        let source_name = member.source_name();
+
+        if let Some(existing_source) = seen_members.insert(ts_name.clone(), source_name.clone()) {
+            return Err(TypeScriptLowerError::ValueTypeMemberNameCollision {
+                owner_name: owner_name.to_string(),
+                generated_name: ts_name,
+                existing_source,
+                colliding_source: source_name,
+            });
+        }
+
+        Ok(())
     }
 
     fn lower_class(&self, def: &ClassDef, index: &AbiIndex) -> TsClass {
@@ -364,6 +526,168 @@ impl<'a> TypeScriptLowerer<'a> {
             constructors,
             methods,
             doc: def.doc.clone(),
+        }
+    }
+
+    fn lower_value_type_constructors(
+        &self,
+        owner: TsValueTypeDef<'_>,
+        index: &AbiIndex,
+    ) -> Vec<TsValueTypeConstructor> {
+        owner
+            .constructor_calls()
+            .into_iter()
+            .map(|(call_id, constructor)| {
+                self.lower_value_type_constructor(
+                    owner,
+                    constructor,
+                    index.call(self.abi, &call_id),
+                )
+            })
+            .collect()
+    }
+
+    fn lower_value_type_methods(
+        &self,
+        owner: TsValueTypeDef<'_>,
+        index: &AbiIndex,
+    ) -> Vec<TsValueTypeMethod> {
+        owner
+            .method_calls()
+            .into_iter()
+            .map(|(call_id, method)| {
+                self.lower_value_type_method(owner, method, index.call(self.abi, &call_id))
+            })
+            .collect()
+    }
+
+    fn lower_value_type_constructor(
+        &self,
+        owner: TsValueTypeDef<'_>,
+        constructor: &ConstructorDef,
+        abi_call: &AbiCall,
+    ) -> TsValueTypeConstructor {
+        let param_defs: HashMap<&str, &ParamDef> = constructor
+            .params()
+            .into_iter()
+            .map(|param| (param.name.as_str(), param))
+            .collect();
+
+        let params = abi_call
+            .params
+            .iter()
+            .filter(|parameter| !parameter.is_hidden())
+            .map(|abi_param| {
+                let param_def = param_defs.get(abi_param.name.as_str()).copied();
+                self.lower_param(param_def, abi_param)
+            })
+            .collect();
+
+        let (_, return_route) = self.select_output_route(&abi_call.returns, TsExecutionModel::Sync);
+        let return_route =
+            self.refine_value_type_output_route(return_route, Some(&owner.type_expr()));
+        let return_type = if constructor.is_optional() {
+            format!("{} | null", owner.type_name())
+        } else {
+            owner.type_name()
+        };
+
+        TsValueTypeConstructor {
+            ts_name: TsValueTypeMemberDef::Constructor(constructor).ts_name(owner),
+            ffi_name: abi_call.symbol.as_str().to_string(),
+            params,
+            return_type,
+            return_route,
+            doc: constructor.doc().map(String::from),
+        }
+    }
+
+    fn lower_value_type_method(
+        &self,
+        owner: TsValueTypeDef<'_>,
+        method_def: &MethodDef,
+        abi_call: &AbiCall,
+    ) -> TsValueTypeMethod {
+        let param_defs: HashMap<&str, &ParamDef> = method_def
+            .params
+            .iter()
+            .map(|param| (param.name.as_str(), param))
+            .collect();
+
+        let params = abi_call
+            .params
+            .iter()
+            .enumerate()
+            .filter_map(|(param_index, abi_param)| match &abi_param.role {
+                ParamRole::Input { transport, .. }
+                    if method_def.callable_form() != CallableForm::StaticMethod
+                        && param_index == 0 =>
+                {
+                    Some(self.lower_value_type_self_param(owner, transport))
+                }
+                ParamRole::Input { .. } => {
+                    let param_def = param_defs.get(abi_param.name.as_str()).copied();
+                    Some(self.lower_param(param_def, abi_param))
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+
+        let mutating_void = method_def.receiver == Receiver::RefMutSelf
+            && matches!(method_def.returns, ReturnDef::Void);
+        let return_type = if mutating_void {
+            Some(owner.type_name())
+        } else {
+            self.ts_return_type_from_def(&method_def.returns)
+        };
+
+        let return_handle = self.handle_return(&abi_call.returns);
+        let return_callback = self.callback_return(&abi_call.returns);
+        let mode = match &abi_call.mode {
+            CallMode::Sync => {
+                let return_type_expr = match &method_def.returns {
+                    ReturnDef::Value(type_expr) => Some(type_expr),
+                    ReturnDef::Result { ok, .. } => Some(ok),
+                    ReturnDef::Void => None,
+                };
+                let (_, return_route) =
+                    self.select_output_route(&abi_call.returns, TsExecutionModel::Sync);
+                let return_route =
+                    self.refine_value_type_output_route(return_route, return_type_expr);
+                TsValueTypeMethodMode::Sync(TsValueTypeSyncMethod { return_route })
+            }
+            CallMode::Async(async_call) => {
+                let entry_ffi_name = abi_call.symbol.as_str().to_string();
+                let return_type_expr = match &method_def.returns {
+                    ReturnDef::Value(type_expr) => Some(type_expr),
+                    ReturnDef::Result { ok, .. } => Some(ok),
+                    ReturnDef::Void => None,
+                };
+                let (_, return_route) =
+                    self.select_output_route(&async_call.result, TsExecutionModel::AsyncMethod);
+                let return_route =
+                    self.refine_value_type_output_route(return_route, return_type_expr);
+                TsValueTypeMethodMode::Async(TsValueTypeAsyncMethod {
+                    poll_sync_ffi_name: format!("{entry_ffi_name}_poll_sync"),
+                    complete_ffi_name: format!("{entry_ffi_name}_complete"),
+                    panic_message_ffi_name: format!("{entry_ffi_name}_panic_message"),
+                    cancel_ffi_name: format!("{entry_ffi_name}_cancel"),
+                    free_ffi_name: format!("{entry_ffi_name}_free"),
+                    return_route,
+                })
+            }
+        };
+
+        TsValueTypeMethod {
+            ts_name: TsValueTypeMemberDef::Method(method_def).ts_name(owner),
+            ffi_name: abi_call.symbol.as_str().to_string(),
+            is_static: method_def.callable_form() == CallableForm::StaticMethod,
+            params,
+            return_type,
+            return_handle,
+            return_callback,
+            mode,
+            doc: method_def.doc.clone(),
         }
     }
 
@@ -1182,6 +1506,42 @@ impl<'a> TypeScriptLowerer<'a> {
         }
     }
 
+    fn ts_return_type_from_def(&self, returns: &ReturnDef) -> Option<String> {
+        match returns {
+            ReturnDef::Void => None,
+            ReturnDef::Value(type_expr) => Some(emit::ts_type(type_expr)),
+            ReturnDef::Result { ok, .. } => Some(emit::ts_type(ok)),
+        }
+    }
+
+    fn refine_value_type_output_route(
+        &self,
+        return_route: TsOutputRoute,
+        return_type_expr: Option<&TypeExpr>,
+    ) -> TsOutputRoute {
+        let Some(TypeExpr::Enum(_)) = return_type_expr else {
+            return return_route;
+        };
+        if !return_route.is_direct() {
+            return return_route;
+        }
+        return_route.with_ts_cast(format!(
+            " as {}",
+            emit::ts_type(return_type_expr.expect("enum type"))
+        ))
+    }
+
+    fn handle_return(&self, returns: &ReturnShape) -> Option<TsHandleReturn> {
+        let Transport::Handle { class_id, nullable } = returns.transport.as_ref()? else {
+            return None;
+        };
+
+        Some(TsHandleReturn {
+            class_name: naming::to_upper_camel_case(class_id.as_str()),
+            nullable: *nullable,
+        })
+    }
+
     fn callback_return(&self, returns: &ReturnShape) -> Option<TsCallbackHandleReturn> {
         let Transport::Callback {
             callback_id,
@@ -1198,6 +1558,30 @@ impl<'a> TypeScriptLowerer<'a> {
             wrap_fn: format!("wrap{}", interface_name),
             nullable: *nullable,
         })
+    }
+
+    fn lower_value_type_self_param(
+        &self,
+        owner: TsValueTypeDef<'_>,
+        transport: &Transport,
+    ) -> TsParam {
+        let type_expr = owner.type_expr();
+        let input_route = match transport {
+            Transport::Scalar(_) => TsInputRoute::Direct,
+            Transport::Composite(_) => TsInputRoute::StructValue {
+                codec_name: owner.type_name(),
+            },
+            Transport::Span(SpanContent::Encoded(_)) => TsInputRoute::CodecEncoded {
+                codec_name: owner.type_name(),
+            },
+            other => panic!("unsupported value type self transport: {other:?}"),
+        };
+
+        TsParam {
+            name: "self".to_string(),
+            ts_type: emit::ts_type(&type_expr),
+            input_route,
+        }
     }
 
     fn scalar_output_route(
@@ -1854,7 +2238,8 @@ mod tests {
     use crate::ir::contract::{FfiContract, PackageInfo};
     use crate::ir::definitions::{
         CStyleVariant, CallbackKind, CallbackMethodDef, CallbackTraitDef, ClassDef, ConstructorDef,
-        EnumDef, EnumRepr, FunctionDef, MethodDef, ParamDef, ParamPassing, Receiver, ReturnDef,
+        DataVariant, EnumDef, EnumRepr, FieldDef, FunctionDef, MethodDef, ParamDef, ParamPassing,
+        Receiver, RecordDef, ReturnDef, VariantPayload,
     };
     use crate::ir::ids::{
         CallbackId, ClassId, EnumId, FunctionId, MethodId, ParamName, VariantName,
@@ -1933,7 +2318,7 @@ mod tests {
         }
     }
 
-    fn lower_contract(contract: &FfiContract) -> TsModule {
+    fn lower_contract_result(contract: &FfiContract) -> Result<TsModule, TypeScriptLowerError> {
         let abi = IrLowerer::new(contract).to_abi_contract();
         TypeScriptLowerer::new(
             contract,
@@ -1942,6 +2327,10 @@ mod tests {
             TypeScriptExperimental::default(),
         )
         .lower()
+    }
+
+    fn lower_contract(contract: &FfiContract) -> TsModule {
+        lower_contract_result(contract).expect("typescript lowering should succeed")
     }
 
     fn class_with_sync_and_async_methods() -> ClassDef {
@@ -2144,13 +2533,8 @@ mod tests {
             .unwrap()
             .to_path_buf();
         let demo_crate_path = repo_root.join("examples").join("demo");
-        let mut module = crate::scan::scan_crate_with_options(
-            &demo_crate_path,
-            "demo",
-            Some(32),
-            crate::scan::ScanFeatures::default(),
-        )
-        .unwrap();
+        let mut module =
+            crate::scan::scan_crate_with_pointer_width(&demo_crate_path, "demo", Some(32)).unwrap();
         let contract = crate::ir::build_contract(&mut module);
         let lowered_module = lower_contract(&contract);
         let function = lowered_module
@@ -2454,37 +2838,34 @@ mod tests {
     #[test]
     fn vec_blittable_record_param_uses_composite_buffer_route() {
         let mut contract = empty_contract();
-        contract
-            .catalog
-            .insert_record(crate::ir::definitions::RecordDef {
-                is_repr_c: true,
-                id: crate::ir::ids::RecordId::new("Point"),
-                fields: vec![
-                    crate::ir::definitions::FieldDef {
-                        name: FieldName::new("x"),
-                        type_expr: TypeExpr::Primitive(PrimitiveType::F64),
-                        doc: None,
-                        default: None,
-                    },
-                    crate::ir::definitions::FieldDef {
-                        name: FieldName::new("y"),
-                        type_expr: TypeExpr::Primitive(PrimitiveType::F64),
-                        doc: None,
-                        default: None,
-                    },
-                ],
-                constructors: vec![],
-                methods: vec![],
-                doc: None,
-                deprecated: None,
-            });
+        contract.catalog.insert_record(RecordDef {
+            is_repr_c: true,
+            is_error: false,
+            id: RecordId::new("Point"),
+            fields: vec![
+                FieldDef {
+                    name: FieldName::new("x"),
+                    type_expr: TypeExpr::Primitive(PrimitiveType::F64),
+                    doc: None,
+                    default: None,
+                },
+                FieldDef {
+                    name: FieldName::new("y"),
+                    type_expr: TypeExpr::Primitive(PrimitiveType::F64),
+                    doc: None,
+                    default: None,
+                },
+            ],
+            constructors: vec![],
+            methods: vec![],
+            doc: None,
+            deprecated: None,
+        });
         contract.functions.push(function(
             "make_polygon",
             vec![ParamDef {
                 name: ParamName::new("points"),
-                type_expr: TypeExpr::Vec(Box::new(TypeExpr::Record(
-                    crate::ir::ids::RecordId::new("Point"),
-                ))),
+                type_expr: TypeExpr::Vec(Box::new(TypeExpr::Record(RecordId::new("Point")))),
                 passing: ParamPassing::Value,
                 doc: None,
             }],
@@ -2698,6 +3079,148 @@ mod tests {
         assert_eq!(class.constructors[0].ts_name, "new");
         assert_eq!(class.constructors[1].ffi_name, "boltffi_connection_connect");
         assert_eq!(class.constructors[1].ts_name, "connect");
+    }
+
+    #[test]
+    fn value_type_constructor_name_collision_returns_error() {
+        let mut contract = empty_contract();
+        contract.catalog.insert_record(RecordDef {
+            id: RecordId::new("Point"),
+            is_repr_c: true,
+            is_error: false,
+            fields: vec![],
+            constructors: vec![
+                ConstructorDef::Default {
+                    params: vec![],
+                    is_fallible: false,
+                    is_optional: false,
+                    doc: None,
+                    deprecated: None,
+                },
+                ConstructorDef::NamedFactory {
+                    name: MethodId::new("new_"),
+                    is_fallible: false,
+                    is_optional: false,
+                    doc: None,
+                    deprecated: None,
+                },
+            ],
+            methods: vec![],
+            doc: None,
+            deprecated: None,
+        });
+
+        let error = lower_contract_result(&contract).expect_err("collision should fail lowering");
+        assert_eq!(
+            error,
+            TypeScriptLowerError::ValueTypeMemberNameCollision {
+                owner_name: "Point".to_string(),
+                generated_name: "new".to_string(),
+                existing_source: "default constructor".to_string(),
+                colliding_source: "constructor `new_`".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn value_type_default_constructor_names_stay_native() {
+        let mut contract = empty_contract();
+        contract.catalog.insert_record(RecordDef {
+            id: RecordId::new("Point"),
+            is_repr_c: true,
+            is_error: false,
+            fields: vec![],
+            constructors: vec![ConstructorDef::Default {
+                params: vec![],
+                is_fallible: false,
+                is_optional: false,
+                doc: None,
+                deprecated: None,
+            }],
+            methods: vec![],
+            doc: None,
+            deprecated: None,
+        });
+        let mut direction = c_style_enum_i64("Direction");
+        direction.constructors.push(ConstructorDef::Default {
+            params: vec![primitive_param("raw", PrimitiveType::I64)],
+            is_fallible: false,
+            is_optional: false,
+            doc: None,
+            deprecated: None,
+        });
+        contract.catalog.insert_enum(direction);
+        contract.catalog.insert_enum(EnumDef {
+            id: EnumId::new("Shape"),
+            repr: EnumRepr::Data {
+                tag_type: PrimitiveType::U8,
+                variants: vec![DataVariant {
+                    name: VariantName::new("Point"),
+                    discriminant: 0,
+                    payload: VariantPayload::Unit,
+                    doc: None,
+                }],
+            },
+            is_error: false,
+            constructors: vec![ConstructorDef::Default {
+                params: vec![],
+                is_fallible: false,
+                is_optional: false,
+                doc: None,
+                deprecated: None,
+            }],
+            methods: vec![],
+            doc: None,
+            deprecated: None,
+        });
+
+        let module = lower_contract(&contract);
+        let point = module
+            .records
+            .iter()
+            .find(|record| record.name == "Point")
+            .expect("point record should be lowered");
+        let direction = module
+            .enums
+            .iter()
+            .find(|enumeration| enumeration.name == "Direction")
+            .expect("direction enum should be lowered");
+        let shape = module
+            .enums
+            .iter()
+            .find(|enumeration| enumeration.name == "Shape")
+            .expect("shape enum should be lowered");
+
+        assert_eq!(point.constructors[0].ts_name, "new");
+        assert_eq!(direction.constructors[0].ts_name, "fromRaw");
+        assert_eq!(shape.constructors[0].ts_name, "new");
+    }
+
+    #[test]
+    fn top_level_function_name_collision_returns_error() {
+        let mut contract = empty_contract();
+        contract.functions.push(function(
+            "new",
+            vec![],
+            ReturnDef::Value(TypeExpr::Primitive(PrimitiveType::I32)),
+            ExecutionKind::Sync,
+        ));
+        contract.functions.push(function(
+            "new_",
+            vec![],
+            ReturnDef::Value(TypeExpr::Primitive(PrimitiveType::I32)),
+            ExecutionKind::Sync,
+        ));
+
+        let error = lower_contract_result(&contract).expect_err("collision should fail lowering");
+        assert_eq!(
+            error,
+            TypeScriptLowerError::TopLevelFunctionNameCollision {
+                generated_name: "new_".to_string(),
+                existing_function: "new".to_string(),
+                colliding_function: "new_".to_string(),
+            }
+        );
     }
 
     #[test]
@@ -3025,30 +3548,29 @@ mod tests {
     #[test]
     fn class_method_with_record_param_uses_codec_conversion() {
         let mut contract = empty_contract();
-        contract
-            .catalog
-            .insert_record(crate::ir::definitions::RecordDef {
-                is_repr_c: true,
-                id: crate::ir::ids::RecordId::new("Point"),
-                fields: vec![
-                    crate::ir::definitions::FieldDef {
-                        name: FieldName::new("x"),
-                        type_expr: TypeExpr::Primitive(PrimitiveType::F64),
-                        doc: None,
-                        default: None,
-                    },
-                    crate::ir::definitions::FieldDef {
-                        name: FieldName::new("y"),
-                        type_expr: TypeExpr::Primitive(PrimitiveType::F64),
-                        doc: None,
-                        default: None,
-                    },
-                ],
-                constructors: vec![],
-                methods: vec![],
-                doc: None,
-                deprecated: None,
-            });
+        contract.catalog.insert_record(RecordDef {
+            is_repr_c: true,
+            is_error: false,
+            id: RecordId::new("Point"),
+            fields: vec![
+                FieldDef {
+                    name: FieldName::new("x"),
+                    type_expr: TypeExpr::Primitive(PrimitiveType::F64),
+                    doc: None,
+                    default: None,
+                },
+                FieldDef {
+                    name: FieldName::new("y"),
+                    type_expr: TypeExpr::Primitive(PrimitiveType::F64),
+                    doc: None,
+                    default: None,
+                },
+            ],
+            constructors: vec![],
+            methods: vec![],
+            doc: None,
+            deprecated: None,
+        });
         contract.catalog.insert_class(ClassDef {
             id: ClassId::new("Canvas"),
             constructors: vec![],
@@ -3057,7 +3579,7 @@ mod tests {
                 receiver: Receiver::RefSelf,
                 params: vec![ParamDef {
                     name: ParamName::new("point"),
-                    type_expr: TypeExpr::Record(crate::ir::ids::RecordId::new("Point")),
+                    type_expr: TypeExpr::Record(RecordId::new("Point")),
                     passing: ParamPassing::Value,
                     doc: None,
                 }],
@@ -3092,39 +3614,38 @@ mod tests {
     #[test]
     fn wasm_record_function_uses_struct_param_and_return_slot() {
         let mut contract = empty_contract();
-        contract
-            .catalog
-            .insert_record(crate::ir::definitions::RecordDef {
-                is_repr_c: true,
-                id: crate::ir::ids::RecordId::new("Point"),
-                fields: vec![
-                    crate::ir::definitions::FieldDef {
-                        name: FieldName::new("x"),
-                        type_expr: TypeExpr::Primitive(PrimitiveType::F64),
-                        doc: None,
-                        default: None,
-                    },
-                    crate::ir::definitions::FieldDef {
-                        name: FieldName::new("y"),
-                        type_expr: TypeExpr::Primitive(PrimitiveType::F64),
-                        doc: None,
-                        default: None,
-                    },
-                ],
-                constructors: vec![],
-                methods: vec![],
-                doc: None,
-                deprecated: None,
-            });
+        contract.catalog.insert_record(RecordDef {
+            is_repr_c: true,
+            is_error: false,
+            id: RecordId::new("Point"),
+            fields: vec![
+                FieldDef {
+                    name: FieldName::new("x"),
+                    type_expr: TypeExpr::Primitive(PrimitiveType::F64),
+                    doc: None,
+                    default: None,
+                },
+                FieldDef {
+                    name: FieldName::new("y"),
+                    type_expr: TypeExpr::Primitive(PrimitiveType::F64),
+                    doc: None,
+                    default: None,
+                },
+            ],
+            constructors: vec![],
+            methods: vec![],
+            doc: None,
+            deprecated: None,
+        });
         contract.functions.push(function(
             "echo_point",
             vec![ParamDef {
                 name: ParamName::new("point"),
-                type_expr: TypeExpr::Record(crate::ir::ids::RecordId::new("Point")),
+                type_expr: TypeExpr::Record(RecordId::new("Point")),
                 passing: ParamPassing::Value,
                 doc: None,
             }],
-            ReturnDef::Value(TypeExpr::Record(crate::ir::ids::RecordId::new("Point"))),
+            ReturnDef::Value(TypeExpr::Record(RecordId::new("Point"))),
             ExecutionKind::Sync,
         ));
 

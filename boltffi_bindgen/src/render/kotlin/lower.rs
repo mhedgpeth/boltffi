@@ -79,7 +79,8 @@ impl<'a> KotlinLowerer<'a> {
             .catalog
             .all_classes()
             .any(|class| !class.streams.is_empty());
-        let preamble = self.lower_preamble(has_streams);
+        let has_async_runtime = self.has_async_runtime(has_streams);
+        let preamble = self.lower_preamble(has_async_runtime, has_streams);
         let enums = self
             .contract
             .catalog
@@ -142,12 +143,13 @@ impl<'a> KotlinLowerer<'a> {
                 KotlinInputApiStyle::ModuleObject => KotlinApiStyle::ModuleObject,
             },
             module_object_name: self.options.module_object_name.clone(),
+            has_async_runtime,
             has_streams,
         }
     }
 
-    fn lower_preamble(&self, has_streams: bool) -> KotlinPreamble {
-        let extra_imports = self.collect_extra_imports(has_streams);
+    fn lower_preamble(&self, has_async_runtime: bool, has_streams: bool) -> KotlinPreamble {
+        let extra_imports = self.collect_extra_imports(has_async_runtime, has_streams);
         let custom_types = self
             .contract
             .catalog
@@ -159,23 +161,18 @@ impl<'a> KotlinLowerer<'a> {
             prefix: naming::ffi_prefix().to_string(),
             extra_imports,
             custom_types,
+            has_async_runtime,
             has_streams,
         }
     }
 
-    fn collect_extra_imports(&self, has_streams: bool) -> Vec<String> {
+    fn collect_extra_imports(&self, has_async_runtime: bool, has_streams: bool) -> Vec<String> {
         let mut imports = self
             .collect_builtin_ids()
             .into_iter()
             .filter_map(|id| self.builtin_import(&id))
             .collect::<Vec<_>>();
-        let has_async_callbacks = self.contract.catalog.all_callbacks().any(|callback| {
-            callback
-                .methods
-                .iter()
-                .any(|method| method.execution_kind() == ExecutionKind::Async)
-        });
-        let coroutine_imports = if has_async_callbacks || has_streams {
+        let coroutine_imports = if has_async_runtime {
             vec![
                 "kotlinx.coroutines.CoroutineScope".to_string(),
                 "kotlinx.coroutines.Dispatchers".to_string(),
@@ -212,6 +209,27 @@ impl<'a> KotlinLowerer<'a> {
                 }
             });
         imports
+    }
+
+    fn has_async_runtime(&self, has_streams: bool) -> bool {
+        has_streams
+            || self
+                .contract
+                .functions
+                .iter()
+                .any(|function| function.execution_kind() == ExecutionKind::Async)
+            || self.contract.catalog.all_classes().any(|class| {
+                class
+                    .methods
+                    .iter()
+                    .any(|method| method.execution_kind() == ExecutionKind::Async)
+            })
+            || self.contract.catalog.all_callbacks().any(|callback| {
+                callback
+                    .methods
+                    .iter()
+                    .any(|method| method.execution_kind() == ExecutionKind::Async)
+            })
     }
 
     fn collect_builtin_ids(&self) -> HashSet<BuiltinId> {
@@ -946,6 +964,7 @@ impl<'a> KotlinLowerer<'a> {
             class_name,
             fields,
             is_blittable: record.is_blittable(),
+            is_error: record.is_error,
             struct_size: self.record_struct_size(record.id.as_str()),
             constructors,
             methods,
@@ -2151,6 +2170,12 @@ impl<'a> KotlinLowerer<'a> {
                         .resolve_enum(id)
                         .map(|e| e.is_error)
                         .unwrap_or(false),
+                    TypeExpr::Record(id) => self
+                        .contract
+                        .catalog
+                        .resolve_record(id)
+                        .map(|record| record.is_error)
+                        .unwrap_or(false),
                     _ => false,
                 };
                 (Some(err_type), throwable)
@@ -3128,6 +3153,9 @@ impl<'a> KotlinLowerer<'a> {
                 TypeExpr::Enum(id) if self.is_error_enum(id) => {
                     NamingConvention::class_name(id.as_str())
                 }
+                TypeExpr::Record(id) if self.is_error_record(id) => {
+                    NamingConvention::class_name(id.as_str())
+                }
                 _ => "FfiException".to_string(),
             },
             _ => "FfiException".to_string(),
@@ -3138,6 +3166,7 @@ impl<'a> KotlinLowerer<'a> {
         match err {
             TypeExpr::String => "FfiException(-1, err)".to_string(),
             TypeExpr::Enum(id) if self.is_error_enum(id) => "err".to_string(),
+            TypeExpr::Record(id) if self.is_error_record(id) => "err".to_string(),
             _ => "FfiException(-1, \"Error: $err\")".to_string(),
         }
     }
@@ -3147,6 +3176,14 @@ impl<'a> KotlinLowerer<'a> {
             .catalog
             .resolve_enum(id)
             .map(|enumeration| enumeration.is_error)
+            .unwrap_or(false)
+    }
+
+    fn is_error_record(&self, id: &RecordId) -> bool {
+        self.contract
+            .catalog
+            .resolve_record(id)
+            .map(|record| record.is_error)
             .unwrap_or(false)
     }
 
@@ -4666,6 +4703,7 @@ struct KotlinPreamble {
     prefix: String,
     extra_imports: Vec<String>,
     custom_types: Vec<KotlinCustomType>,
+    has_async_runtime: bool,
     has_streams: bool,
 }
 

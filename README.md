@@ -96,10 +96,18 @@ The generated bindings use each language's idioms. Swift gets async/await. Kotli
 |----------|--------------|
 | Swift    | Full support |
 | Kotlin   | Full support |
+| Java     | Full support |
 | WASM/TypeScript | Full support |
-| Python   | Planned      |
+| C        | Partial      |
+| Python   | In progress  |
+| C++      | Planned      |
 | C#       | Planned      |
 | Ruby     | Planned      |
+| Dart     | Planned      |
+| Scala    | Planned      |
+| Go       | Planned      |
+| Lua      | Potential    |
+| R        | Potential    |
 
 Want another language? [Open an issue](https://github.com/boltffi/boltffi/issues).
 

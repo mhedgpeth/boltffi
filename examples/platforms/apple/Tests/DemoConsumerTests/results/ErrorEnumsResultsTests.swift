@@ -26,6 +26,21 @@ final class ErrorEnumsResultsTests: XCTestCase {
         XCTAssertThrowsError(try validateUsername(name: "has space")) { error in
             XCTAssertEqual(error as? ValidationError, ValidationError.invalidFormat)
         }
+
+        XCTAssertEqual(try mayFail(valid: true), "Success!")
+        XCTAssertThrowsError(try mayFail(valid: false)) { error in
+            XCTAssertEqual(
+                error as? AppError,
+                AppError(code: 400, message: "Invalid input")
+            )
+        }
+
+        XCTAssertEqual(try divideApp(a: 10, b: 2), 5)
+        XCTAssertThrowsError(try divideApp(a: 10, b: 0)) { error in
+            XCTAssertEqual(
+                error as? AppError,
+                AppError(code: 500, message: "Division by zero")
+            )
+        }
     }
 }
-

@@ -74,11 +74,27 @@ impl<'a> RecordTemplate<'a> {
 }
 
 #[derive(Template)]
+#[template(path = "render_typescript/value_type_companion.txt", escape = "none")]
+pub struct ValueTypeCompanionTemplate<'a> {
+    pub name: &'a str,
+    pub constructors: &'a [TsValueTypeConstructor],
+    pub methods: &'a [TsValueTypeMethod],
+}
+
+#[derive(Template)]
 #[template(path = "render_typescript/enum_c_style.txt", escape = "none")]
 pub struct EnumCStyleTemplate<'a> {
     pub name: &'a str,
     pub variants: &'a [TsVariant],
     pub doc: &'a Option<String>,
+}
+
+#[derive(Template)]
+#[template(path = "render_typescript/enum_namespace.txt", escape = "none")]
+pub struct EnumNamespaceTemplate<'a> {
+    pub name: &'a str,
+    pub constructors: &'a [TsValueTypeConstructor],
+    pub methods: &'a [TsValueTypeMethod],
 }
 
 #[derive(Template)]
@@ -173,6 +189,18 @@ impl TypeScriptEmitter {
 
         for record in &module.records {
             output.push_str(&RecordTemplate::from_record(record).render().unwrap());
+            if record.has_companion() {
+                output.push_str("\n\n");
+                output.push_str(
+                    &ValueTypeCompanionTemplate {
+                        name: &record.name,
+                        constructors: &record.constructors,
+                        methods: &record.methods,
+                    }
+                    .render()
+                    .unwrap(),
+                );
+            }
             output.push_str("\n\n");
         }
 
@@ -187,6 +215,18 @@ impl TypeScriptEmitter {
                     .render()
                     .unwrap(),
                 );
+                if enumeration.has_companion() {
+                    output.push_str("\n\n");
+                    output.push_str(
+                        &EnumNamespaceTemplate {
+                            name: &enumeration.name,
+                            constructors: &enumeration.constructors,
+                            methods: &enumeration.methods,
+                        }
+                        .render()
+                        .unwrap(),
+                    );
+                }
             } else {
                 output.push_str(
                     &EnumDataTemplate {
@@ -197,6 +237,18 @@ impl TypeScriptEmitter {
                     .render()
                     .unwrap(),
                 );
+                if enumeration.has_companion() {
+                    output.push_str("\n\n");
+                    output.push_str(
+                        &ValueTypeCompanionTemplate {
+                            name: &enumeration.name,
+                            constructors: &enumeration.constructors,
+                            methods: &enumeration.methods,
+                        }
+                        .render()
+                        .unwrap(),
+                    );
+                }
             }
             output.push_str("\n\n");
         }
@@ -357,6 +409,18 @@ impl TypeScriptEmitter {
 
         for record in &module.records {
             output.push_str(&RecordTemplate::from_record(record).render().unwrap());
+            if record.has_companion() {
+                output.push_str("\n\n");
+                output.push_str(
+                    &ValueTypeCompanionTemplate {
+                        name: &record.name,
+                        constructors: &record.constructors,
+                        methods: &record.methods,
+                    }
+                    .render()
+                    .unwrap(),
+                );
+            }
             output.push_str("\n\n");
         }
 
@@ -371,6 +435,18 @@ impl TypeScriptEmitter {
                     .render()
                     .unwrap(),
                 );
+                if enumeration.has_companion() {
+                    output.push_str("\n\n");
+                    output.push_str(
+                        &EnumNamespaceTemplate {
+                            name: &enumeration.name,
+                            constructors: &enumeration.constructors,
+                            methods: &enumeration.methods,
+                        }
+                        .render()
+                        .unwrap(),
+                    );
+                }
             } else {
                 output.push_str(
                     &EnumDataTemplate {
@@ -381,6 +457,18 @@ impl TypeScriptEmitter {
                     .render()
                     .unwrap(),
                 );
+                if enumeration.has_companion() {
+                    output.push_str("\n\n");
+                    output.push_str(
+                        &ValueTypeCompanionTemplate {
+                            name: &enumeration.name,
+                            constructors: &enumeration.constructors,
+                            methods: &enumeration.methods,
+                        }
+                        .render()
+                        .unwrap(),
+                    );
+                }
             }
             output.push_str("\n\n");
         }
@@ -629,6 +717,8 @@ mod tests {
                     doc: None,
                 },
             ],
+            constructors: vec![],
+            methods: vec![],
             is_blittable: true,
             wire_size: Some(16),
             tail_padding: 0,
@@ -659,6 +749,8 @@ mod tests {
                     doc: Some("The user's display name".to_string()),
                 },
             ],
+            constructors: vec![],
+            methods: vec![],
             is_blittable: false,
             wire_size: None,
             tail_padding: 0,
@@ -843,6 +935,44 @@ mod tests {
             doc: &doc,
         };
         insta::assert_snapshot!(template.render().unwrap());
+    }
+
+    #[test]
+    fn async_function_param_cleanup_runs_after_await() {
+        let doc: Option<String> = None;
+        let params = vec![TsParam {
+            name: "message".to_string(),
+            ts_type: "Message".to_string(),
+            input_route: TsInputRoute::CodecEncoded {
+                codec_name: "MessageCodec".to_string(),
+            },
+        }];
+        let rendered = AsyncFunctionTemplate {
+            name: "sendMessage",
+            params: &params,
+            return_type_str: "Response",
+            entry_ffi_name: "boltffi_send_message",
+            poll_sync_ffi_name: "boltffi_send_message_poll_sync",
+            complete_ffi_name: "boltffi_send_message_complete",
+            panic_message_ffi_name: "boltffi_send_message_panic_message",
+            free_ffi_name: "boltffi_send_message_free",
+            call_args: "message_writer.ptr, message_writer.len",
+            wrapper_code: "const message_writer = _module.allocWriter(MessageCodec.size(message));\n  MessageCodec.encode(message_writer, message);",
+            cleanup_code: "_module.freeWriter(message_writer);",
+            return_route: &TsOutputRoute::packed("ResponseCodec.decode(reader)".to_string()),
+            return_callback: &None,
+            doc: &doc,
+        }
+        .render()
+        .unwrap();
+
+        let cleanup_index = rendered
+            .find("_module.freeWriter(message_writer);")
+            .unwrap();
+        let await_index = rendered
+            .find("const awaitedHandle = await _module.asyncManager.pollAsync(")
+            .unwrap();
+        assert!(cleanup_index > await_index);
     }
 
     fn sync_callback_fixture() -> TsCallback {
@@ -1096,7 +1226,7 @@ mod tests {
     }
 
     #[test]
-    fn class_async_param_cleanup_runs_before_await() {
+    fn class_async_param_cleanup_runs_after_await() {
         let class = TsClass {
             class_name: "Database".to_string(),
             ffi_free: "boltffi_database_free".to_string(),
@@ -1133,7 +1263,7 @@ mod tests {
         let await_index = rendered
             .find("const awaitedHandle = await _module.asyncManager.pollAsync(")
             .unwrap();
-        assert!(cleanup_index < await_index);
+        assert!(cleanup_index > await_index);
     }
 
     #[test]

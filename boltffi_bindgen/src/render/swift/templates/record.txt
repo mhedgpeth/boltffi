@@ -1,4 +1,4 @@
-{{ self::swift_doc_block(doc, "") }}public struct {{ class_name }}: Hashable, Equatable, Sendable {
+{{ self::swift_doc_block(doc, "") }}public struct {{ class_name }}: Hashable, Equatable, Sendable{% if is_error %}, Error{% endif %} {
 {%- for field in fields %}
 {{ self::swift_doc_block(field.doc, "    ") }}    public var {{ field.swift_name }}: {{ field.swift_type }}
 {%- endfor %}

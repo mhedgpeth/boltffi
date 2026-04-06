@@ -2,10 +2,8 @@
 export async function {{ name }}({% for p in params %}{{ p.name }}: {{ p.ts_type }}{% if !loop.last %}, {% endif %}{% endfor %}): Promise<{{ return_type_str }}> {
 {% if !wrapper_code.is_empty() %}  {{ wrapper_code }}
 {% endif %}
+{% if cleanup_code.is_empty() %}
   const handle = (_exports.{{ entry_ffi_name }} as Function)({{ call_args }});
-{% if !cleanup_code.is_empty() %}  {{ cleanup_code }}
-{% endif %}
-
   const awaitedHandle = await _module.asyncManager.pollAsync(
     handle,
     (h: number) => (_exports.{{ poll_sync_ffi_name }} as Function)(h),
@@ -21,16 +19,70 @@ export async function {{ name }}({% for p in params %}{{ p.name }}: {{ p.ts_type
   return result;
 {% elif return_route.is_packed() %}
   const outPtr = _module.allocBufDescriptor();
-  (_exports.{{ complete_ffi_name }} as Function)(outPtr, awaitedHandle, 0);
-  const reader = _module.readerFromBuf(outPtr);
-  const result = {{ return_route.decode_expr() }};
-  _module.freeBuf(outPtr);
-  (_exports.{{ free_ffi_name }} as Function)(awaitedHandle);
-  return result;
+  let completeCompleted = false;
+  try {
+    (_exports.{{ complete_ffi_name }} as Function)(outPtr, awaitedHandle, 0);
+    completeCompleted = true;
+    const reader = _module.readerFromBuf(outPtr);
+    const result = {{ return_route.decode_expr() }};
+    return result;
+  } finally {
+    if (completeCompleted) {
+      _module.freeBuf(outPtr);
+    } else {
+      _module.freeBufDescriptor(outPtr);
+    }
+    (_exports.{{ free_ffi_name }} as Function)(awaitedHandle);
+  }
 {% elif return_route.is_direct() %}
   (_exports.{{ free_ffi_name }} as Function)(awaitedHandle);
   throw new Error("Unsupported async return route: Direct{{ return_route.ts_cast() }}");
 {% else %}
   (_exports.{{ free_ffi_name }} as Function)(awaitedHandle);
   throw new Error("Unsupported async return route: RawPacked {{ return_route.decode_expr() }}");
-{% endif %}}
+{% endif %}
+{% else %}
+  try {
+    const handle = (_exports.{{ entry_ffi_name }} as Function)({{ call_args }});
+    const awaitedHandle = await _module.asyncManager.pollAsync(
+      handle,
+      (h: number) => (_exports.{{ poll_sync_ffi_name }} as Function)(h),
+      (h: number) => (_exports.{{ panic_message_ffi_name }} as Function)(h),
+      (h: number) => (_exports.{{ free_ffi_name }} as Function)(h)
+    );
+
+{% if return_route.is_void() %}
+    (_exports.{{ free_ffi_name }} as Function)(awaitedHandle);
+{% elif return_route.is_async_scalar() %}
+    const result = (_exports.{{ complete_ffi_name }} as Function)(awaitedHandle){{ return_route.ts_cast() }};
+    (_exports.{{ free_ffi_name }} as Function)(awaitedHandle);
+    return result;
+{% elif return_route.is_packed() %}
+    const outPtr = _module.allocBufDescriptor();
+    let completeCompleted = false;
+    try {
+      (_exports.{{ complete_ffi_name }} as Function)(outPtr, awaitedHandle, 0);
+      completeCompleted = true;
+      const reader = _module.readerFromBuf(outPtr);
+      const result = {{ return_route.decode_expr() }};
+      return result;
+    } finally {
+      if (completeCompleted) {
+        _module.freeBuf(outPtr);
+      } else {
+        _module.freeBufDescriptor(outPtr);
+      }
+      (_exports.{{ free_ffi_name }} as Function)(awaitedHandle);
+    }
+{% elif return_route.is_direct() %}
+    (_exports.{{ free_ffi_name }} as Function)(awaitedHandle);
+    throw new Error("Unsupported async return route: Direct{{ return_route.ts_cast() }}");
+{% else %}
+    (_exports.{{ free_ffi_name }} as Function)(awaitedHandle);
+    throw new Error("Unsupported async return route: RawPacked {{ return_route.decode_expr() }}");
+{% endif %}
+  } finally {
+    {{ cleanup_code }}
+  }
+{% endif %}
+}

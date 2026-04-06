@@ -48,6 +48,12 @@ custom_type!(
     },
 );
 
+#[data]
+pub struct Event {
+    pub name: String,
+    pub timestamp: DateTime<Utc>,
+}
+
 #[export]
 pub fn echo_email(email: Email) -> Email {
     email
@@ -66,4 +72,19 @@ pub fn echo_datetime(dt: DateTime<Utc>) -> DateTime<Utc> {
 #[export]
 pub fn datetime_to_millis(dt: DateTime<Utc>) -> i64 {
     dt.timestamp_millis()
+}
+
+#[export]
+pub fn format_timestamp(timestamp: DateTime<Utc>) -> String {
+    timestamp.to_rfc3339()
+}
+
+#[export]
+pub fn echo_event(event: Event) -> Event {
+    event
+}
+
+#[export]
+pub fn event_timestamp(event: Event) -> i64 {
+    event.timestamp.timestamp_millis()
 }

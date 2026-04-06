@@ -24,14 +24,42 @@ fun main(args: Array<String>) {
                 val asyncFetcher = object : AsyncFetcher {
                     override suspend fun fetchValue(key: Int): Int = key * 100
                     override suspend fun fetchString(input: String): String = input.uppercase()
+                    override suspend fun fetchJoinedMessage(scope: String, message: String): String =
+                        "$scope::${message.uppercase()}"
+                }
+                val asyncPointTransformer = object : AsyncPointTransformer {
+                    override suspend fun transformPoint(point: Point): Point = Point(point.x + 50.0, point.y + 60.0)
                 }
                 val asyncOptionFetcher = object : AsyncOptionFetcher {
                     override suspend fun find(key: Int): Long? = key.takeIf { it > 0 }?.toLong()?.times(1000L)
                 }
+                val asyncOptionalMessageFetcher = object : AsyncOptionalMessageFetcher {
+                    override suspend fun findMessage(key: Int): String? = key.takeIf { it > 0 }?.let { "async-message:$it" }
+                }
+                val asyncResultFormatter = object : AsyncResultFormatter {
+                    override suspend fun renderMessage(scope: String, message: String): String {
+                        check(scope.isNotEmpty())
+                        return "$scope::${message.uppercase()}"
+                    }
+
+                    override suspend fun transformPoint(point: Point, status: Status): Point {
+                        check(status == Status.ACTIVE)
+                        return Point(point.x + 500.0, point.y + 600.0)
+                    }
+                }
                 check(fetchWithAsyncCallback(asyncFetcher, 5) == 500)
                 check(fetchStringWithAsyncCallback(asyncFetcher, "boltffi") == "BOLTFFI")
+                check(fetchJoinedMessageWithAsyncCallback(asyncFetcher, "async", "borrowed strings") == "async::BORROWED STRINGS")
+                check(transformPointWithAsyncCallback(asyncPointTransformer, Point(1.0, 2.0)) == Point(51.0, 62.0))
                 check(invokeAsyncOptionFetcher(asyncOptionFetcher, 7) == 7_000L)
                 check(invokeAsyncOptionFetcher(asyncOptionFetcher, 0) == null)
+                check(invokeAsyncOptionalMessageFetcher(asyncOptionalMessageFetcher, 9) == "async-message:9")
+                check(invokeAsyncOptionalMessageFetcher(asyncOptionalMessageFetcher, 0) == null)
+                check(renderMessageWithAsyncResultCallback(asyncResultFormatter, "async", "result") == "async::RESULT")
+                check(
+                    transformPointWithAsyncResultCallback(asyncResultFormatter, Point(3.0, 4.0), Status.ACTIVE)
+                        == Point(503.0, 604.0)
+                )
             }
         }
         "event-bus-streams" -> runBlocking {

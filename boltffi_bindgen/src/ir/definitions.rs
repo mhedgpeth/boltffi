@@ -18,6 +18,7 @@ pub struct DeprecationInfo {
 pub struct RecordDef {
     pub id: RecordId,
     pub is_repr_c: bool,
+    pub is_error: bool,
     pub fields: Vec<FieldDef>,
     pub constructors: Vec<ConstructorDef>,
     pub methods: Vec<MethodDef>,

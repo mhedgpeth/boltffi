@@ -104,6 +104,81 @@ pub fn process_vec(processor: impl VecProcessor, values: Vec<i32>) -> Vec<i32> {
 }
 
 #[export]
+pub trait MessageFormatter {
+    fn format_message(&self, scope: &str, message: &str) -> String;
+}
+
+#[export]
+pub fn format_message_with_callback(
+    formatter: impl MessageFormatter,
+    scope: String,
+    message: String,
+) -> String {
+    formatter.format_message(&scope, &message)
+}
+
+#[export]
+pub fn format_message_with_boxed_callback(
+    formatter: Box<dyn MessageFormatter>,
+    scope: String,
+    message: String,
+) -> String {
+    formatter.format_message(&scope, &message)
+}
+
+#[export]
+pub fn format_message_with_optional_callback(
+    formatter: Option<Box<dyn MessageFormatter>>,
+    scope: String,
+    message: String,
+) -> String {
+    formatter
+        .map(|formatter| formatter.format_message(&scope, &message))
+        .unwrap_or_else(|| format!("{scope}::{message}"))
+}
+
+struct PrefixingMessageFormatter {
+    prefix: String,
+}
+
+impl MessageFormatter for PrefixingMessageFormatter {
+    fn format_message(&self, scope: &str, message: &str) -> String {
+        format!("{}::{scope}::{message}", self.prefix)
+    }
+}
+
+#[export]
+pub fn make_message_prefixer(prefix: String) -> Box<dyn MessageFormatter> {
+    Box::new(PrefixingMessageFormatter { prefix })
+}
+
+#[export]
+pub trait OptionalMessageCallback {
+    fn find_message(&self, key: i32) -> Option<String>;
+}
+
+#[export]
+pub fn invoke_optional_message_callback(
+    callback: impl OptionalMessageCallback,
+    key: i32,
+) -> Option<String> {
+    callback.find_message(key)
+}
+
+#[export]
+pub trait ResultMessageCallback {
+    fn render_message(&self, key: i32) -> Result<String, MathError>;
+}
+
+#[export]
+pub fn invoke_result_message_callback(
+    callback: impl ResultMessageCallback,
+    key: i32,
+) -> Result<String, MathError> {
+    callback.render_message(key)
+}
+
+#[export]
 pub trait MultiMethodCallback {
     fn method_a(&self, x: i32) -> i32;
     fn method_b(&self, x: i32, y: i32) -> i32;

@@ -281,27 +281,23 @@ fn generate_record_instance_export(
     let return_abi = return_lowering.lower_output(&method_descriptor.resolved_output);
     let on_error = return_abi.invalid_arg_early_return_statement();
 
-    let other_inputs = method.sig.inputs.iter().skip(1).cloned();
+    let self_ident = syn::Ident::new("self_value", method_name.span());
+    let self_input: syn::FnArg = syn::parse_quote!(#self_ident: #type_name);
+    let all_inputs = std::iter::once(self_input).chain(method.sig.inputs.iter().skip(1).cloned());
     let FfiParams {
-        ffi_params: param_ffi,
-        conversions: param_conversions,
+        ffi_params: all_ffi_params,
+        conversions: mut all_conversions,
         call_args,
-    } = transform_method_params(other_inputs, return_lowering, callback_registry, &on_error);
+    } = transform_method_params(all_inputs, return_lowering, callback_registry, &on_error);
 
-    let self_param = quote! { self_value: <#type_name as ::boltffi::__private::Passable>::In };
-    let self_unpack = if is_mut {
-        quote! { let mut self_value: #type_name = unsafe { <#type_name as ::boltffi::__private::Passable>::unpack(self_value) }; }
-    } else {
-        quote! { let self_value: #type_name = unsafe { <#type_name as ::boltffi::__private::Passable>::unpack(self_value) }; }
-    };
+    if is_mut {
+        all_conversions.push(quote! {
+            let mut #self_ident = #self_ident;
+        });
+    }
 
-    let mut all_ffi_params = vec![self_param];
-    all_ffi_params.extend(param_ffi);
-
-    let mut all_conversions = vec![self_unpack];
-    all_conversions.extend(param_conversions);
-
-    let call_expr = quote! { self_value.#method_name(#(#call_args),*) };
+    let method_call_args = call_args.into_iter().skip(1).collect::<Vec<_>>();
+    let call_expr = quote! { #self_ident.#method_name(#(#method_call_args),*) };
 
     if is_mut {
         return generate_mut_instance_export(
@@ -640,4 +636,72 @@ pub fn data_impl_block(item: TokenStream) -> TokenStream {
         .map(RecordImplExpansion::render)
         .unwrap_or_else(|error| error.to_compile_error())
         .into()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::index::callback_traits::CallbackTraitRegistry;
+    use crate::index::custom_types::CustomTypeRegistry;
+    use crate::index::data_types::DataTypeRegistry;
+    use crate::lowering::returns::model::ReturnLoweringContext;
+
+    fn parse_impl(code: &str) -> syn::ItemImpl {
+        syn::parse_str(code).expect("failed to parse impl block")
+    }
+
+    fn return_lowering() -> ReturnLoweringContext<'static> {
+        let custom_types = Box::leak(Box::new(CustomTypeRegistry::default()));
+        let data_types = Box::leak(Box::new(DataTypeRegistry::default()));
+        ReturnLoweringContext::new(custom_types, data_types)
+    }
+
+    fn callback_registry() -> &'static CallbackTraitRegistry {
+        Box::leak(Box::new(CallbackTraitRegistry::default()))
+    }
+
+    #[test]
+    fn record_instance_method_with_borrowed_wire_params_lowers_to_buffers_and_storage() {
+        let impl_block = parse_impl(
+            r#"
+            impl Inventory {
+                pub fn summarize(&self, profile: &UserProfile, filter: &Filter) -> String {
+                    let _ = (profile, filter);
+                    String::new()
+                }
+            }
+            "#,
+        );
+        let method = impl_block
+            .items
+            .iter()
+            .find_map(|item| match item {
+                syn::ImplItem::Fn(method) => Some(method),
+                _ => None,
+            })
+            .expect("record instance method should exist");
+        let type_name = syn::Ident::new("Inventory", proc_macro2::Span::call_site());
+
+        let generated = generate_record_instance_export(
+            &type_name,
+            "Inventory",
+            method,
+            false,
+            &return_lowering(),
+            callback_registry(),
+        )
+        .expect("record instance export should be generated")
+        .to_string();
+
+        assert!(generated.contains("profile_storage_ptr : * const u8"));
+        assert!(generated.contains("profile_storage_len : usize"));
+        assert!(generated.contains("filter_storage_ptr : * const u8"));
+        assert!(generated.contains("filter_storage_len : usize"));
+        assert!(generated.contains("let profile_storage : UserProfile"));
+        assert!(generated.contains("let filter_storage : Filter"));
+        assert!(generated.contains("let profile = & profile_storage"));
+        assert!(generated.contains("let filter = & filter_storage"));
+        assert!(!generated.contains("profile : & UserProfile"));
+        assert!(!generated.contains("filter : & Filter"));
+    }
 }

@@ -145,9 +145,9 @@ impl TsClassMethod {
     pub fn ffi_call_args_with_out(&self) -> String {
         let call_args = self.ffi_call_args();
         if call_args.is_empty() {
-            "outPtr".to_string()
+            "__outPtr".to_string()
         } else {
-            format!("outPtr, {call_args}")
+            format!("__outPtr, {call_args}")
         }
     }
 
@@ -283,10 +283,18 @@ pub struct TsAsyncCallbackMethod {
 pub struct TsRecord {
     pub name: String,
     pub fields: Vec<TsField>,
+    pub constructors: Vec<TsValueTypeConstructor>,
+    pub methods: Vec<TsValueTypeMethod>,
     pub is_blittable: bool,
     pub wire_size: Option<usize>,
     pub tail_padding: usize,
     pub doc: Option<String>,
+}
+
+impl TsRecord {
+    pub fn has_companion(&self) -> bool {
+        !self.constructors.is_empty() || !self.methods.is_empty()
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -316,6 +324,8 @@ impl TsField {
 pub struct TsEnum {
     pub name: String,
     pub variants: Vec<TsVariant>,
+    pub constructors: Vec<TsValueTypeConstructor>,
+    pub methods: Vec<TsValueTypeMethod>,
     pub kind: TsEnumKind,
     pub doc: Option<String>,
 }
@@ -330,6 +340,111 @@ impl TsEnum {
     pub fn is_c_style(&self) -> bool {
         matches!(self.kind, TsEnumKind::CStyle)
     }
+
+    pub fn has_companion(&self) -> bool {
+        !self.constructors.is_empty() || !self.methods.is_empty()
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct TsValueTypeConstructor {
+    pub ts_name: String,
+    pub ffi_name: String,
+    pub params: Vec<TsParam>,
+    pub return_type: String,
+    pub return_route: TsOutputRoute,
+    pub doc: Option<String>,
+}
+
+impl TsValueTypeConstructor {
+    pub fn wrapper_code(&self) -> String {
+        self.params
+            .iter()
+            .filter_map(TsParam::wrapper_code)
+            .collect::<Vec<_>>()
+            .join("\n    ")
+    }
+
+    pub fn cleanup_code(&self) -> String {
+        self.params
+            .iter()
+            .filter_map(TsParam::cleanup_code)
+            .collect::<Vec<_>>()
+            .join("\n      ")
+    }
+
+    pub fn ffi_call_args(&self) -> String {
+        flatten_ffi_args(&self.params).join(", ")
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct TsValueTypeMethod {
+    pub ts_name: String,
+    pub ffi_name: String,
+    pub is_static: bool,
+    pub params: Vec<TsParam>,
+    pub return_type: Option<String>,
+    pub return_handle: Option<TsHandleReturn>,
+    pub return_callback: Option<TsCallbackHandleReturn>,
+    pub mode: TsValueTypeMethodMode,
+    pub doc: Option<String>,
+}
+
+impl TsValueTypeMethod {
+    pub fn wrapper_code(&self) -> String {
+        self.params
+            .iter()
+            .filter_map(TsParam::wrapper_code)
+            .collect::<Vec<_>>()
+            .join("\n    ")
+    }
+
+    pub fn cleanup_code(&self) -> String {
+        self.params
+            .iter()
+            .filter_map(TsParam::cleanup_code)
+            .collect::<Vec<_>>()
+            .join("\n      ")
+    }
+
+    pub fn ffi_call_args(&self) -> String {
+        flatten_ffi_args(&self.params).join(", ")
+    }
+
+    pub fn ffi_call_args_with_out(&self) -> String {
+        let call_args = self.ffi_call_args();
+        if call_args.is_empty() {
+            "__outPtr".to_string()
+        } else {
+            format!("__outPtr, {call_args}")
+        }
+    }
+
+    pub fn is_async(&self) -> bool {
+        matches!(self.mode, TsValueTypeMethodMode::Async(_))
+    }
+}
+
+#[derive(Debug, Clone)]
+pub enum TsValueTypeMethodMode {
+    Sync(TsValueTypeSyncMethod),
+    Async(TsValueTypeAsyncMethod),
+}
+
+#[derive(Debug, Clone)]
+pub struct TsValueTypeSyncMethod {
+    pub return_route: TsOutputRoute,
+}
+
+#[derive(Debug, Clone)]
+pub struct TsValueTypeAsyncMethod {
+    pub poll_sync_ffi_name: String,
+    pub complete_ffi_name: String,
+    pub panic_message_ffi_name: String,
+    pub cancel_ffi_name: String,
+    pub free_ffi_name: String,
+    pub return_route: TsOutputRoute,
 }
 
 #[derive(Debug, Clone)]
@@ -848,6 +963,11 @@ impl TsOutputRoute {
 
     pub fn return_slot_size(&self) -> Option<usize> {
         self.return_slot_size
+    }
+
+    pub fn with_ts_cast(mut self, ts_cast: String) -> Self {
+        self.ts_cast = ts_cast;
+        self
     }
 }
 

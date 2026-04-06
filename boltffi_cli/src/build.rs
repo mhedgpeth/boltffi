@@ -272,7 +272,8 @@ fn run_command_streaming(cmd: &mut Command, on_output: Option<&OutputCallback>) 
     let stderr = child.stderr.take();
 
     let (tx, rx) = mpsc::channel();
-    let tx2 = tx.clone();
+    let stdout_tx = tx.clone();
+    let stderr_tx = tx.clone();
 
     let stdout_handle = stdout.map(|out| {
         thread::spawn(move || {
@@ -280,7 +281,7 @@ fn run_command_streaming(cmd: &mut Command, on_output: Option<&OutputCallback>) 
                 .lines()
                 .map_while(std::result::Result::ok)
             {
-                let _ = tx.send(line);
+                let _ = stdout_tx.send(line);
             }
         })
     });
@@ -291,10 +292,12 @@ fn run_command_streaming(cmd: &mut Command, on_output: Option<&OutputCallback>) 
                 .lines()
                 .map_while(std::result::Result::ok)
             {
-                let _ = tx2.send(line);
+                let _ = stderr_tx.send(line);
             }
         })
     });
+
+    drop(tx);
 
     for line in rx {
         if let Some(cb) = on_output {
@@ -329,7 +332,12 @@ pub fn failed_targets(results: &[BuildResult]) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{CargoBuildCommandArgs, CargoBuildProfile, resolve_build_profile};
+    use super::{
+        CargoBuildCommandArgs, CargoBuildProfile, resolve_build_profile, run_command_streaming,
+    };
+    use std::process::Command;
+    use std::sync::mpsc;
+    use std::time::Duration;
 
     #[test]
     fn resolves_release_profile_from_passthrough_args() {
@@ -384,5 +392,30 @@ mod tests {
                 "mobile".to_string()
             ]
         );
+    }
+
+    #[test]
+    fn streaming_command_returns_after_child_exits() {
+        let (tx, rx) = mpsc::channel();
+
+        std::thread::spawn(move || {
+            let mut command = if cfg!(windows) {
+                let mut cmd = Command::new("cmd");
+                cmd.args(["/C", "echo", "ok"]);
+                cmd
+            } else {
+                let mut cmd = Command::new("sh");
+                cmd.args(["-c", "printf ok"]);
+                cmd
+            };
+
+            let result = run_command_streaming(&mut command, None);
+            let _ = tx.send(result);
+        });
+
+        let result = rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("run_command_streaming should finish once the child exits");
+        assert!(result);
     }
 }

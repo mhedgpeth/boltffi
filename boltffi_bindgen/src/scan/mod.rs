@@ -30,6 +30,7 @@ pub enum TypeShape {
     Record {
         fields: Vec<RecordField>,
         is_repr_c: bool,
+        is_error: bool,
         constructors: Vec<Constructor>,
         methods: Vec<Method>,
     },
@@ -89,7 +90,13 @@ impl TypeRegistry {
         }
     }
 
-    pub fn fill_record_fields(&mut self, name: &str, fields: Vec<RecordField>, is_repr_c: bool) {
+    pub fn fill_record_fields(
+        &mut self,
+        name: &str,
+        fields: Vec<RecordField>,
+        is_repr_c: bool,
+        is_error: bool,
+    ) {
         let Some(meta) = self.types.get_mut(name) else {
             return;
         };
@@ -97,15 +104,18 @@ impl TypeRegistry {
             TypeShape::Record {
                 fields: existing_fields,
                 is_repr_c: existing_repr_c,
+                is_error: existing_is_error,
                 ..
             } => {
                 *existing_fields = fields;
                 *existing_repr_c = is_repr_c;
+                *existing_is_error = is_error;
             }
             _ => {
                 meta.shape = TypeShape::Record {
                     fields,
                     is_repr_c,
+                    is_error,
                     constructors: Vec::new(),
                     methods: Vec::new(),
                 };
@@ -150,6 +160,7 @@ impl TypeRegistry {
                 meta.shape = TypeShape::Record {
                     fields: Vec::new(),
                     is_repr_c: true,
+                    is_error: false,
                     constructors,
                     methods,
                 };
@@ -426,11 +437,6 @@ impl AliasResolver {
     }
 }
 
-#[derive(Debug, Clone, Default)]
-pub struct ScanFeatures {
-    pub record_methods: bool,
-}
-
 pub struct SourceScanner {
     module_name: String,
     type_registry: TypeRegistry,
@@ -442,7 +448,6 @@ pub struct SourceScanner {
     integer_constants: HashMap<String, i128>,
     source_root: Option<PathBuf>,
     target_pointer_width_bits: Option<u8>,
-    features: ScanFeatures,
 }
 
 impl SourceScanner {
@@ -465,13 +470,7 @@ impl SourceScanner {
             integer_constants: HashMap::new(),
             source_root: None,
             target_pointer_width_bits,
-            features: ScanFeatures::default(),
         }
-    }
-
-    pub fn with_features(mut self, features: ScanFeatures) -> Self {
-        self.features = features;
-        self
     }
 
     pub fn scan_directory(&mut self, crate_path: &Path, dir: &Path) -> Result<(), String> {
@@ -536,6 +535,7 @@ impl SourceScanner {
             Item::Struct(item_struct) => {
                 let is_record = has_attribute(&item_struct.attrs, "ffi_record")
                     || has_attribute(&item_struct.attrs, "data")
+                    || has_attribute(&item_struct.attrs, "error")
                     || has_repr_c(&item_struct.attrs)
                     || (has_attribute(&item_struct.attrs, "derive")
                         && has_ffi_type_derive(&item_struct.attrs));
@@ -963,6 +963,7 @@ impl SourceScanner {
                 Item::Struct(item_struct) => {
                     if has_attribute(&item_struct.attrs, "ffi_record")
                         || has_attribute(&item_struct.attrs, "data")
+                        || has_attribute(&item_struct.attrs, "error")
                         || has_repr_c(&item_struct.attrs)
                         || (has_attribute(&item_struct.attrs, "derive")
                             && has_ffi_type_derive(&item_struct.attrs))
@@ -1045,6 +1046,7 @@ impl SourceScanner {
                 }
                 if has_attribute(&item_struct.attrs, "ffi_record")
                     || has_attribute(&item_struct.attrs, "data")
+                    || has_attribute(&item_struct.attrs, "error")
                     || has_repr_c(&item_struct.attrs)
                     || (has_attribute(&item_struct.attrs, "derive")
                         && has_ffi_type_derive(&item_struct.attrs))
@@ -1053,7 +1055,7 @@ impl SourceScanner {
                 }
             }
             Item::Impl(item_impl) => {
-                if self.features.record_methods && has_data_impl_attribute(&item_impl.attrs) {
+                if has_data_impl_attribute(&item_impl.attrs) {
                     self.process_value_type_impl(item_impl);
                 } else if has_attribute(&item_impl.attrs, "ffi_class")
                     || has_attribute(&item_impl.attrs, "export")
@@ -1179,14 +1181,15 @@ impl SourceScanner {
         };
 
         let has_data = has_attribute(&item_struct.attrs, "data");
+        let is_error = has_attribute(&item_struct.attrs, "error");
         let has_any_repr = item_struct.attrs.iter().any(|a| a.path().is_ident("repr"));
-        let is_repr_c = if has_data && !has_any_repr {
+        let is_repr_c = if (has_data || is_error) && !has_any_repr {
             true
         } else {
             has_repr_c(&item_struct.attrs)
         };
         self.type_registry
-            .fill_record_fields(&name, fields, is_repr_c);
+            .fill_record_fields(&name, fields, is_repr_c, is_error);
     }
 
     fn process_enum(
@@ -1530,6 +1533,7 @@ impl SourceScanner {
                 TypeShape::Record {
                     fields,
                     is_repr_c,
+                    is_error,
                     constructors,
                     methods,
                 } => {
@@ -1542,6 +1546,7 @@ impl SourceScanner {
                         .into_iter()
                         .fold(record, |r, ctor| r.with_constructor(ctor));
                     let record = methods.into_iter().fold(record, |r, m| r.with_method(m));
+                    let record = if is_error { record.as_error() } else { record };
                     module = module.with_record(record);
                 }
                 TypeShape::Enum {
@@ -2734,26 +2739,11 @@ pub fn scan_crate_with_pointer_width(
     module_name: &str,
     target_pointer_width_bits: Option<u8>,
 ) -> Result<Module, String> {
-    scan_crate_with_options(
-        crate_path,
-        module_name,
-        target_pointer_width_bits,
-        ScanFeatures::default(),
-    )
-}
-
-pub fn scan_crate_with_options(
-    crate_path: &Path,
-    module_name: &str,
-    target_pointer_width_bits: Option<u8>,
-    features: ScanFeatures,
-) -> Result<Module, String> {
     let src_path = crate_path.join("src");
     let mut scanner = SourceScanner::new_with_pointer_width(
         module_name,
         target_pointer_width_bits.or_else(parse_target_pointer_width),
-    )
-    .with_features(features);
+    );
     scanner.scan_directory(crate_path, &src_path)?;
     let module = scanner.into_module();
     validate_no_symbol_collisions(&module)?;
@@ -3041,6 +3031,7 @@ mod tests {
             TypeShape::Record {
                 fields: vec![RecordField::new("x", MType::Primitive(Primitive::F64))],
                 is_repr_c: true,
+                is_error: false,
                 constructors: Vec::new(),
                 methods: Vec::new(),
             },
@@ -3113,6 +3104,7 @@ mod tests {
             "Point",
             vec![RecordField::new("x", MType::Primitive(Primitive::F64))],
             true,
+            false,
         );
 
         match &reg.types.get("Point").unwrap().shape {
@@ -3121,6 +3113,7 @@ mod tests {
                 is_repr_c,
                 constructors,
                 methods,
+                ..
             } => {
                 assert_eq!(fields.len(), 1);
                 assert_eq!(fields[0].name, "x");
@@ -3141,6 +3134,7 @@ mod tests {
             "Point",
             vec![RecordField::new("x", MType::Primitive(Primitive::F64))],
             false,
+            false,
         );
 
         match &reg.types.get("Point").unwrap().shape {
@@ -3149,6 +3143,7 @@ mod tests {
                 is_repr_c,
                 constructors,
                 methods,
+                ..
             } => {
                 assert_eq!(fields.len(), 1);
                 assert!(!*is_repr_c);
@@ -3428,7 +3423,7 @@ mod tests {
         fs::remove_dir_all(temp_root).expect("cleanup temp root");
     }
 
-    fn scan_temp_crate(source: &str, features: ScanFeatures) -> Module {
+    fn scan_temp_crate(source: &str) -> Module {
         let unique_suffix = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
@@ -3443,12 +3438,12 @@ mod tests {
         fs::write(src_dir.join("lib.rs"), source).expect("write lib.rs");
 
         let module =
-            scan_crate_with_options(&temp_root, "testlib", None, features).expect("scan failed");
+            scan_crate_with_pointer_width(&temp_root, "testlib", None).expect("scan failed");
         fs::remove_dir_all(&temp_root).expect("cleanup");
         module
     }
 
-    fn scan_temp_crate_multi(files: &[(&str, &str)], features: ScanFeatures) -> Module {
+    fn scan_temp_crate_multi(files: &[(&str, &str)]) -> Module {
         let unique_suffix = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
@@ -3466,13 +3461,49 @@ mod tests {
         });
 
         let module =
-            scan_crate_with_options(&temp_root, "testlib", None, features).expect("scan failed");
+            scan_crate_with_pointer_width(&temp_root, "testlib", None).expect("scan failed");
         fs::remove_dir_all(&temp_root).expect("cleanup");
         module
     }
 
     #[test]
-    fn record_impl_scanned_with_feature_enabled() {
+    fn error_structs_are_scanned_as_records() {
+        let source = r#"
+            use boltffi::*;
+
+            #[error]
+            pub struct AppError {
+                pub code: i32,
+                pub message: String,
+            }
+
+            #[export]
+            pub fn may_fail(valid: bool) -> Result<String, AppError> {
+                if valid {
+                    Ok("ok".to_string())
+                } else {
+                    Err(AppError {
+                        code: 400,
+                        message: "bad".to_string(),
+                    })
+                }
+            }
+        "#;
+
+        let module = scan_temp_crate(source);
+        let error_record = module
+            .records
+            .iter()
+            .find(|record| record.name == "AppError")
+            .expect("AppError should be scanned as a record");
+
+        assert!(error_record.is_error);
+        assert_eq!(error_record.fields.len(), 2);
+        assert_eq!(module.functions.len(), 1);
+    }
+
+    #[test]
+    fn record_impl_scanned() {
         let source = r#"
             #[boltffi::data]
             pub struct Point {
@@ -3492,12 +3523,7 @@ mod tests {
             }
         "#;
 
-        let module = scan_temp_crate(
-            source,
-            ScanFeatures {
-                record_methods: true,
-            },
-        );
+        let module = scan_temp_crate(source);
 
         let record = module.find_record("Point").expect("Point not found");
         assert_eq!(record.fields.len(), 2);
@@ -3508,42 +3534,12 @@ mod tests {
     }
 
     #[test]
-    fn record_impl_ignored_with_feature_disabled() {
-        let source = r#"
-            #[boltffi::data]
-            pub struct Point {
-                pub x: f64,
-                pub y: f64,
-            }
-
-            #[boltffi::data(impl)]
-            impl Point {
-                pub fn origin() -> Self {
-                    Self { x: 0.0, y: 0.0 }
-                }
-
-                pub fn magnitude(&self) -> f64 {
-                    (self.x * self.x + self.y * self.y).sqrt()
-                }
-            }
-        "#;
-
-        let module = scan_temp_crate(source, ScanFeatures::default());
-
-        let record = module.find_record("Point").expect("Point not found");
-        assert_eq!(record.fields.len(), 2);
-        assert!(record.constructors.is_empty());
-        assert!(record.methods.is_empty());
-    }
-
-    #[test]
     fn record_impl_cross_file_impl_before_struct() {
-        let module = scan_temp_crate_multi(
-            &[
-                ("lib.rs", "pub mod record_impl;\npub mod record_struct;\n"),
-                (
-                    "record_impl.rs",
-                    r#"
+        let module = scan_temp_crate_multi(&[
+            ("lib.rs", "pub mod record_impl;\npub mod record_struct;\n"),
+            (
+                "record_impl.rs",
+                r#"
                         use super::record_struct::Point;
 
                         #[boltffi::data(impl)]
@@ -3557,22 +3553,18 @@ mod tests {
                             }
                         }
                     "#,
-                ),
-                (
-                    "record_struct.rs",
-                    r#"
+            ),
+            (
+                "record_struct.rs",
+                r#"
                         #[boltffi::data]
                         pub struct Point {
                             pub x: f64,
                             pub y: f64,
                         }
                     "#,
-                ),
-            ],
-            ScanFeatures {
-                record_methods: true,
-            },
-        );
+            ),
+        ]);
 
         let record = module.find_record("Point").expect("Point not found");
         assert_eq!(record.fields.len(), 2);

@@ -161,6 +161,8 @@ enum GenerateTargetArg {
     Header,
     #[value(help = "Generate TypeScript bindings for WASM")]
     Typescript,
+    #[value(help = "Generate Dart Bindings")]
+    Dart,
     #[value(help = "Generate all bindings")]
     All,
 }
@@ -190,7 +192,7 @@ enum PackTargetArg {
         #[arg(long)]
         no_build: bool,
 
-        #[arg(long, help = "Include experimental targets")]
+        #[arg(long, help = "Include experimental targets/features")]
         experimental: bool,
     },
 
@@ -252,7 +254,7 @@ enum PackTargetArg {
     },
 
     #[command(
-        about = "Build + package Java artifacts (experimental)",
+        about = "Build + package Java artifacts",
         long_about = "Build + package Java artifacts.\n\nOutputs:\n  - Java bindings: {targets.java.jvm.output}\n"
     )]
     Java {
@@ -384,6 +386,7 @@ fn execute_command(
                         GenerateTargetArg::Java => GenerateTarget::Java,
                         GenerateTargetArg::Header => GenerateTarget::Header,
                         GenerateTargetArg::Typescript => GenerateTarget::Typescript,
+                        GenerateTargetArg::Dart => GenerateTarget::Dart,
                         GenerateTargetArg::All => GenerateTarget::All,
                     })
                     .unwrap_or(GenerateTarget::All),
@@ -475,6 +478,7 @@ fn execute_command(
                     release,
                     regenerate,
                     no_build,
+                    experimental: false,
                     cargo_args: cargo_args.clone(),
                 }),
             };

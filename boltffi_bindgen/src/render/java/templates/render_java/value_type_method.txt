@@ -1,5 +1,4 @@
-
-    public {% if method.is_static %}static {% endif %}{{ method.return_type }} {{ method.name }}({% for param in method.params %}{{ param.java_type }} {{ param.name }}{% if !loop.last %}, {% endif %}{% endfor %}) {
+{{ self::javadoc_block(method.doc, "    ") }}    public {% if method.is_static %}static {% endif %}{{ method.return_type }} {{ method.name }}({% for param in method.params %}{{ param.java_type }} {{ param.name }}{% if !loop.last %}, {% endif %}{% endfor %}) {
 {%- for binding in method.input_bindings.direct_composites %}
         {{ binding.declaration() }};
 {%- endfor %}
@@ -20,7 +19,9 @@
         if (_buf == null) throw new RuntimeException("FFI call returned null buffer");
         WireReader reader = new WireReader(_buf);
         if (reader.readI8() != 0) {
-{%- if method.return_plan.result_has_typed_exception() %}
+{%- if method.return_plan.result_err_throws_directly() %}
+            throw {{ method.return_plan.result_err_decode() }};
+{%- elif method.return_plan.result_has_typed_exception() %}
             throw new {{ method.return_plan.result_err_exception_class() }}({{ method.return_plan.result_err_decode() }});
 {%- elif method.return_plan.result_err_is_string() %}
             throw new RuntimeException({{ method.return_plan.result_err_decode() }});
@@ -57,7 +58,9 @@
             if (_buf == null) throw new RuntimeException("FFI call returned null buffer");
             WireReader reader = new WireReader(_buf);
             if (reader.readI8() != 0) {
-{%- if method.return_plan.result_has_typed_exception() %}
+{%- if method.return_plan.result_err_throws_directly() %}
+                throw {{ method.return_plan.result_err_decode() }};
+{%- elif method.return_plan.result_has_typed_exception() %}
                 throw new {{ method.return_plan.result_err_exception_class() }}({{ method.return_plan.result_err_decode() }});
 {%- elif method.return_plan.result_err_is_string() %}
                 throw new RuntimeException({{ method.return_plan.result_err_decode() }});

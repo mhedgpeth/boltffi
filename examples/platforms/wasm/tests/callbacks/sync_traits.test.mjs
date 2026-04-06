@@ -10,6 +10,15 @@ export async function run() {
     mapStatus: (status) => (status === demo.Status.Pending ? demo.Status.Active : demo.Status.Inactive),
   };
   const flipper = demo.makeStatusFlipper();
+  const messageFormatter = {
+    formatMessage: (scope, message) => `${scope}::${message.toUpperCase()}`,
+  };
+  const optionalMessageCallback = {
+    findMessage: (key) => (key > 0 ? `message:${key}` : null),
+  };
+  const resultMessageCallback = {
+    renderMessage: (key) => (key >= 0 ? `message:${key}` : wireErr(demo.MathError.NegativeInput)),
+  };
   const multiMethodCallback = {
     methodA: (value) => value + 1,
     methodB: (left, right) => left * right,
@@ -41,6 +50,33 @@ export async function run() {
   assert.equal(demo.invokeValueCallback(incrementer, 4), 9);
   assert.equal(demo.invokeOptionalValueCallback(doubler, 4), 8);
   assert.equal(demo.invokeOptionalValueCallback(null, 4), 4);
+  assert.equal(
+    demo.formatMessageWithCallback(messageFormatter, "sync", "borrowed strings"),
+    "sync::BORROWED STRINGS",
+  );
+  assert.equal(
+    demo.formatMessageWithBoxedCallback(messageFormatter, "boxed", "borrowed strings"),
+    "boxed::BORROWED STRINGS",
+  );
+  assert.equal(
+    demo.formatMessageWithOptionalCallback(messageFormatter, "optional", "borrowed strings"),
+    "optional::BORROWED STRINGS",
+  );
+  assert.equal(
+    demo.formatMessageWithOptionalCallback(null, "fallback", "message"),
+    "fallback::message",
+  );
+  const prefixer = demo.makeMessagePrefixer("prefix");
+  assert.equal(prefixer.formatMessage("scope", "message"), "prefix::scope::message");
+  assert.equal(demo.formatMessageWithCallback(prefixer, "sync", "formatter"), "prefix::sync::formatter");
+  assert.equal(demo.invokeOptionalMessageCallback(optionalMessageCallback, 7), "message:7");
+  assert.equal(demo.invokeOptionalMessageCallback(optionalMessageCallback, 0), null);
+  assert.equal(demo.invokeResultMessageCallback(resultMessageCallback, 8), "message:8");
+  assertThrowsWithCode(
+    () => demo.invokeResultMessageCallback(resultMessageCallback, -1),
+    demo.MathErrorException,
+    demo.MathError.NegativeInput,
+  );
   assertPoint(demo.transformPoint(pointTransformer, { x: 1, y: 2 }), { x: 11, y: 22 });
   assertPoint(demo.transformPointBoxed(pointTransformer, { x: 3, y: 4 }), { x: 13, y: 24 });
   assert.equal(demo.mapStatus(statusMapper, demo.Status.Pending), demo.Status.Active);

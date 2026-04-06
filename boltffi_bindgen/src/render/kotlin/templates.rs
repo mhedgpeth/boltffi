@@ -53,6 +53,7 @@ pub struct PreambleTemplate<'a> {
     pub prefix: &'a str,
     pub extra_imports: &'a [String],
     pub custom_types: &'a [super::plan::KotlinCustomType],
+    pub has_async_runtime: bool,
     pub has_streams: bool,
 }
 
@@ -66,6 +67,7 @@ pub struct NativeTemplate<'a> {
     pub classes: &'a [super::plan::KotlinNativeClass],
     pub callbacks: &'a [super::plan::KotlinCallbackTrait],
     pub async_callback_invokers: &'a [super::plan::KotlinAsyncCallbackInvoker],
+    pub has_async_runtime: bool,
 }
 
 #[derive(Template)]
@@ -74,6 +76,8 @@ pub struct RecordTemplate<'a> {
     pub class_name: &'a str,
     pub fields: &'a [super::plan::KotlinRecordField],
     pub is_blittable: bool,
+    pub is_error: bool,
+    pub message_field_name: Option<&'a str>,
     pub struct_size: usize,
     pub constructors: &'a [KotlinConstructor],
     pub methods: &'a [KotlinMethod],
@@ -272,6 +276,7 @@ impl KotlinEmitter {
             prefix: &module.prefix,
             extra_imports: &module.extra_imports,
             custom_types: &module.custom_types,
+            has_async_runtime: module.has_async_runtime,
             has_streams: module.has_streams,
         }
         .render()
@@ -324,6 +329,8 @@ impl KotlinEmitter {
                 class_name: &record.class_name,
                 fields: &record.fields,
                 is_blittable: record.is_blittable,
+                is_error: record.is_error,
+                message_field_name: record.message_field().map(|field| field.name.as_str()),
                 struct_size: record.struct_size,
                 constructors: &record.constructors,
                 methods: &record.methods,
@@ -467,6 +474,7 @@ impl KotlinEmitter {
             classes: &module.native.classes,
             callbacks: &module.callbacks,
             async_callback_invokers: &module.native.async_callback_invokers,
+            has_async_runtime: module.has_async_runtime,
         }
         .render()
         .unwrap();
@@ -548,6 +556,8 @@ mod tests {
                 },
             ],
             is_blittable: true,
+            is_error: false,
+            message_field_name: None,
             struct_size: 16,
             doc: &Some("A physical location with coordinates.".to_string()),
         };
@@ -583,6 +593,8 @@ mod tests {
                 },
             ],
             is_blittable: false,
+            is_error: false,
+            message_field_name: None,
             struct_size: 0,
             doc: &None,
         };
@@ -618,6 +630,8 @@ mod tests {
                 },
             ],
             is_blittable: true,
+            is_error: false,
+            message_field_name: None,
             struct_size: 8,
             doc: &None,
         };
@@ -899,6 +913,46 @@ mod tests {
     }
 
     #[test]
+    fn preamble_without_async_runtime_omits_async_infrastructure() {
+        let rendered = PreambleTemplate {
+            package_name: "com.test.repro",
+            prefix: "boltffi",
+            extra_imports: &[],
+            custom_types: &[],
+            has_async_runtime: false,
+            has_streams: false,
+        }
+        .render()
+        .unwrap();
+
+        assert!(!rendered.contains("object BoltFFIScope : CoroutineScope"));
+        assert!(!rendered.contains("private const val BOLTFFI_FUTURE_POLL_READY"));
+        assert!(!rendered.contains("internal class BoltFFIHandleMap"));
+        assert!(!rendered.contains("private val boltffiContinuationMap"));
+        assert!(!rendered.contains("internal suspend inline fun <T> boltffiCallAsync"));
+        assert!(!rendered.contains("import kotlin.coroutines.Continuation"));
+        assert!(!rendered.contains("import kotlinx.coroutines.CancellableContinuation"));
+    }
+
+    #[test]
+    fn native_without_async_runtime_omits_future_continuation_callback() {
+        let rendered = NativeTemplate {
+            lib_name: "repro",
+            prefix: "boltffi",
+            functions: &[],
+            wire_functions: &[],
+            classes: &[],
+            callbacks: &[],
+            async_callback_invokers: &[],
+            has_async_runtime: false,
+        }
+        .render()
+        .unwrap();
+
+        assert!(!rendered.contains("fun boltffiFutureContinuationCallback("));
+    }
+
+    #[test]
     fn snapshot_class_with_documented_constructors_and_method() {
         let cls = KotlinClass {
             class_name: "DataStore".to_string(),
@@ -1019,6 +1073,79 @@ mod tests {
             ffi_free: &cls.ffi_free,
         };
         insta::assert_snapshot!(template.render().unwrap());
+    }
+
+    #[test]
+    fn class_constructor_with_multiple_wire_writers_uses_qualified_run_blocks() {
+        let cls = KotlinClass {
+            class_name: "Connection".to_string(),
+            doc: None,
+            prefix: "boltffi".to_string(),
+            ffi_free: "boltffi_connection_free".to_string(),
+            constructors: vec![KotlinConstructor {
+                name: "Connection".to_string(),
+                surface: KotlinConstructorSurface::Constructor,
+                is_fallible: true,
+                return_type: None,
+                throws: false,
+                err_type: "FfiException".to_string(),
+                return_is_direct: false,
+                return_cast: String::new(),
+                decode_expr: String::new(),
+                is_blittable_return: false,
+                signature_params: vec![
+                    KotlinSignatureParam {
+                        name: "searchResult".to_string(),
+                        kotlin_type: "SearchResult".to_string(),
+                    },
+                    KotlinSignatureParam {
+                        name: "filter".to_string(),
+                        kotlin_type: "Filter".to_string(),
+                    },
+                ],
+                wire_writers: vec![
+                    KotlinWireWriter::WireBuffer {
+                        binding_name: "searchResultWire".to_string(),
+                        size_expr: "searchResult.wireEncodedSize()".to_string(),
+                        encode_expr: "searchResult.wireEncodeTo(wire)".to_string(),
+                    },
+                    KotlinWireWriter::WireBuffer {
+                        binding_name: "filterWire".to_string(),
+                        size_expr: "filter.wireEncodedSize()".to_string(),
+                        encode_expr: "filter.wireEncodeTo(wire)".to_string(),
+                    },
+                ],
+                wire_writer_closes: vec![
+                    "searchResultWire.close()".to_string(),
+                    "filterWire.close()".to_string(),
+                ],
+                native_args: vec![
+                    "searchResultWire.buffer".to_string(),
+                    "filterWire.buffer".to_string(),
+                ],
+                ffi_name: "boltffi_connection_open".to_string(),
+                doc: None,
+            }],
+            methods: vec![],
+            streams: vec![],
+            use_companion_methods: false,
+        };
+        let template = ClassTemplate {
+            class_name: &cls.class_name,
+            doc: &cls.doc,
+            constructors: &cls.constructors,
+            methods: &cls.methods,
+            streams: &cls.streams,
+            use_companion_methods: cls.use_companion_methods,
+            has_companion_factories: cls.has_companion_factories(),
+            has_static_methods: cls.has_static_methods(),
+            prefix: &cls.prefix,
+            ffi_free: &cls.ffi_free,
+        };
+        let rendered = template.render().unwrap();
+        assert!(rendered.contains("kotlin.run {\n            val wire = searchResultWire.writer"));
+        assert!(rendered.contains("kotlin.run {\n            val wire = filterWire.writer"));
+        assert!(!rendered.contains("\n        run {\n            val wire = "));
     }
 
     #[test]
@@ -1273,6 +1400,8 @@ mod tests {
                 },
             ],
             is_blittable: true,
+            is_error: false,
+            message_field_name: None,
             struct_size: 16,
             doc: &None,
         };
@@ -1308,6 +1437,8 @@ mod tests {
                 },
             ],
             is_blittable: false,
+            is_error: false,
+            message_field_name: None,
             struct_size: 0,
             doc: &None,
         };
@@ -1344,10 +1475,53 @@ mod tests {
                 },
             ],
             is_blittable: false,
+            is_error: false,
+            message_field_name: None,
             struct_size: 0,
             doc: &None,
         };
         insta::assert_snapshot!(template.render().unwrap());
+    }
+
+    #[test]
+    fn error_record_renders_as_exception() {
+        let template = RecordTemplate {
+            constructors: &[],
+            methods: &[],
+            class_name: "AppError",
+            fields: &[
+                KotlinRecordField {
+                    name: "code".to_string(),
+                    kotlin_type: "Int".to_string(),
+                    default_value: None,
+                    wire_decode_expr: "reader.readI32()".to_string(),
+                    wire_size_expr: "4".to_string(),
+                    wire_encode: "wire.writeI32(code)".to_string(),
+                    padding_after: 0,
+                    doc: None,
+                },
+                KotlinRecordField {
+                    name: "message".to_string(),
+                    kotlin_type: "String".to_string(),
+                    default_value: None,
+                    wire_decode_expr: "reader.readString()".to_string(),
+                    wire_size_expr: "wire.sizeString(message)".to_string(),
+                    wire_encode: "wire.writeString(message)".to_string(),
+                    padding_after: 0,
+                    doc: None,
+                },
+            ],
+            is_blittable: false,
+            is_error: true,
+            message_field_name: Some("message"),
+            struct_size: 0,
+            doc: &None,
+        };
+
+        let rendered = template.render().unwrap();
+        assert!(rendered.contains("data class AppError("));
+        assert!(rendered.contains("override val message: String"));
+        assert!(rendered.contains(": Exception(message)"));
     }
 
     #[test]

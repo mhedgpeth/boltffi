@@ -215,58 +215,56 @@ export class {{ cls.class_name }} {
       {{ method.cleanup_code() }}
     }
 {%- when TsClassMethodMode::Async with (async_method) %}
-    const handle = (() => {
-      try {
-        return (_exports.{{ method.ffi_name }} as Function)({{ method.ffi_call_args() }});
-      } finally {
-        {{ method.cleanup_code() }}
-      }
-    })();
-    const awaitedHandle = await _module.asyncManager.pollAsync(
-      handle,
-      (futureHandle: number) => (_exports.{{ async_method.poll_sync_ffi_name }} as Function)(futureHandle),
-      (futureHandle: number) => (_exports.{{ async_method.panic_message_ffi_name }} as Function)(futureHandle),
-      (futureHandle: number) => (_exports.{{ async_method.free_ffi_name }} as Function)(futureHandle)
-    );
-{%- if async_method.return_route.is_async_scalar() %}
-    const result = (_exports.{{ async_method.complete_ffi_name }} as Function)(awaitedHandle){{ async_method.return_route.ts_cast() }};
-    (_exports.{{ async_method.free_ffi_name }} as Function)(awaitedHandle);
-    return result;
-{%- elif async_method.return_route.is_packed() %}
-    const outPtr = _module.allocBufDescriptor();
-    let completeCompleted = false;
     try {
-      (_exports.{{ async_method.complete_ffi_name }} as Function)(outPtr, awaitedHandle, 0);
-      completeCompleted = true;
-      const reader = _module.readerFromBuf(outPtr);
-      const result = {{ async_method.return_route.decode_expr() }};
+      const handle = (_exports.{{ method.ffi_name }} as Function)({{ method.ffi_call_args() }});
+      const awaitedHandle = await _module.asyncManager.pollAsync(
+        handle,
+        (futureHandle: number) => (_exports.{{ async_method.poll_sync_ffi_name }} as Function)(futureHandle),
+        (futureHandle: number) => (_exports.{{ async_method.panic_message_ffi_name }} as Function)(futureHandle),
+        (futureHandle: number) => (_exports.{{ async_method.free_ffi_name }} as Function)(futureHandle)
+      );
+{%- if async_method.return_route.is_async_scalar() %}
+      const result = (_exports.{{ async_method.complete_ffi_name }} as Function)(awaitedHandle){{ async_method.return_route.ts_cast() }};
+      (_exports.{{ async_method.free_ffi_name }} as Function)(awaitedHandle);
+      return result;
+{%- elif async_method.return_route.is_packed() %}
+      const outPtr = _module.allocBufDescriptor();
+      let completeCompleted = false;
+      try {
+        (_exports.{{ async_method.complete_ffi_name }} as Function)(outPtr, awaitedHandle, 0);
+        completeCompleted = true;
+        const reader = _module.readerFromBuf(outPtr);
+        const result = {{ async_method.return_route.decode_expr() }};
 {%- if let Some(handle_return) = method.return_handle %}
 {%- if handle_return.nullable %}
-      if (result === 0) {
-        return null;
-      }
+        if (result === 0) {
+          return null;
+        }
 {%- endif %}
-      return {{ handle_return.class_name }}._fromHandle(result);
+        return {{ handle_return.class_name }}._fromHandle(result);
 {%- else %}
-      return result;
+        return result;
+{%- endif %}
+      } finally {
+        if (completeCompleted) {
+          _module.freeBuf(outPtr);
+        } else {
+          _module.freeBufDescriptor(outPtr);
+        }
+        (_exports.{{ async_method.free_ffi_name }} as Function)(awaitedHandle);
+      }
+{%- elif async_method.return_route.is_void() %}
+      (_exports.{{ async_method.free_ffi_name }} as Function)(awaitedHandle);
+{%- elif async_method.return_route.is_direct() %}
+      (_exports.{{ async_method.free_ffi_name }} as Function)(awaitedHandle);
+      throw new Error("Unsupported async return route: Direct{{ async_method.return_route.ts_cast() }}");
+{%- else %}
+      (_exports.{{ async_method.free_ffi_name }} as Function)(awaitedHandle);
+      throw new Error("Unsupported async return route: RawPacked {{ async_method.return_route.decode_expr() }}");
 {%- endif %}
     } finally {
-      if (completeCompleted) {
-        _module.freeBuf(outPtr);
-      } else {
-        _module.freeBufDescriptor(outPtr);
-      }
-      (_exports.{{ async_method.free_ffi_name }} as Function)(awaitedHandle);
+      {{ method.cleanup_code() }}
     }
-{%- elif async_method.return_route.is_void() %}
-    (_exports.{{ async_method.free_ffi_name }} as Function)(awaitedHandle);
-{%- elif async_method.return_route.is_direct() %}
-    (_exports.{{ async_method.free_ffi_name }} as Function)(awaitedHandle);
-    throw new Error("Unsupported async return route: Direct{{ async_method.return_route.ts_cast() }}");
-{%- else %}
-    (_exports.{{ async_method.free_ffi_name }} as Function)(awaitedHandle);
-    throw new Error("Unsupported async return route: RawPacked {{ async_method.return_route.decode_expr() }}");
-{%- endif %}
 {%- endmatch %}
 {%- endif %}
   }

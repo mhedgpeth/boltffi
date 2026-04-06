@@ -22,6 +22,23 @@ final class SyncTraitsTests: XCTestCase {
         func process(values: [Int32]) -> [Int32] { values.map { $0 * $0 } }
     }
 
+    final class SwiftMessageFormatter: MessageFormatter {
+        func formatMessage(scope: String, message: String) -> String { "\(scope)::\(message.uppercased())" }
+    }
+
+    final class SwiftOptionalMessageCallback: OptionalMessageCallback {
+        func findMessage(key: Int32) -> String? { key > 0 ? "message:\(key)" : nil }
+    }
+
+    final class SwiftResultMessageCallback: ResultMessageCallback {
+        func renderMessage(key: Int32) throws -> String {
+            if key < 0 {
+                throw MathError.negativeInput
+            }
+            return "message:\(key)"
+        }
+    }
+
     final class SwiftMultiMethodCallback: MultiMethodCallback {
         func methodA(x: Int32) -> Int32 { x + 1 }
         func methodB(x: Int32, y: Int32) -> Int32 { x * y }
@@ -66,6 +83,9 @@ final class SyncTraitsTests: XCTestCase {
         let offsetCallback = SwiftOffsetCallback()
         let falliblePointTransformer = SwiftFalliblePointTransformer()
         let vecProcessor = SwiftVecProcessor()
+        let messageFormatter = SwiftMessageFormatter()
+        let optionalMessageCallback = SwiftOptionalMessageCallback()
+        let resultMessageCallback = SwiftResultMessageCallback()
         let incrementer = makeIncrementingCallback(delta: 5)
 
         XCTAssertEqual(invokeValueCallback(callback: doubler, input: 4), 8)
@@ -75,6 +95,34 @@ final class SyncTraitsTests: XCTestCase {
         XCTAssertEqual(invokeValueCallback(callback: incrementer, input: 4), 9)
         XCTAssertEqual(invokeOptionalValueCallback(callback: doubler, input: 4), 8)
         XCTAssertEqual(invokeOptionalValueCallback(callback: nil, input: 4), 4)
+        XCTAssertEqual(
+            formatMessageWithCallback(formatter: messageFormatter, scope: "sync", message: "borrowed strings"),
+            "sync::BORROWED STRINGS"
+        )
+        XCTAssertEqual(
+            formatMessageWithBoxedCallback(formatter: messageFormatter, scope: "boxed", message: "borrowed strings"),
+            "boxed::BORROWED STRINGS"
+        )
+        XCTAssertEqual(
+            formatMessageWithOptionalCallback(formatter: messageFormatter, scope: "optional", message: "borrowed strings"),
+            "optional::BORROWED STRINGS"
+        )
+        XCTAssertEqual(
+            formatMessageWithOptionalCallback(formatter: nil, scope: "fallback", message: "message"),
+            "fallback::message"
+        )
+        let prefixer = makeMessagePrefixer(prefix: "prefix")
+        XCTAssertEqual(prefixer.formatMessage(scope: "scope", message: "message"), "prefix::scope::message")
+        XCTAssertEqual(
+            formatMessageWithCallback(formatter: prefixer, scope: "sync", message: "formatter"),
+            "prefix::sync::formatter"
+        )
+        XCTAssertEqual(invokeOptionalMessageCallback(callback: optionalMessageCallback, key: 7), "message:7")
+        XCTAssertNil(invokeOptionalMessageCallback(callback: optionalMessageCallback, key: 0))
+        XCTAssertEqual(try invokeResultMessageCallback(callback: resultMessageCallback, key: 8), "message:8")
+        XCTAssertThrowsError(try invokeResultMessageCallback(callback: resultMessageCallback, key: -1)) { error in
+            XCTAssertEqual(error as? MathError, .negativeInput)
+        }
         XCTAssertEqual(transformPoint(transformer: pointTransformer, point: Point(x: 1.0, y: 2.0)), Point(x: 11.0, y: 22.0))
         XCTAssertEqual(transformPointBoxed(transformer: pointTransformer, point: Point(x: 3.0, y: 4.0)), Point(x: 13.0, y: 24.0))
         XCTAssertEqual(mapStatus(mapper: statusMapper, status: .pending), .active)

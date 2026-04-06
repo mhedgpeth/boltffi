@@ -25,4 +25,5 @@ run_step "kotlin test" gradle -p "$kotlin_dir" test
 run_step "pack java" boltffi pack java
 run_step "java demo" "$java_dir/test-demo.sh" --auto
 run_step "pack wasm" boltffi pack wasm
+run_step "wasm install" npm install --prefix "$wasm_dir"
 run_step "wasm test" npm test --prefix "$wasm_dir"

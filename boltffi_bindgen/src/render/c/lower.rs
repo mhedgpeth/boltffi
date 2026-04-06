@@ -416,7 +416,10 @@ impl<'a> CHeaderLowerer<'a> {
         match &result.transport {
             None => "void".to_string(),
             Some(Transport::Scalar(origin)) => emit::primitive_c_type(origin.primitive()),
-            _ => "FfiBuf_u8".to_string(),
+            Some(Transport::Composite(layout)) => format!("___{}", layout.record_id.as_str()),
+            Some(Transport::Span(_)) => "FfiBuf_u8".to_string(),
+            Some(Transport::Handle { class_id, .. }) => format!("struct {} *", class_id.as_str()),
+            Some(Transport::Callback { .. }) => "BoltFFICallbackHandle".to_string(),
         }
     }
 
@@ -626,6 +629,23 @@ mod tests {
         assert!(header.contains("boltffi_fetch_data_cancel("));
         assert!(header.contains("boltffi_fetch_data_free("));
         assert!(header.contains("typedef const void* RustFutureHandle;"));
+    }
+
+    #[test]
+    fn async_blittable_record_complete_uses_direct_record_type() {
+        let mut module = Module::new("test")
+            .with_record(
+                Record::new("Point")
+                    .with_field(RecordField::new("x", Type::Primitive(Primitive::F64)))
+                    .with_field(RecordField::new("y", Type::Primitive(Primitive::F64))),
+            )
+            .with_function(
+                Function::new("fetch_point")
+                    .with_output(Type::Record("Point".into()))
+                    .make_async(),
+            );
+        let header = generate_header(&mut module);
+        assert!(header.contains("___Point boltffi_fetch_point_complete("));
     }
 
     #[test]

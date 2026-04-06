@@ -52,6 +52,45 @@ pub fn checked_add(a: i32, b: i32) -> Result<i32, MathError> {
 
 #[error]
 #[derive(Clone, Debug, PartialEq)]
+pub struct AppError {
+    pub code: i32,
+    pub message: String,
+}
+
+impl std::fmt::Display for AppError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{} ({})", self.message, self.code)
+    }
+}
+
+impl std::error::Error for AppError {}
+
+#[export]
+pub fn may_fail(valid: bool) -> Result<String, AppError> {
+    if valid {
+        Ok("Success!".to_string())
+    } else {
+        Err(AppError {
+            code: 400,
+            message: "Invalid input".to_string(),
+        })
+    }
+}
+
+#[export]
+pub fn divide_app(a: i32, b: i32) -> Result<i32, AppError> {
+    if b == 0 {
+        Err(AppError {
+            code: 500,
+            message: "Division by zero".to_string(),
+        })
+    } else {
+        Ok(a / b)
+    }
+}
+
+#[error]
+#[derive(Clone, Debug, PartialEq)]
 #[repr(i32)]
 pub enum ValidationError {
     TooShort = 1,

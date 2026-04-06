@@ -1,5 +1,4 @@
-
-    public static {{ ctor.return_type }} {{ ctor.name }}({% for param in ctor.params %}{{ param.java_type }} {{ param.name }}{% if !loop.last %}, {% endif %}{% endfor %}) {
+{{ self::javadoc_block(ctor.doc, "    ") }}    public static {{ ctor.return_type }} {{ ctor.name }}({% for param in ctor.params %}{{ param.java_type }} {{ param.name }}{% if !loop.last %}, {% endif %}{% endfor %}) {
 {%- for binding in ctor.input_bindings.direct_composites %}
         {{ binding.declaration() }};
 {%- endfor %}
@@ -18,7 +17,9 @@
         if (_buf == null) throw new RuntimeException("FFI call returned null buffer");
         WireReader reader = new WireReader(_buf);
         if (reader.readI8() != 0) {
-{%- if ctor.return_plan.result_has_typed_exception() %}
+{%- if ctor.return_plan.result_err_throws_directly() %}
+            throw {{ ctor.return_plan.result_err_decode() }};
+{%- elif ctor.return_plan.result_has_typed_exception() %}
             throw new {{ ctor.return_plan.result_err_exception_class() }}({{ ctor.return_plan.result_err_decode() }});
 {%- elif ctor.return_plan.result_err_is_string() %}
             throw new RuntimeException({{ ctor.return_plan.result_err_decode() }});
@@ -53,7 +54,9 @@
             if (_buf == null) throw new RuntimeException("FFI call returned null buffer");
             WireReader reader = new WireReader(_buf);
             if (reader.readI8() != 0) {
-{%- if ctor.return_plan.result_has_typed_exception() %}
+{%- if ctor.return_plan.result_err_throws_directly() %}
+                throw {{ ctor.return_plan.result_err_decode() }};
+{%- elif ctor.return_plan.result_has_typed_exception() %}
                 throw new {{ ctor.return_plan.result_err_exception_class() }}({{ ctor.return_plan.result_err_decode() }});
 {%- elif ctor.return_plan.result_err_is_string() %}
                 throw new RuntimeException({{ ctor.return_plan.result_err_decode() }});

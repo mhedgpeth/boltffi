@@ -76,6 +76,15 @@ impl JavaEmitter {
                     };
                     template.render().expect("abstract enum template failed")
                 }
+                JavaEnumKind::ErrorAbstractClass => {
+                    let template = DataEnumAbstractTemplate {
+                        enumeration,
+                        package_name: &module.package_name,
+                    };
+                    template
+                        .render()
+                        .expect("error abstract enum template failed")
+                }
             };
             files.push(JavaFile {
                 file_name: format!("{}.java", enumeration.class_name),

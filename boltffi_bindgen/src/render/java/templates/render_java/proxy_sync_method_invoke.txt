@@ -26,7 +26,9 @@
             if (_buf == null) throw new RuntimeException("FFI call returned null buffer");
             WireReader reader = new WireReader(_buf);
             if (reader.readI8() != 0) {
-{%- if proxy.return_plan.result_has_typed_exception() %}
+{%- if proxy.return_plan.result_err_throws_directly() %}
+                throw {{ proxy.return_plan.result_err_decode() }};
+{%- elif proxy.return_plan.result_has_typed_exception() %}
                 throw new {{ proxy.return_plan.result_err_exception_class() }}({{ proxy.return_plan.result_err_decode() }});
 {%- elif proxy.return_plan.result_err_is_string() %}
                 throw new RuntimeException({{ proxy.return_plan.result_err_decode() }});

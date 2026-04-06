@@ -123,7 +123,10 @@ impl RustTarget {
             Platform::Ios | Platform::IosSimulator | Platform::MacOs => {
                 format!("lib{}.a", lib_name)
             }
-            Platform::Android => format!("lib{}.so", lib_name),
+            // Android packages a JNI-facing shared object by linking the Rust static archive
+            // into the generated JNI glue. Using the Rust cdylib here leaves a DT_NEEDED
+            // entry on the build-machine path, which breaks on-device loading.
+            Platform::Android => format!("lib{}.a", lib_name),
         };
 
         target_dir
@@ -200,7 +203,7 @@ mod tests {
     }
 
     #[test]
-    fn android_targets_use_shared_libraries() {
+    fn android_targets_use_static_libraries_for_packaging() {
         let library_path = RustTarget::ANDROID_ARM64.library_path_for_profile(
             Path::new("target"),
             "demo",
@@ -208,6 +211,6 @@ mod tests {
         );
 
         assert_eq!(RustTarget::ANDROID_ARM64.platform(), Platform::Android);
-        assert!(library_path.ends_with("target/aarch64-linux-android/debug/libdemo.so"));
+        assert!(library_path.ends_with("target/aarch64-linux-android/debug/libdemo.a"));
     }
 }

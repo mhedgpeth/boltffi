@@ -29,23 +29,19 @@ Placeholder references like `{package.crate}` follow these fallback rules:
 List of experimental targets or features that are explicitly enabled.
 
 ```toml
-experimental = ["java"]
-```
-
-```toml
-experimental = ["kotlin.kmp", "swift.actors"]
+experimental = ["typescript.async_streams"]
 ```
 
 - Type: array of strings
 - Default: `[]`
 - Format: `"target"` or `"target.feature"`
-- CLI requires `--experimental` flag when using experimental targets/features
+- CLI `--experimental` flag includes experimental targets for that command
 
 Experimental targets:
-- `java`
+- none currently
 
 Experimental features:
-- `kotlin.kmp`
+- `typescript.async_streams`
 
 ### `[package]` (required)
 

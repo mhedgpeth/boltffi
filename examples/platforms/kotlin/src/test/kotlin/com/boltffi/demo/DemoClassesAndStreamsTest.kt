@@ -141,4 +141,43 @@ class DemoClassesAndStreamsTest {
             }
         }
     }
+
+    @Test
+    fun eventBusBatchStreamDeliversValues() {
+        EventBus().use { bus ->
+            val sub = bus.subscribeValuesBatch()
+            bus.emitValue(100)
+            bus.emitValue(200)
+            bus.emitValue(300)
+            Thread.sleep(100)
+            val batch = sub.popBatch(16)
+            assert(batch.contains(100)) { "batch should contain 100" }
+            assert(batch.contains(200)) { "batch should contain 200" }
+            assert(batch.contains(300)) { "batch should contain 300" }
+            sub.close()
+        }
+    }
+
+    @Test
+    fun eventBusCallbackStreamDeliversValues() = runBlocking {
+        withTimeout(10_000) {
+            EventBus().use { bus ->
+                val received = java.util.concurrent.CopyOnWriteArrayList<Int>()
+                val latch = java.util.concurrent.CountDownLatch(3)
+                val cancellable = bus.subscribeValuesCallback { value ->
+                    received.add(value)
+                    latch.countDown()
+                }
+                delay(100)
+                bus.emitValue(10)
+                bus.emitValue(20)
+                bus.emitValue(30)
+                latch.await(5, java.util.concurrent.TimeUnit.SECONDS)
+                assert(received.contains(10)) { "should contain 10" }
+                assert(received.contains(20)) { "should contain 20" }
+                assert(received.contains(30)) { "should contain 30" }
+                cancellable.close()
+            }
+        }
+    }
 }

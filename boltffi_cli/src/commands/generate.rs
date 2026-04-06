@@ -1,11 +1,13 @@
 use std::path::PathBuf;
 use std::path::{Component, Path};
 
-use boltffi_bindgen::render::typescript::{TypeScriptEmitter, TypeScriptLowerer};
+use boltffi_bindgen::render::dart::DartEmitter;
+use boltffi_bindgen::render::typescript::{
+    TypeScriptEmitter, TypeScriptLowerError, TypeScriptLowerer,
+};
 use boltffi_bindgen::{
-    CHeaderLowerer, FactoryStyle, KotlinOptions, ScanFeatures,
-    TypeConversion as BindgenTypeConversion, TypeMapping as BindgenTypeMapping, TypeMappings, ir,
-    render, scan_crate_with_options,
+    CHeaderLowerer, FactoryStyle, KotlinOptions, TypeConversion as BindgenTypeConversion,
+    TypeMapping as BindgenTypeMapping, TypeMappings, ir, render, scan_crate_with_pointer_width,
 };
 
 use crate::config::{
@@ -20,6 +22,7 @@ pub enum GenerateTarget {
     Java,
     Header,
     Typescript,
+    Dart,
     All,
 }
 
@@ -29,14 +32,28 @@ pub struct GenerateOptions {
     pub experimental: bool,
 }
 
-fn require_experimental(target: Target, experimental_flag: bool) -> Result<()> {
-    if Experimental::is_target_experimental(target) && !experimental_flag {
-        return Err(CliError::CommandFailed {
-            command: format!("{} is experimental, use --experimental flag", target.name()),
-            status: None,
-        });
+fn require_experimental_target(
+    config: &Config,
+    target: Target,
+    experimental_flag: bool,
+) -> Result<()> {
+    if !Experimental::is_target_experimental(target) {
+        return Ok(());
     }
-    Ok(())
+
+    let enabled_in_config = config.experimental.contains(&target.name().to_string());
+    if experimental_flag || enabled_in_config {
+        return Ok(());
+    }
+
+    Err(CliError::CommandFailed {
+        command: format!(
+            "{} is experimental, use --experimental flag or add \"{}\" to [experimental]",
+            target.name(),
+            target.name()
+        ),
+        status: None,
+    })
 }
 
 pub fn run_generate_with_output(config: &Config, options: GenerateOptions) -> Result<()> {
@@ -44,11 +61,15 @@ pub fn run_generate_with_output(config: &Config, options: GenerateOptions) -> Re
         GenerateTarget::Swift => generate_swift(config, options.output),
         GenerateTarget::Kotlin => generate_kotlin(config, options.output),
         GenerateTarget::Java => {
-            require_experimental(Target::Java, options.experimental)?;
+            require_experimental_target(config, Target::Java, options.experimental)?;
             generate_java(config, options.output)
         }
         GenerateTarget::Header => generate_header(config, options.output),
         GenerateTarget::Typescript => generate_typescript(config, options.output),
+        GenerateTarget::Dart => {
+            require_experimental_target(config, Target::Dart, options.experimental)?;
+            generate_dart(config, options.output)
+        }
         GenerateTarget::All => {
             if config.should_process(Target::Swift, options.experimental) {
                 generate_swift(config, options.output.clone())?;
@@ -63,7 +84,10 @@ pub fn run_generate_with_output(config: &Config, options: GenerateOptions) -> Re
                 generate_header(config, options.output.clone())?;
             }
             if config.should_process(Target::TypeScript, options.experimental) {
-                generate_typescript(config, options.output)?;
+                generate_typescript(config, options.output.clone())?;
+            }
+            if config.should_process(Target::Dart, options.experimental) {
+                generate_dart(config, options.output)?;
             }
             Ok(())
         }
@@ -95,21 +119,13 @@ fn scan_crate(
     source_directory: &Path,
     library_name: &str,
     target_pointer_width: Option<u8>,
-    config: &Config,
 ) -> Result<boltffi_bindgen::Module> {
-    let features = ScanFeatures {
-        record_methods: config.record_methods_enabled(),
-    };
-    scan_crate_with_options(
-        source_directory,
-        library_name,
-        target_pointer_width,
-        features,
+    scan_crate_with_pointer_width(source_directory, library_name, target_pointer_width).map_err(
+        |error| CliError::CommandFailed {
+            command: format!("scan_crate: {}", error),
+            status: None,
+        },
     )
-    .map_err(|error| CliError::CommandFailed {
-        command: format!("scan_crate: {}", error),
-        status: None,
-    })
 }
 
 fn host_pointer_width_bits() -> Option<u8> {
@@ -201,7 +217,7 @@ fn generate_swift(config: &Config, output: Option<PathBuf>) -> Result<()> {
         .unwrap_or_else(|_| PathBuf::from("."));
     let crate_name = config.library_name();
 
-    let mut module = scan_crate(&crate_dir, crate_name, Some(64), config)?;
+    let mut module = scan_crate(&crate_dir, crate_name, Some(64))?;
 
     let ffi_module_name = config
         .apple_swift_ffi_module_name()
@@ -256,7 +272,7 @@ fn generate_kotlin(config: &Config, output: Option<PathBuf>) -> Result<()> {
         .unwrap_or_else(|_| PathBuf::from("."));
     let crate_name = config.library_name();
 
-    let mut module = scan_crate(&crate_dir, crate_name, None, config)?;
+    let mut module = scan_crate(&crate_dir, crate_name, None)?;
 
     let factory_style = match config.android_kotlin_factory_style() {
         ConfigFactoryStyle::Constructors => FactoryStyle::Constructors,
@@ -362,7 +378,7 @@ fn generate_java(config: &Config, output: Option<PathBuf>) -> Result<()> {
         JavaGenerationMode::Jvm => host_pointer_width_bits(),
         JavaGenerationMode::Android => None,
     };
-    let mut module = scan_crate(&crate_dir, crate_name, java_pointer_width_bits, config)?;
+    let mut module = scan_crate(&crate_dir, crate_name, java_pointer_width_bits)?;
 
     let contract = ir::build_contract(&mut module);
     let abi_contract = ir::Lowerer::new(&contract).to_abi_contract();
@@ -434,7 +450,7 @@ fn generate_header(config: &Config, output: Option<PathBuf>) -> Result<()> {
     } else {
         None
     };
-    let mut module = scan_crate(&crate_dir, crate_name, header_pointer_width_bits, config)?;
+    let mut module = scan_crate(&crate_dir, crate_name, header_pointer_width_bits)?;
 
     let contract = ir::build_contract(&mut module);
     let abi = ir::Lowerer::new(&contract).to_abi_contract();
@@ -473,7 +489,7 @@ fn generate_typescript(config: &Config, output: Option<PathBuf>) -> Result<()> {
         .unwrap_or_else(|_| PathBuf::from("."));
     let crate_name = config.library_name();
 
-    let mut module = scan_crate(&crate_dir, crate_name, Some(32), config)?;
+    let mut module = scan_crate(&crate_dir, crate_name, Some(32))?;
 
     let contract = ir::build_contract(&mut module);
     let abi_contract = ir::Lowerer::new(&contract).to_abi_contract();
@@ -484,7 +500,14 @@ fn generate_typescript(config: &Config, output: Option<PathBuf>) -> Result<()> {
         crate_name.to_string(),
         experimental,
     )
-    .lower();
+    .lower()
+    .map_err(|error| match error {
+        TypeScriptLowerError::ValueTypeMemberNameCollision { .. }
+        | TypeScriptLowerError::TopLevelFunctionNameCollision { .. } => CliError::CommandFailed {
+            command: format!("generate typescript: {error}"),
+            status: None,
+        },
+    })?;
     let runtime_package = config.wasm_runtime_package();
 
     let ts_code = TypeScriptEmitter::emit(&ts_module).replacen(
@@ -508,6 +531,47 @@ fn generate_typescript(config: &Config, output: Option<PathBuf>) -> Result<()> {
         path: node_output_path.clone(),
         source,
     })?;
+
+    Ok(())
+}
+
+fn generate_dart(config: &Config, output: Option<PathBuf>) -> Result<()> {
+    if !config.is_dart_enabled() {
+        return Err(CliError::CommandFailed {
+            command: "targets.dart.enabled = false".to_string(),
+            status: None,
+        });
+    }
+
+    let output_dir = output.unwrap_or_else(|| config.targets.dart.output.clone());
+
+    if let Err(source) = std::fs::create_dir_all(&output_dir) {
+        return Err(CliError::CreateDirectoryFailed {
+            path: output_dir,
+            source,
+        });
+    }
+
+    let crate_dir = std::env::current_dir()
+        .and_then(|p| p.canonicalize())
+        .unwrap_or_else(|_| PathBuf::from("."));
+    let crate_name = config.library_name();
+
+    let mut module = scan_crate(&crate_dir, crate_name, Some(32))?;
+
+    let ffi = ir::build_contract(&mut module);
+    let abi = ir::Lowerer::new(&ffi).to_abi_contract();
+
+    let output = DartEmitter::emit(&ffi, &abi, &config.package.name);
+
+    let output_path = output_dir.join(format!("{}.dart", config.package.name));
+
+    if let Err(source) = std::fs::write(&output_path, &output) {
+        return Err(CliError::WriteFailed {
+            path: output_path,
+            source,
+        });
+    }
 
     Ok(())
 }

@@ -96,6 +96,7 @@ impl<'m> ContractBuilder<'m> {
         RecordDef {
             id: RecordId::new(&record.name),
             is_repr_c: record.is_repr_c,
+            is_error: record.is_error,
             fields: record
                 .fields
                 .iter()

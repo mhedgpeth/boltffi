@@ -15,9 +15,11 @@ public final class DemoTest {
         testF32();
         testF64();
         testStrings();
+        testCustomTypes();
         testPointRecords();
         testLineRecords();
         testPersonRecords();
+        testRecordDefaultValues();
         testCStyleEnums();
         testDataEnums();
         testCStyleEnumVecs();
@@ -27,6 +29,7 @@ public final class DemoTest {
         testVecStrings();
         testOptions();
         testRecordsWithVecs();
+        testConstructorCoverageMatrix();
         testClosures();
         testSyncCallbacks();
         testAsyncCallbacks();
@@ -36,6 +39,7 @@ public final class DemoTest {
         testResultFunctions();
         testResultClassMethods();
         testResultEnumErrors();
+        testStreams();
         System.out.println("All tests passed!");
     }
 
@@ -92,6 +96,24 @@ public final class DemoTest {
         assert Demo.stringLength("") == 0 : "stringLength(empty)";
         assert Demo.stringLength("café") == 5 : "stringLength(utf8 bytes)";
         assert Demo.stringLength("🌍") == 4 : "stringLength(emoji 4 bytes)";
+        System.out.println("  PASS\n");
+    }
+
+    private static void testCustomTypes() {
+        System.out.println("Testing custom types...");
+        long timestamp = 1_710_000_000_000L;
+        assert Demo.echoDatetime(timestamp) == timestamp : "echoDatetime";
+        assert Demo.datetimeToMillis(timestamp) == timestamp : "datetimeToMillis";
+        assert Demo.formatTimestamp(timestamp).startsWith("2024-03-") : "formatTimestamp";
+
+        Event event = new Event("launch", timestamp);
+        assert event.name().equals("launch") : "Event.name";
+        assert event.timestamp() == timestamp : "Event.timestamp";
+
+        Event echoed = Demo.echoEvent(event);
+        assert echoed.name().equals("launch") : "echoEvent.name";
+        assert echoed.timestamp() == timestamp : "echoEvent.timestamp";
+        assert Demo.eventTimestamp(event) == timestamp : "eventTimestamp";
         System.out.println("  PASS\n");
     }
 
@@ -163,6 +185,49 @@ public final class DemoTest {
         assert emojiPerson.name().equals("🎉 Party") : "makePerson(emoji)";
         Person echoedEmojiPerson = Demo.echoPerson(emojiPerson);
         assert echoedEmojiPerson.name().equals("🎉 Party") : "echoPerson(emoji)";
+        System.out.println("  PASS\n");
+    }
+
+    private static void testRecordDefaultValues() {
+        System.out.println("Testing records (default values)...");
+        ServiceConfig implicitDefaults = new ServiceConfig("worker");
+        assert implicitDefaults.name().equals("worker") : "ServiceConfig(name).name";
+        assert implicitDefaults.retries() == 3 : "ServiceConfig(name).retries";
+        assert implicitDefaults.region().equals("standard") : "ServiceConfig(name).region";
+        assert !implicitDefaults.endpoint().isPresent() : "ServiceConfig(name).endpoint";
+        assert implicitDefaults.backupEndpoint().isPresent() : "ServiceConfig(name).backupEndpoint";
+        assert implicitDefaults.backupEndpoint().get().equals("https://default") : "ServiceConfig(name).backupEndpoint.value";
+
+        ServiceConfig customRetries = new ServiceConfig("worker", 7);
+        assert customRetries.name().equals("worker") : "ServiceConfig(name,retries).name";
+        assert customRetries.retries() == 7 : "ServiceConfig(name,retries).retries";
+        assert customRetries.region().equals("standard") : "ServiceConfig(name,retries).region";
+        assert !customRetries.endpoint().isPresent() : "ServiceConfig(name,retries).endpoint";
+        assert customRetries.backupEndpoint().isPresent() : "ServiceConfig(name,retries).backupEndpoint";
+        assert customRetries.backupEndpoint().get().equals("https://default") : "ServiceConfig(name,retries).backupEndpoint.value";
+
+        ServiceConfig explicitRegion = new ServiceConfig("worker", 9, "eu-west");
+        assert !explicitRegion.endpoint().isPresent() : "ServiceConfig(name,retries,region).endpoint";
+        assert explicitRegion.backupEndpoint().isPresent() : "ServiceConfig(name,retries,region).backupEndpoint";
+        assert explicitRegion.backupEndpoint().get().equals("https://default") : "ServiceConfig(name,retries,region).backupEndpoint.value";
+
+        ServiceConfig explicitEndpoint = new ServiceConfig("worker", 9, "eu-west", Optional.of("https://edge"));
+        assert explicitEndpoint.backupEndpoint().isPresent() : "ServiceConfig(name,retries,region,endpoint).backupEndpoint";
+        assert explicitEndpoint.backupEndpoint().get().equals("https://default") : "ServiceConfig(name,retries,region,endpoint).backupEndpoint.value";
+
+        ServiceConfig explicitBackupEndpoint = new ServiceConfig(
+            "worker",
+            9,
+            "eu-west",
+            Optional.of("https://edge"),
+            Optional.of("https://backup")
+        );
+        assert Demo.echoServiceConfig(explicitBackupEndpoint).equals(explicitBackupEndpoint) : "echoServiceConfig";
+        assert implicitDefaults.describe().equals("worker:3:standard:none:https://default") : "ServiceConfig.describe(defaults)";
+        assert customRetries.describe().equals("worker:7:standard:none:https://default") : "ServiceConfig.describe(customRetries)";
+        assert explicitRegion.describe().equals("worker:9:eu-west:none:https://default") : "ServiceConfig.describe(explicitRegion)";
+        assert explicitEndpoint.describe().equals("worker:9:eu-west:https://edge:https://default") : "ServiceConfig.describe(explicitEndpoint)";
+        assert explicitBackupEndpoint.describe().equals("worker:9:eu-west:https://edge:https://backup") : "ServiceConfig.describe(explicitBackupEndpoint)";
         System.out.println("  PASS\n");
     }
 
@@ -543,6 +608,134 @@ public final class DemoTest {
         System.out.println("  PASS\n");
     }
 
+    private static void testConstructorCoverageMatrix() {
+        System.out.println("Testing constructor coverage matrix...");
+
+        try (ConstructorCoverageMatrix base = new ConstructorCoverageMatrix()) {
+            assert base.constructorVariant().equals("new") : "ConstructorCoverageMatrix() variant";
+            assert base.summary().equals("default") : "ConstructorCoverageMatrix() summary";
+            assert base.payloadChecksum() == 0 : "ConstructorCoverageMatrix() checksum";
+            assert base.vectorCount() == 0 : "ConstructorCoverageMatrix() vectorCount";
+        }
+
+        try (ConstructorCoverageMatrix scalarMix = new ConstructorCoverageMatrix(7, true, Priority.HIGH)) {
+            assert scalarMix.constructorVariant().equals("with_scalar_mix") : "with_scalar_mix variant";
+            assert scalarMix.summary().equals("version=7;enabled=true;priority=high") : "with_scalar_mix summary";
+            assert scalarMix.payloadChecksum() == 0 : "with_scalar_mix checksum";
+            assert scalarMix.vectorCount() == 0 : "with_scalar_mix vectorCount";
+        }
+
+        try (ConstructorCoverageMatrix stringAndBytes = new ConstructorCoverageMatrix("bolt", new byte[]{1, 2, 3, 4})) {
+            assert stringAndBytes.constructorVariant().equals("with_string_and_bytes") : "with_string_and_bytes variant";
+            assert stringAndBytes.summary().equals("label=bolt;bytes=4") : "with_string_and_bytes summary";
+            assert stringAndBytes.payloadChecksum() == 10 : "with_string_and_bytes checksum";
+            assert stringAndBytes.vectorCount() == 4 : "with_string_and_bytes vectorCount";
+        }
+
+        try (ConstructorCoverageMatrix blittableAndRecord = new ConstructorCoverageMatrix(
+            new Point(1.5, 2.5),
+            new Person("Alice", 31)
+        )) {
+            assert blittableAndRecord.constructorVariant().equals("with_blittable_and_record") : "with_blittable_and_record variant";
+            assert blittableAndRecord.summary().equals("origin=1.5:2.5;person=Alice#31") : "with_blittable_and_record summary";
+            assert blittableAndRecord.payloadChecksum() == 0 : "with_blittable_and_record checksum";
+            assert blittableAndRecord.vectorCount() == 1 : "with_blittable_and_record vectorCount";
+        }
+
+        try (ConstructorCoverageMatrix optionalProfileAndCursor = new ConstructorCoverageMatrix(
+            Optional.of(new UserProfile("John", 29, Optional.of("john@example.com"), Optional.of(9.5))),
+            Optional.of("cursor-7")
+        )) {
+            assert optionalProfileAndCursor.constructorVariant().equals("with_optional_profile_and_cursor") : "with_optional_profile_and_cursor variant";
+            assert optionalProfileAndCursor.summary().equals("profile=John#29#john@example.com#9.5;cursor=cursor-7") : "with_optional_profile_and_cursor summary";
+            assert optionalProfileAndCursor.payloadChecksum() == 0 : "with_optional_profile_and_cursor checksum";
+            assert optionalProfileAndCursor.vectorCount() == 2 : "with_optional_profile_and_cursor vectorCount";
+        }
+
+        try (ConstructorCoverageMatrix vectorsAndPolygon = new ConstructorCoverageMatrix(
+            Arrays.asList("ffi", "swift"),
+            Arrays.asList(new Point(0.0, 0.0), new Point(1.0, 1.0)),
+            new Polygon(Arrays.asList(new Point(0.0, 0.0), new Point(2.0, 0.0), new Point(1.0, 1.0)))
+        )) {
+            assert vectorsAndPolygon.constructorVariant().equals("with_vectors_and_polygon") : "with_vectors_and_polygon variant";
+            assert vectorsAndPolygon.summary().equals("tags=ffi|swift;anchors=2;polygon=3") : "with_vectors_and_polygon summary";
+            assert vectorsAndPolygon.payloadChecksum() == 0 : "with_vectors_and_polygon checksum";
+            assert vectorsAndPolygon.vectorCount() == 7 : "with_vectors_and_polygon vectorCount";
+        }
+
+        try (ConstructorCoverageMatrix collectionRecords = new ConstructorCoverageMatrix(
+            new Team("Platform", Arrays.asList("Alice", "John")),
+            new Classroom(Arrays.asList(new Person("Alice", 20), new Person("John", 21))),
+            new Polygon(Arrays.asList(new Point(0.0, 0.0), new Point(1.0, 0.0), new Point(1.0, 1.0)))
+        )) {
+            assert collectionRecords.constructorVariant().equals("with_collection_records") : "with_collection_records variant";
+            assert collectionRecords.summary().equals("team=Platform;members=2;students=2;polygon=3") : "with_collection_records summary";
+            assert collectionRecords.payloadChecksum() == 0 : "with_collection_records checksum";
+            assert collectionRecords.vectorCount() == 7 : "with_collection_records vectorCount";
+        }
+
+        try (ConstructorCoverageMatrix enumMix = new ConstructorCoverageMatrix(
+            new Filter.ByTags(Arrays.asList("ffi", "jni")),
+            new Message.Image("https://example.com/image.png", 640, 480),
+            new Task("ship", Priority.CRITICAL, false)
+        )) {
+            assert enumMix.constructorVariant().equals("with_enum_mix") : "with_enum_mix variant";
+            assert enumMix.summary().equals(
+                "filter=tags:ffi|jni;message=image:https://example.com/image.png#640x480;task=ship#critical"
+            ) : "with_enum_mix summary";
+            assert enumMix.payloadChecksum() == 0 : "with_enum_mix checksum";
+            assert enumMix.vectorCount() == 1 : "with_enum_mix vectorCount";
+        }
+
+        try (ConstructorCoverageMatrix everything = new ConstructorCoverageMatrix(
+            new Person("Alice", 31),
+            new Address("Main", "AMS", "1000"),
+            new UserProfile("John", 29, Optional.of("john@example.com"), Optional.of(9.5)),
+            new SearchResult("route", 5, Optional.of("next-9"), Optional.of(7.5)),
+            new byte[]{4, 5, 6},
+            new Filter.ByRange(1.0, 3.0),
+            Arrays.asList("alpha", "beta")
+        )) {
+            assert everything.constructorVariant().equals("with_everything") : "with_everything variant";
+            assert everything.summary().equals(
+                "person=Alice#31;city=AMS;profile=profile=John#29#john@example.com#9.5;query=route;filter=range:1.0-3.0;tags=alpha|beta"
+            ) : "with_everything summary";
+            assert everything.payloadChecksum() == 15 : "with_everything checksum";
+            assert everything.vectorCount() == 10 : "with_everything vectorCount";
+            assert everything.summarizeBorrowedInputs(
+                new UserProfile("John", 29, Optional.of("john@example.com"), Optional.of(9.5)),
+                new SearchResult("route", 5, Optional.of("next-9"), Optional.of(7.5)),
+                new Filter.ByRange(1.0, 3.0)
+            ).equals(
+                "profile=John#29#john@example.com#9.5;query=route;filter=range:1.0-3.0"
+            ) : "summarizeBorrowedInputs";
+        }
+
+        try (ConstructorCoverageMatrix fallible = new ConstructorCoverageMatrix(
+            new byte[]{7, 8},
+            new SearchResult("search", 4, Optional.of("cursor-4"), Optional.empty()),
+            new Filter.ByName("ali")
+        )) {
+            assert fallible.constructorVariant().equals("try_with_payload_and_search_result") : "try_with_payload_and_search_result variant";
+            assert fallible.summary().equals("query=search;cursor=cursor-4;filter=name:ali") : "try_with_payload_and_search_result summary";
+            assert fallible.payloadChecksum() == 15 : "try_with_payload_and_search_result checksum";
+            assert fallible.vectorCount() == 6 : "try_with_payload_and_search_result vectorCount";
+        }
+
+        try {
+            new ConstructorCoverageMatrix(
+                new byte[0],
+                new SearchResult("search", 4, Optional.empty(), Optional.empty()),
+                Filter.None.INSTANCE
+            );
+            assert false : "try_with_payload_and_search_result should fail for empty payload";
+        } catch (RuntimeException expected) {
+            assert expected.getMessage().contains("Constructor failed") : "try_with_payload_and_search_result error";
+        }
+
+        System.out.println("  PASS\n");
+    }
+
     private static void testClosures() {
         System.out.println("Testing closures...");
 
@@ -641,6 +834,14 @@ public final class DemoTest {
         };
         OffsetCallback offsetCallback = (value, delta) -> value + delta;
         VecProcessor vecProcessor = values -> Arrays.stream(values).map(value -> value * value).toArray();
+        MessageFormatter messageFormatter = (scope, message) -> scope + "::" + message.toUpperCase();
+        OptionalMessageCallback optionalMessageCallback = key -> key > 0 ? Optional.of("message:" + key) : Optional.empty();
+        ResultMessageCallback resultMessageCallback = key -> {
+            if (key < 0) {
+                throw new MathError.Exception(MathError.NEGATIVE_INPUT);
+            }
+            return "message:" + key;
+        };
 
         assert Demo.invokeValueCallback(doubler, 4) == 8 : "invokeValueCallback";
         assert Demo.invokeValueCallbackTwice(doubler, 3, 4) == 14 : "invokeValueCallbackTwice";
@@ -652,6 +853,28 @@ public final class DemoTest {
         assert Demo.mapStatus(statusMapper, Status.PENDING) == Status.ACTIVE : "mapStatus";
         assert flipper.mapStatus(Status.ACTIVE) == Status.INACTIVE : "makeStatusFlipper direct";
         assert Demo.mapStatus(flipper, Status.INACTIVE) == Status.PENDING : "makeStatusFlipper bridged";
+        assert Demo.formatMessageWithCallback(messageFormatter, "sync", "borrowed strings").equals("sync::BORROWED STRINGS")
+            : "formatMessageWithCallback";
+        assert Demo.formatMessageWithBoxedCallback(messageFormatter, "boxed", "borrowed strings").equals("boxed::BORROWED STRINGS")
+            : "formatMessageWithBoxedCallback";
+        assert Demo.formatMessageWithOptionalCallback(Optional.of(messageFormatter), "optional", "borrowed strings")
+            .equals("optional::BORROWED STRINGS") : "formatMessageWithOptionalCallback some";
+        assert Demo.formatMessageWithOptionalCallback(Optional.empty(), "fallback", "message").equals("fallback::message")
+            : "formatMessageWithOptionalCallback none";
+        MessageFormatter prefixer = Demo.makeMessagePrefixer("prefix");
+        assert prefixer.formatMessage("scope", "message").equals("prefix::scope::message") : "makeMessagePrefixer direct";
+        assert Demo.formatMessageWithCallback(prefixer, "sync", "formatter").equals("prefix::sync::formatter")
+            : "makeMessagePrefixer bridged";
+        Optional<String> optionalMessage = Demo.invokeOptionalMessageCallback(optionalMessageCallback, 7);
+        assert optionalMessage.isPresent() && optionalMessage.get().equals("message:7") : "invokeOptionalMessageCallback some";
+        assert !Demo.invokeOptionalMessageCallback(optionalMessageCallback, 0).isPresent() : "invokeOptionalMessageCallback none";
+        assert Demo.invokeResultMessageCallback(resultMessageCallback, 8).equals("message:8") : "invokeResultMessageCallback ok";
+        try {
+            Demo.invokeResultMessageCallback(resultMessageCallback, -1);
+            assert false : "invokeResultMessageCallback should throw";
+        } catch (MathError.Exception e) {
+            assert e.getError() == MathError.NEGATIVE_INPUT : "invokeResultMessageCallback error type";
+        }
 
         int[] processed = Demo.processVec(vecProcessor, new int[]{1, 2, 3});
         assert processed.length == 3 : "processVec length";
@@ -711,19 +934,87 @@ public final class DemoTest {
                 public CompletableFuture<String> fetchString(String input) {
                     return CompletableFuture.completedFuture(input.toUpperCase());
                 }
+
+                @Override
+                public CompletableFuture<String> fetchJoinedMessage(String scope, String message) {
+                    return CompletableFuture.completedFuture(scope + "::" + message.toUpperCase());
+                }
             };
+            AsyncPointTransformer asyncPointTransformer =
+                point -> CompletableFuture.completedFuture(new Point(point.x() + 50.0, point.y() + 60.0));
             AsyncOptionFetcher asyncOptionFetcher = key -> CompletableFuture.completedFuture(
                 key > 0 ? Optional.of(key * 1000L) : Optional.empty()
             );
+            AsyncOptionalMessageFetcher asyncOptionalMessageFetcher = key -> CompletableFuture.completedFuture(
+                key > 0 ? Optional.of("async-message:" + key) : Optional.empty()
+            );
+            AsyncResultFormatter asyncResultFormatter = new AsyncResultFormatter() {
+                @Override
+                public CompletableFuture<String> renderMessage(String scope, String message) {
+                    if (scope.isEmpty()) {
+                        CompletableFuture<String> failed = new CompletableFuture<>();
+                        failed.completeExceptionally(new MathError.Exception(MathError.NEGATIVE_INPUT));
+                        return failed;
+                    }
+                    return CompletableFuture.completedFuture(scope + "::" + message.toUpperCase());
+                }
+
+                @Override
+                public CompletableFuture<Point> transformPoint(Point point, Status status) {
+                    if (status == Status.INACTIVE) {
+                        CompletableFuture<Point> failed = new CompletableFuture<>();
+                        failed.completeExceptionally(new MathError.Exception(MathError.NEGATIVE_INPUT));
+                        return failed;
+                    }
+                    return CompletableFuture.completedFuture(new Point(point.x() + 500.0, point.y() + 600.0));
+                }
+            };
 
             assert Demo.fetchWithAsyncCallback(asyncFetcher, 5).get() == 500 : "fetchWithAsyncCallback";
             assert Demo.fetchStringWithAsyncCallback(asyncFetcher, "boltffi").get().equals("BOLTFFI") : "fetchStringWithAsyncCallback";
+            assert Demo.fetchJoinedMessageWithAsyncCallback(asyncFetcher, "async", "borrowed strings").get()
+                .equals("async::BORROWED STRINGS") : "fetchJoinedMessageWithAsyncCallback";
+            Point asyncPoint = Demo.transformPointWithAsyncCallback(asyncPointTransformer, new Point(1.0, 2.0)).get();
+            assert asyncPoint.x() == 51.0 : "transformPointWithAsyncCallback.x";
+            assert asyncPoint.y() == 62.0 : "transformPointWithAsyncCallback.y";
 
             Optional<Long> some = Demo.invokeAsyncOptionFetcher(asyncOptionFetcher, 7).get();
             assert some.isPresent() && some.get() == 7000L : "invokeAsyncOptionFetcher some";
 
             Optional<Long> none = Demo.invokeAsyncOptionFetcher(asyncOptionFetcher, 0).get();
             assert !none.isPresent() : "invokeAsyncOptionFetcher none";
+            Optional<String> someMessage = Demo.invokeAsyncOptionalMessageFetcher(asyncOptionalMessageFetcher, 9).get();
+            assert someMessage.isPresent() && someMessage.get().equals("async-message:9")
+                : "invokeAsyncOptionalMessageFetcher some";
+            assert !Demo.invokeAsyncOptionalMessageFetcher(asyncOptionalMessageFetcher, 0).get().isPresent()
+                : "invokeAsyncOptionalMessageFetcher none";
+            assert Demo.renderMessageWithAsyncResultCallback(asyncResultFormatter, "async", "result").get()
+                .equals("async::RESULT") : "renderMessageWithAsyncResultCallback ok";
+            Point asyncResultPoint = Demo.transformPointWithAsyncResultCallback(
+                asyncResultFormatter,
+                new Point(3.0, 4.0),
+                Status.ACTIVE
+            ).get();
+            assert asyncResultPoint.x() == 503.0 : "transformPointWithAsyncResultCallback.x";
+            assert asyncResultPoint.y() == 604.0 : "transformPointWithAsyncResultCallback.y";
+            try {
+                Demo.renderMessageWithAsyncResultCallback(asyncResultFormatter, "", "result").get();
+                assert false : "renderMessageWithAsyncResultCallback should throw";
+            } catch (Exception e) {
+                Throwable cause = e instanceof java.util.concurrent.ExecutionException ? e.getCause() : e;
+                assert cause instanceof MathError.Exception : "renderMessageWithAsyncResultCallback error type";
+                assert ((MathError.Exception) cause).getError() == MathError.NEGATIVE_INPUT
+                    : "renderMessageWithAsyncResultCallback error value";
+            }
+            try {
+                Demo.transformPointWithAsyncResultCallback(asyncResultFormatter, new Point(3.0, 4.0), Status.INACTIVE).get();
+                assert false : "transformPointWithAsyncResultCallback should throw";
+            } catch (Exception e) {
+                Throwable cause = e instanceof java.util.concurrent.ExecutionException ? e.getCause() : e;
+                assert cause instanceof MathError.Exception : "transformPointWithAsyncResultCallback error type";
+                assert ((MathError.Exception) cause).getError() == MathError.NEGATIVE_INPUT
+                    : "transformPointWithAsyncResultCallback error value";
+            }
         } catch (Exception exception) {
             throw new RuntimeException("async callback test failed", exception);
         }
@@ -943,6 +1234,110 @@ public final class DemoTest {
             assert e.getError() == ValidationError.INVALID_FORMAT : "validateUsername typed error";
         }
 
+        assert Demo.mayFail(true).equals("Success!") : "mayFail ok";
+        try {
+            Demo.mayFail(false);
+            assert false : "mayFail should throw structured AppError";
+        } catch (AppError e) {
+            assert e.code() == 400 : "mayFail code";
+            assert e.message().equals("Invalid input") : "mayFail message field";
+            assert e.getMessage().equals("Invalid input") : "mayFail exception message";
+        }
+
+        assert Demo.divideApp(10, 2) == 5 : "divideApp ok";
+        try {
+            Demo.divideApp(10, 0);
+            assert false : "divideApp should throw structured AppError";
+        } catch (AppError e) {
+            assert e.code() == 500 : "divideApp code";
+            assert e.message().equals("Division by zero") : "divideApp message field";
+            assert e.getMessage().equals("Division by zero") : "divideApp exception message";
+        }
+
+        System.out.println("  PASS\n");
+    }
+
+    private static void testStreams() {
+        System.out.println("Testing streams (async mode)...");
+        try {
+            java.util.concurrent.CountDownLatch latch = new java.util.concurrent.CountDownLatch(3);
+            java.util.concurrent.CopyOnWriteArrayList<Integer> received = new java.util.concurrent.CopyOnWriteArrayList<>();
+
+            EventBus bus = new EventBus();
+            StreamSubscription<Integer> subscription = bus.subscribeValues(value -> {
+                received.add(value);
+                latch.countDown();
+            });
+
+            bus.emitValue(10);
+            bus.emitValue(20);
+            bus.emitValue(30);
+
+            boolean done = latch.await(5, java.util.concurrent.TimeUnit.SECONDS);
+            assert done : "async stream should deliver 3 items within 5 seconds";
+            assert received.size() >= 3 : "async stream received " + received.size() + " items, expected >= 3";
+            assert received.contains(10) : "async stream should contain 10";
+            assert received.contains(20) : "async stream should contain 20";
+            assert received.contains(30) : "async stream should contain 30";
+
+            subscription.close();
+            bus.close();
+        } catch (Exception e) {
+            throw new RuntimeException("async stream test failed", e);
+        }
+        System.out.println("  PASS\n");
+
+        System.out.println("Testing streams (batch mode)...");
+        try {
+            EventBus bus = new EventBus();
+            StreamSubscription<Integer> subscription = bus.subscribeValuesBatch();
+
+            bus.emitValue(100);
+            bus.emitValue(200);
+            bus.emitValue(300);
+
+            Thread.sleep(100);
+
+            java.util.List<Integer> batch = subscription.popBatch(16);
+            assert batch.size() >= 3 : "batch stream should have at least 3 items, got " + batch.size();
+            assert batch.contains(100) : "batch should contain 100";
+            assert batch.contains(200) : "batch should contain 200";
+            assert batch.contains(300) : "batch should contain 300";
+
+            subscription.close();
+            bus.close();
+        } catch (Exception e) {
+            throw new RuntimeException("batch stream test failed", e);
+        }
+        System.out.println("  PASS\n");
+
+        System.out.println("Testing streams (callback mode)...");
+        try {
+            java.util.concurrent.CountDownLatch latch = new java.util.concurrent.CountDownLatch(3);
+            java.util.concurrent.CopyOnWriteArrayList<Integer> received = new java.util.concurrent.CopyOnWriteArrayList<>();
+
+            EventBus bus = new EventBus();
+            StreamSubscription<Integer> subscription = bus.subscribeValuesCallback(value -> {
+                received.add(value);
+                latch.countDown();
+            });
+
+            bus.emitValue(1000);
+            bus.emitValue(2000);
+            bus.emitValue(3000);
+
+            boolean done = latch.await(5, java.util.concurrent.TimeUnit.SECONDS);
+            assert done : "callback stream should deliver 3 items within 5 seconds";
+            assert received.size() >= 3 : "callback stream received " + received.size() + " items, expected >= 3";
+            assert received.contains(1000) : "callback stream should contain 1000";
+            assert received.contains(2000) : "callback stream should contain 2000";
+            assert received.contains(3000) : "callback stream should contain 3000";
+
+            subscription.close();
+            bus.close();
+        } catch (Exception e) {
+            throw new RuntimeException("callback stream test failed", e);
+        }
         System.out.println("  PASS\n");
     }
 }

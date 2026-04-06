@@ -6,18 +6,18 @@ public final class {{ module.class_name }} {
 {%- when Some with (ac) %}
 {% if module.async_mode.is_virtual_thread() %}
 {%- if ac.complete_return_plan.is_void() %}
-    public static void {{ func.name }}({% for param in func.params %}{{ param.java_type }} {{ param.name }}{% if !loop.last %}, {% endif %}{% endfor %}) {
+{{ self::javadoc_block(func.doc, "    ") }}    public static void {{ func.name }}({% for param in func.params %}{{ param.java_type }} {{ param.name }}{% if !loop.last %}, {% endif %}{% endfor %}) {
         BoltFFIAsync.callAsyncVoid(
 {%- else %}
-    public static {{ func.return_type }} {{ func.name }}({% for param in func.params %}{{ param.java_type }} {{ param.name }}{% if !loop.last %}, {% endif %}{% endfor %}) {
+{{ self::javadoc_block(func.doc, "    ") }}    public static {{ func.return_type }} {{ func.name }}({% for param in func.params %}{{ param.java_type }} {{ param.name }}{% if !loop.last %}, {% endif %}{% endfor %}) {
         return BoltFFIAsync.callAsync(
 {%- endif %}
 {%- else %}
 {%- if ac.complete_return_plan.is_void() %}
-    public static CompletableFuture<Void> {{ func.name }}({% for param in func.params %}{{ param.java_type }} {{ param.name }}{% if !loop.last %}, {% endif %}{% endfor %}) {
+{{ self::javadoc_block(func.doc, "    ") }}    public static CompletableFuture<Void> {{ func.name }}({% for param in func.params %}{{ param.java_type }} {{ param.name }}{% if !loop.last %}, {% endif %}{% endfor %}) {
         return BoltFFIAsync.callAsyncVoid(
 {%- else %}
-    public static CompletableFuture<{{ func.boxed_return_type() }}> {{ func.name }}({% for param in func.params %}{{ param.java_type }} {{ param.name }}{% if !loop.last %}, {% endif %}{% endfor %}) {
+{{ self::javadoc_block(func.doc, "    ") }}    public static CompletableFuture<{{ func.boxed_return_type() }}> {{ func.name }}({% for param in func.params %}{{ param.java_type }} {{ param.name }}{% if !loop.last %}, {% endif %}{% endfor %}) {
         return BoltFFIAsync.callAsync(
 {%- endif %}
 {%- endif %}
@@ -74,7 +74,9 @@ public final class {{ module.class_name }} {
                     if (_buf == null) throw new RuntimeException("FFI call returned null buffer");
                     WireReader reader = new WireReader(_buf);
                     if (reader.readI8() != 0) {
-{%- if ac.complete_return_plan.result_has_typed_exception() %}
+{%- if ac.complete_return_plan.result_err_throws_directly() %}
+                        throw {{ ac.complete_return_plan.result_err_decode() }};
+{%- elif ac.complete_return_plan.result_has_typed_exception() %}
                         throw new {{ ac.complete_return_plan.result_err_exception_class() }}({{ ac.complete_return_plan.result_err_decode() }});
 {%- elif ac.complete_return_plan.result_err_is_string() %}
                         throw new RuntimeException({{ ac.complete_return_plan.result_err_decode() }});
@@ -97,7 +99,7 @@ public final class {{ module.class_name }} {
 {%- endmatch %}
 {%- else %}
 
-    public static {{ func.return_type }} {{ func.name }}({% for param in func.params %}{{ param.java_type }} {{ param.name }}{% if !loop.last %}, {% endif %}{% endfor %}) {
+{{ self::javadoc_block(func.doc, "    ") }}    public static {{ func.return_type }} {{ func.name }}({% for param in func.params %}{{ param.java_type }} {{ param.name }}{% if !loop.last %}, {% endif %}{% endfor %}) {
 {%- for binding in func.input_bindings.direct_composites %}
         {{ binding.declaration() }};
 {%- endfor %}
@@ -124,7 +126,9 @@ public final class {{ module.class_name }} {
         if (_buf == null) throw new RuntimeException("FFI call returned null buffer");
         WireReader reader = new WireReader(_buf);
         if (reader.readI8() != 0) {
-{%- if func.return_plan.result_has_typed_exception() %}
+{%- if func.return_plan.result_err_throws_directly() %}
+            throw {{ func.return_plan.result_err_decode() }};
+{%- elif func.return_plan.result_has_typed_exception() %}
             throw new {{ func.return_plan.result_err_exception_class() }}({{ func.return_plan.result_err_decode() }});
 {%- elif func.return_plan.result_err_is_string() %}
             throw new RuntimeException({{ func.return_plan.result_err_decode() }});
@@ -168,7 +172,9 @@ public final class {{ module.class_name }} {
             if (_buf == null) throw new RuntimeException("FFI call returned null buffer");
             WireReader reader = new WireReader(_buf);
             if (reader.readI8() != 0) {
-{%- if func.return_plan.result_has_typed_exception() %}
+{%- if func.return_plan.result_err_throws_directly() %}
+                throw {{ func.return_plan.result_err_decode() }};
+{%- elif func.return_plan.result_has_typed_exception() %}
                 throw new {{ func.return_plan.result_err_exception_class() }}({{ func.return_plan.result_err_decode() }});
 {%- elif func.return_plan.result_err_is_string() %}
                 throw new RuntimeException({{ func.return_plan.result_err_decode() }});

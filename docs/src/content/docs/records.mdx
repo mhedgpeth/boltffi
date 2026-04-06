@@ -40,15 +40,14 @@ pub struct Rect {
     pub height: f64,
 }
 
-#[export]
-pub fn rect_contains(
-    rect: Rect,
-    point: Point
-) -> bool {
-    point.x >= rect.x
-        && point.x <= rect.x + rect.width
-        && point.y >= rect.y
-        && point.y <= rect.y + rect.height
+#[data(impl)]
+impl Rect {
+    pub fn contains(&self, point: Point) -> bool {
+        point.x >= self.x
+            && point.x <= self.x + self.width
+            && point.y >= self.y
+            && point.y <= self.y + self.height
+    }
 }`}
   swift={`public struct Point {
     public var x: Double
@@ -62,11 +61,13 @@ public struct Rect {
     public var height: Double
 }
 
-func rectContains(rect: Rect, point: Point) -> Bool
+extension Rect {
+    public func contains(point: Point) -> Bool
+}
 
 let r = Rect(x: 0, y: 0, width: 100, height: 100)
 let p = Point(x: 50, y: 50)
-let inside = rectContains(rect: r, point: p)`}
+let inside = r.contains(point: p)`}
   kotlin={`data class Point(
     val x: Double,
     val y: Double
@@ -77,13 +78,34 @@ data class Rect(
     val y: Double,
     val width: Double,
     val height: Double
-)
-
-fun rectContains(rect: Rect, point: Point): Boolean
+) {
+    fun contains(point: Point): Boolean
+}
 
 val r = Rect(0.0, 0.0, 100.0, 100.0)
 val p = Point(50.0, 50.0)
-val inside = rectContains(r, p)`}
+val inside = r.contains(p)`}
+  java={`// Java 16+
+public record Point(double x, double y) {}
+public record Rect(
+    double x, double y,
+    double width, double height) {
+    public boolean contains(Point point)
+}
+
+// Java 8+
+public final class Rect {
+    public final double x;
+    public final double y;
+    public final double width;
+    public final double height;
+
+    public boolean contains(Point point)
+}
+
+Rect r = new Rect(0.0, 0.0, 100.0, 100.0);
+Point p = new Point(50.0, 50.0);
+boolean inside = r.contains(p);`}
   typescript={`interface Point {
     readonly x: number
     readonly y: number
@@ -96,11 +118,13 @@ interface Rect {
     readonly height: number
 }
 
-function rectContains(rect: Rect, point: Point): boolean
+const Rect = {
+    contains(self: Rect, point: Point): boolean
+}
 
 const r: Rect = { x: 0, y: 0, width: 100, height: 100 }
 const p: Point = { x: 50, y: 50 }
-const inside = rectContains(r, p)`}
+const inside = Rect.contains(r, p)`}
 />
 
 ### Structs with strings or collections
@@ -164,6 +188,29 @@ data class SearchResult(
 fun searchUsers(query: String): SearchResult
 
 val result = searchUsers("alice")`}
+  java={`// Java 16+
+public record User(
+    long id, String name, String email) {}
+public record SearchResult(
+    String query,
+    java.util.List<User> matches,
+    long totalCount) {}
+
+// Java 8+
+public final class User {
+    public final long id;
+    public final String name;
+    public final String email;
+}
+public final class SearchResult {
+    public final String query;
+    public final java.util.List<User> matches;
+    public final long totalCount;
+}
+
+static SearchResult searchUsers(String query)
+
+SearchResult result = searchUsers("alice");`}
   typescript={`interface User {
     readonly id: bigint
     readonly name: string
@@ -254,6 +301,32 @@ val addr = Address(
 )
 val co = Company("Acme", addr, 50u)
 val summary = companySummary(co)`}
+  java={`// Java 16+
+public record Address(
+    String street, String city,
+    String zip) {}
+public record Company(
+    String name, Address address,
+    int employeeCount) {}
+
+// Java 8+
+public final class Address {
+    public final String street;
+    public final String city;
+    public final String zip;
+}
+public final class Company {
+    public final String name;
+    public final Address address;
+    public final int employeeCount;
+}
+
+static String companySummary(Company c)
+
+Address addr = new Address(
+    "123 Main", "Seattle", "98101");
+Company co = new Company("Acme", addr, 50);
+String summary = companySummary(co);`}
   typescript={`interface Address {
     readonly street: string
     readonly city: string
@@ -328,6 +401,29 @@ val p = Profile(
     1000uL
 )
 val label = displayLabel(p)`}
+  java={`// Java 16+
+public record Profile(
+    String username,
+    java.util.Optional<String> displayName,
+    java.util.Optional<String> bio,
+    long followerCount) {}
+
+// Java 8+
+public final class Profile {
+    public final String username;
+    public final java.util.Optional<String> displayName;
+    public final java.util.Optional<String> bio;
+    public final long followerCount;
+}
+
+static String displayLabel(Profile p)
+
+Profile p = new Profile(
+    "alice",
+    java.util.Optional.of("Alice Smith"),
+    java.util.Optional.empty(),
+    1000L);
+String label = displayLabel(p);`}
   typescript={`interface Profile {
     readonly username: string
     readonly displayName: string | null
@@ -385,6 +481,23 @@ let cfg = Config(name: "myapp")`}
 )
 
 val cfg = Config(name = "myapp")`}
+  java={`// Java 16+
+public record Config(
+    String name, int retries,
+    boolean enabled, String host) {}
+
+// Java 8+
+public final class Config {
+    public final String name;
+    public final int retries;
+    public final boolean enabled;
+    public final String host;
+}
+
+// Defaults: retries=3, enabled=true,
+// host="localhost"
+Config cfg = new Config(
+    "myapp", 3, true, "localhost");`}
   typescript={`interface Config {
     readonly name: string
     readonly retries: number      // default: 3
@@ -455,6 +568,18 @@ let label = statusLabel(s: .active)`}
 fun statusLabel(s: Status): String
 
 val label = statusLabel(Status.Active)`}
+  java={`public enum Status {
+    PENDING(0),
+    ACTIVE(1),
+    COMPLETED(2),
+    FAILED(3);
+
+    public final int value;
+}
+
+static String statusLabel(Status s)
+
+String label = statusLabel(Status.ACTIVE);`}
   typescript={`enum Status {
     Pending = 0,
     Active = 1,
@@ -523,6 +648,40 @@ fun describeState(s: LoadState): String
 
 val s = LoadState.Loading(0.5)
 val desc = describeState(s)`}
+  java={`// Java 17+
+public sealed interface LoadState {
+    record Idle() implements LoadState {}
+    record Loading(double progress)
+        implements LoadState {}
+    record Loaded(String data)
+        implements LoadState {}
+    record Error(String message, int code)
+        implements LoadState {}
+}
+
+// Java 8+
+public abstract class LoadState {
+    public static final class Idle
+        extends LoadState {}
+    public static final class Loading
+        extends LoadState {
+        public final double progress;
+    }
+    public static final class Loaded
+        extends LoadState {
+        public final String data;
+    }
+    public static final class Error
+        extends LoadState {
+        public final String message;
+        public final int code;
+    }
+}
+
+static String describeState(LoadState s)
+
+LoadState s = new LoadState.Loading(0.5);
+String desc = describeState(s);`}
   typescript={`type LoadState =
     | { readonly tag: "Idle" }
     | { readonly tag: "Loading"; readonly progress: number }
@@ -533,4 +692,380 @@ function describeState(s: LoadState): string
 
 const s: LoadState = { tag: "Loading", progress: 0.5 }
 const desc = describeState(s)`}
+/>
+
+## Methods and constructors
+
+Use `#[data(impl)]` on an `impl` block to expose constructors, instance methods, and static methods on records and enums. The generated bindings use each language's native idiom for value-type members.
+
+### Constructors
+
+Functions that return `Self` become constructors or factory methods. `fn new(...)` becomes the default constructor. Other names become named constructors. Return `Result<Self, E>` for fallible constructors, or `Option<Self>` for optional ones.
+
+<CodeComparison
+  title=""
+  rust={`#[data]
+pub struct Point {
+    pub x: f64,
+    pub y: f64,
+}
+
+#[data(impl)]
+impl Point {
+    pub fn new(x: f64, y: f64) -> Self {
+        Point { x, y }
+    }
+
+    pub fn origin() -> Self {
+        Point { x: 0.0, y: 0.0 }
+    }
+
+    pub fn from_polar(
+        r: f64, theta: f64
+    ) -> Self {
+        Point {
+            x: r * theta.cos(),
+            y: r * theta.sin(),
+        }
+    }
+
+    pub fn try_unit(
+        x: f64, y: f64
+    ) -> Result<Self, String> {
+        let len = (x * x + y * y).sqrt();
+        if len == 0.0 {
+            Err("zero vector".to_string())
+        } else {
+            Ok(Point {
+                x: x / len,
+                y: y / len,
+            })
+        }
+    }
+}`}
+  swift={`public struct Point {
+    public var x: Double
+    public var y: Double
+}
+
+extension Point {
+    // fn new -> default init
+    public static func new(
+        x: Double, y: Double
+    ) -> Point
+
+    // named constructor
+    public static func origin() -> Point
+
+    // named init
+    public init(
+        fromPolar r: Double,
+        theta: Double
+    )
+
+    public init(
+        tryUnit x: Double,
+        y: Double
+    ) throws
+}
+
+let p = Point.origin()
+let q = Point(fromPolar: 2.0, theta: .pi / 4)
+let u = try Point(tryUnit: 3.0, y: 4.0)`}
+  kotlin={`data class Point(
+    val x: Double,
+    val y: Double
+) {
+    companion object {
+        // fn new -> constructor
+        fun new(x: Double, y: Double): Point
+
+        // named constructor
+        fun origin(): Point
+
+        // named factory
+        fun fromPolar(
+            r: Double, theta: Double
+        ): Point
+
+        @Throws(FfiException::class)
+        fun tryUnit(
+            x: Double, y: Double
+        ): Point
+    }
+}
+
+val p = Point.origin()
+val q = Point.fromPolar(2.0, PI / 4)
+val u = Point.tryUnit(3.0, 4.0)`}
+  java={`public record Point(
+    double x, double y) {
+
+    public static Point origin()
+
+    public static Point fromPolar(
+        double r, double theta)
+
+    public static Point tryUnit(
+        double x, double y)
+}
+
+Point p = Point.origin();
+Point q = Point.fromPolar(2.0, Math.PI / 4);
+Point u = Point.tryUnit(3.0, 4.0);`}
+  typescript={`interface Point {
+    readonly x: number
+    readonly y: number
+}
+
+const Point = {
+    new(x: number, y: number): Point,
+
+    origin(): Point,
+
+    fromPolar(
+        r: number, theta: number
+    ): Point,
+
+    tryUnit(
+        x: number, y: number
+    ): Point,
+}
+
+const p = Point.origin()
+const q = Point.fromPolar(2.0, Math.PI / 4)
+const u = Point.tryUnit(3.0, 4.0)`}
+/>
+
+### Instance methods
+
+Functions that take `&self` become instance methods. Because records are value types, calling a method copies the entire value across the FFI boundary. For small structs like `Point` this is negligible, but keep it in mind for large records with many fields or nested collections.
+
+<CodeComparison
+  title=""
+  rust={`#[data(impl)]
+impl Point {
+    pub fn distance(&self) -> f64 {
+        (self.x * self.x
+            + self.y * self.y)
+            .sqrt()
+    }
+
+    pub fn add(
+        &self, other: Point
+    ) -> Point {
+        Point {
+            x: self.x + other.x,
+            y: self.y + other.y,
+        }
+    }
+}`}
+  swift={`extension Point {
+    public func distance() -> Double
+
+    public func add(
+        other: Point
+    ) -> Point
+}
+
+let p = Point(x: 3.0, y: 4.0)
+let d = p.distance()       // 5.0
+let sum = p.add(other: q)`}
+  kotlin={`data class Point(...) {
+    fun distance(): Double
+
+    fun add(other: Point): Point
+}
+
+val p = Point(3.0, 4.0)
+val d = p.distance()       // 5.0
+val sum = p.add(q)`}
+  java={`public record Point(...) {
+    public double distance()
+
+    public Point add(Point other)
+}
+
+Point p = new Point(3.0, 4.0);
+double d = p.distance();   // 5.0
+Point sum = p.add(q);`}
+  typescript={`const Point = {
+    distance(self: Point): number,
+
+    add(self: Point, other: Point): Point,
+}
+
+const p: Point = { x: 3, y: 4 }
+const d = Point.distance(p)       // 5.0
+const sum = Point.add(p, q)`}
+/>
+
+### Mutating methods
+
+Functions that take `&mut self` modify the value in place. In Swift this generates a `mutating` method that reassigns `self`. In Kotlin, Java, and TypeScript the method returns a new copy with the updated values. The same value-copy cost from instance methods applies here since the record is copied both in and out.
+
+<CodeComparison
+  title=""
+  rust={`#[data(impl)]
+impl Point {
+    pub fn scale(&mut self, factor: f64) {
+        self.x *= factor;
+        self.y *= factor;
+    }
+}`}
+  swift={`extension Point {
+    public mutating func scale(
+        factor: Double
+    )
+}
+
+var p = Point(x: 1.0, y: 2.0)
+p.scale(factor: 3.0)
+// p is now (3.0, 6.0)`}
+  kotlin={`data class Point(...) {
+    fun scale(factor: Double): Point
+}
+
+var p = Point(1.0, 2.0)
+p = p.scale(3.0)
+// p is now (3.0, 6.0)`}
+  java={`public record Point(...) {
+    public Point scale(double factor)
+}
+
+Point p = new Point(1.0, 2.0);
+p = p.scale(3.0);
+// p is now (3.0, 6.0)`}
+  typescript={`const Point = {
+    scale(self: Point, factor: number): Point,
+}
+
+let p: Point = { x: 1, y: 2 }
+p = Point.scale(p, 3.0)
+// p is now { x: 3, y: 6 }`}
+/>
+
+### Static methods
+
+Functions that take no `self` parameter and don't return `Self` are exposed as static methods.
+
+<CodeComparison
+  title=""
+  rust={`#[data(impl)]
+impl Point {
+    pub fn dimensions() -> u32 {
+        2
+    }
+}`}
+  swift={`extension Point {
+    public static func dimensions() -> UInt32
+}
+
+let dims = Point.dimensions() // 2`}
+  kotlin={`data class Point(...) {
+    companion object {
+        fun dimensions(): UInt
+    }
+}
+
+val dims = Point.dimensions() // 2`}
+  java={`public record Point(...) {
+    public static int dimensions()
+}
+
+int dims = Point.dimensions(); // 2`}
+  typescript={`const Point = {
+    dimensions(): number,
+}
+
+const dims = Point.dimensions() // 2`}
+/>
+
+### Enum methods
+
+The same `#[data(impl)]` works on enums. Methods and constructors follow the same rules.
+
+<CodeComparison
+  title=""
+  rust={`#[data]
+pub enum Direction {
+    North,
+    East,
+    South,
+    West,
+}
+
+#[data(impl)]
+impl Direction {
+    pub fn opposite(&self) -> Direction {
+        match self {
+            Direction::North => Direction::South,
+            Direction::South => Direction::North,
+            Direction::East => Direction::West,
+            Direction::West => Direction::East,
+        }
+    }
+
+    pub fn from_degrees(deg: f64) -> Self {
+        match ((deg % 360.0 + 360.0) % 360.0) as u32 {
+            0..=89 => Direction::North,
+            90..=179 => Direction::East,
+            180..=269 => Direction::South,
+            _ => Direction::West,
+        }
+    }
+}`}
+  swift={`public enum Direction {
+    case north, east, south, west
+}
+
+extension Direction {
+    public func opposite() -> Direction
+    public static func fromDegrees(
+        _ deg: Double
+    ) -> Direction
+}
+
+let d = Direction.north.opposite() // .south
+let e = Direction.fromDegrees(90)  // .east`}
+  kotlin={`enum class Direction {
+    North, East, South, West;
+
+    fun opposite(): Direction
+
+    companion object {
+        fun fromDegrees(deg: Double): Direction
+    }
+}
+
+val d = Direction.North.opposite() // South
+val e = Direction.fromDegrees(90.0) // East`}
+  java={`public enum Direction {
+    NORTH(0), EAST(1), SOUTH(2), WEST(3);
+
+    public Direction opposite()
+
+    public static Direction fromDegrees(
+        double deg)
+}
+
+Direction d = Direction.NORTH.opposite();
+Direction e = Direction.fromDegrees(90.0);`}
+  typescript={`enum Direction {
+    North = 0, East = 1,
+    South = 2, West = 3
+}
+
+namespace Direction {
+    export function opposite(
+        self: Direction
+    ): Direction
+
+    export function fromDegrees(
+        deg: number
+    ): Direction
+}
+
+const d = Direction.opposite(Direction.North)
+const e = Direction.fromDegrees(90)`}
 />

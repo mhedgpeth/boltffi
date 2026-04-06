@@ -1,6 +1,6 @@
 ---
 title: "Getting Started"
-description: "Set up a BoltFFI Rust library, install prerequisites, configure packaging, and generate bindings for Apple, Android, and WASM targets."
+description: "Set up a BoltFFI Rust library, install prerequisites, configure packaging, and generate bindings for Apple, Android, Java, and WASM targets."
 ---
 
 # Getting Started
@@ -12,6 +12,7 @@ This guide walks you through creating a Rust library and packaging it for use in
 - Rust 1.70+ ([rustup.rs](https://rustup.rs))
 - For Apple: Xcode 15+ with command line tools
 - For Android: Android Studio with NDK
+- For Java: JDK 8+ with `javac` and a C compiler for the JNI bridge
 - For WASM: Node.js 18+ and wasm-pack (`cargo install wasm-pack`)
 
 ## Install BoltFFI
@@ -70,20 +71,22 @@ pub fn distance(a: Point, b: Point) -> f64 {
 
 ```bash
 boltffi init              # creates boltffi.toml
-boltffi pack --release    # builds for all platforms
+boltffi pack all --release    # builds for all platforms
 ```
 
 This creates:
 - `dist/apple/` - XCFramework + Swift bindings
 - `dist/android/` - JNI libraries + Kotlin bindings
+- `dist/java/` - JNI library + Java bindings
 - `dist/wasm/` - WASM module + TypeScript bindings
 
 To build for a single platform:
 
 ```bash
-boltffi pack apple --release
-boltffi pack android --release
-boltffi pack wasm --release
+boltffi pack apple 
+boltffi pack android
+boltffi pack java
+boltffi pack wasm
 ```
 
 ## Use in Swift
@@ -109,6 +112,20 @@ val p1 = Point(0.0, 0.0)
 val p2 = Point(3.0, 4.0)
 println(distance(p1, p2))  // 5.0
 ```
+
+## Use in Java
+
+Add the generated sources and JNI library to your project, then:
+
+```java
+import com.example.mylib.*;
+
+Point p1 = new Point(0.0, 0.0);
+Point p2 = new Point(3.0, 4.0);
+System.out.println(distance(p1, p2));  // 5.0
+```
+
+On Java 16+ with `min_version = 16` in `boltffi.toml`, records are used instead of classes. On Java 8+, the same API works with generated final classes.
 
 ## Use in TypeScript
 

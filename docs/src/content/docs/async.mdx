@@ -1,6 +1,6 @@
 ---
 title: "Async"
-description: "Export async Rust functions and methods with BoltFFI and bridge futures to native async APIs in Swift, Kotlin, and TypeScript."
+description: "Export async Rust functions and methods with BoltFFI and bridge futures to native async APIs in Swift, Kotlin, Java, and TypeScript."
 ---
 
 import CodeComparison from "../../components/CodeComparisonWrapper.astro";
@@ -11,7 +11,7 @@ import TypeTable from "../../components/TypeTableWrapper.astro";
 Rust async functions can be exported just like regular functions. Add `async` to the function signature and BoltFFI handles bridging the future to the target language's async model. The generated bindings let callers await the result using native syntax, with no manual callback wiring or polling logic on either side. Cancellation propagates from the caller back to Rust, and errors work the same as synchronous functions.
 
 <CodeComparison
-  title="Async function"
+  title=""
   rust={`#[export]
 pub async fn fetch_user(id: i32) -> User {
     db.query_user(id).await
@@ -26,6 +26,16 @@ suspend fun fetchUser(id: Int): User
 
 // Usage
 val user = fetchUser(42)`}
+  java={`// Java 21+ (virtual threads)
+static User fetchUser(int id)
+
+User user = fetchUser(42);
+
+// Java 8+ (CompletableFuture)
+static CompletableFuture<User> fetchUser(
+    int id)
+
+User user = fetchUser(42).join();`}
   typescript={`// Generated
 async function fetchUser(id: number): Promise<User>
 
@@ -44,7 +54,7 @@ See [Async Internals](/docs/async-internals) for the full implementation details
 Standalone async functions work like regular exported functions with the `async` keyword added. The function runs on the target language's async context and returns when the Rust future completes. Parameters are captured when the function is called, and the result is delivered through the native async mechanism.
 
 <CodeComparison
-  title="Async function"
+  title=""
   rust={`#[export]
 pub async fn load_config(path: &str) -> Config {
     read_file(path).await
@@ -59,6 +69,17 @@ suspend fun loadConfig(path: String): Config
 
 // Usage
 val config = loadConfig("settings.json")`}
+  java={`// Java 21+ (virtual threads)
+static Config loadConfig(String path)
+
+Config config = loadConfig("settings.json");
+
+// Java 8+ (CompletableFuture)
+static CompletableFuture<Config> loadConfig(
+    String path)
+
+Config config =
+    loadConfig("settings.json").join();`}
   typescript={`// Generated
 async function loadConfig(path: string): Promise<Config>
 
@@ -68,10 +89,10 @@ const config = await loadConfig("settings.json")`}
 
 ## Methods
 
-Methods on classes can be async. The object reference is captured along with any parameters when the method is called. This lets you build clients and services that hold connections or state and expose async operations on them. Both `&self` and `&mut self` methods can be async.
+Methods on classes can be async. The object reference is captured along with any parameters when the method is called. Both `&self` and `&mut self` methods can be async, but the same thread safety rules apply: `&mut self` requires `#[export(single_threaded)]` since the target language can call from any thread. See [Classes - &self vs &mut self](/docs/classes#self-vs-mut-self) for details.
 
 <CodeComparison
-  title="Database client with async queries"
+  title=""
   rust={`pub struct Database {
     connection: Connection,
 }
@@ -108,6 +129,24 @@ class Database {
 // Usage
 val db = Database.connect("postgres://...")
 val rows = db.query("SELECT * FROM users")`}
+  java={`// Java 21+ (virtual threads)
+public final class Database
+    implements AutoCloseable {
+    public static Database connect(String url)
+    public java.util.List<Row> query(String sql)
+}
+
+Database db = Database.connect("postgres://...");
+java.util.List<Row> rows =
+    db.query("SELECT * FROM users");
+
+// Java 8+ (CompletableFuture)
+public CompletableFuture<java.util.List<Row>>
+    query(String sql)
+
+db.query("SELECT * FROM users")
+    .thenAccept(rows ->
+        System.out.println(rows.size()));`}
   typescript={`// Generated
 declare class Database {
     private constructor()
@@ -126,7 +165,7 @@ const rows = await db.query("SELECT * FROM users")`}
 Async functions can return `Result` just like synchronous functions. The error is delivered through the target language's native error handling mechanism when the async operation completes. The same error types and conversion rules apply as described in [Errors](/docs/errors).
 
 <CodeComparison
-  title="Async function that can fail"
+  title=""
   rust={`#[export]
 pub async fn fetch_user(id: i32) -> Result<User, DbError> {
     db.query_user(id).await
@@ -150,6 +189,26 @@ try {
 } catch (e: FfiException) {
     println("Failed: \${e.message}")
 }`}
+  java={`// Java 21+ (virtual threads)
+static User fetchUser(int id)
+    // throws DbError.Exception
+
+try {
+    User user = fetchUser(42);
+} catch (DbError.Exception e) {
+    System.out.println("Failed: "
+        + e.getError());
+}
+
+// Java 8+ (CompletableFuture)
+static CompletableFuture<User> fetchUser(
+    int id)
+
+fetchUser(42)
+    .exceptionally(e -> {
+        System.out.println("Failed: " + e);
+        return null;
+    });`}
   typescript={`// Generated
 async function fetchUser(id: number): Promise<User>  // throws
 
@@ -166,7 +225,7 @@ try {
 Cancellation in the target language propagates back to Rust. When a caller cancels an async operation, the future is marked as cancelled, and the next poll returns immediately without running more of the future's code. This is cooperative cancellation, not preemption. The future is not forcibly aborted mid-execution, so any cleanup code after an await point may not run if cancellation happens before reaching it.
 
 <CodeComparison
-  title="Cancelling a long-running operation"
+  title=""
   rust={`#[export]
 pub async fn sync_all() -> SyncResult {
     // sync work
@@ -189,6 +248,21 @@ val job = scope.launch {
 }
 // later
 job.cancel()`}
+  java={`// Java 21+ (virtual threads)
+static SyncResult syncAll()
+
+Thread thread = Thread.startVirtualThread(
+    () -> syncAll());
+// later
+thread.interrupt();
+
+// Java 8+ (CompletableFuture)
+static CompletableFuture<SyncResult> syncAll()
+
+CompletableFuture<SyncResult> future =
+    syncAll();
+// later
+future.cancel(true);`}
   typescript={`// Generated
 async function syncAll(): Promise<SyncResult>
 

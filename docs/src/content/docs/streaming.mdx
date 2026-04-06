@@ -8,7 +8,7 @@ import TypeTable from "../../components/TypeTableWrapper.astro";
 
 # Streaming
 
-Streams provide continuous data flow from Rust to target languages. Unlike async functions that return a single value, streams deliver multiple values over time. This enables real-time updates, sensor data, event buses, and live feeds. BoltFFI generates native stream types that integrate with each platform's concurrency model, and handles the underlying buffering and synchronization.
+Streams provide continuous data flow from Rust to target languages. Unlike async functions that return a single value, streams deliver multiple values over time. BoltFFI generates native stream types that integrate with each platform's concurrency model, and handles the underlying buffering and synchronization.
 
 ## The ffi_stream Attribute
 
@@ -29,93 +29,105 @@ BoltFFI supports three consumption modes. Each mode generates different bindings
 
 ### Async Mode
 
-The default mode generates `AsyncStream` in Swift and `Flow` in Kotlin. Use this when consumers want to process events using native async iteration. The stream integrates with structured concurrency and cancellation propagates automatically.
+The default mode. Generates `AsyncStream` in Swift, `Flow` in Kotlin, and a callback-driven `StreamSubscription<T>` in Java. Cancellation propagates automatically.
 
 <CodeComparison
-  title="Async stream"
+  title=""
   rust={`#[ffi_stream(item = Reading)]
 pub fn readings(&self) -> Arc<EventSubscription<Reading>> {
     Arc::clone(&self.subscription)
 }`}
-  swift={`// Generated
-public func readings() -> AsyncStream<Reading>
+  swift={`public func readings() -> AsyncStream<Reading>
 
-// Usage
 for await reading in sensor.readings() {
     print("Value: \\(reading.value)")
 }`}
-  kotlin={`// Generated
-fun readings(): Flow<Reading>
+  kotlin={`fun readings(): Flow<Reading>
 
-// Usage
 sensor.readings().collect { reading ->
     println("Value: \${reading.value}")
 }`}
+  java={`public StreamSubscription<Reading> readings(
+    java.util.function.Consumer<Reading> callback)
+
+StreamSubscription<Reading> sub =
+    sensor.readings(reading ->
+        System.out.println(reading.value()));
+// later
+sub.close();`}
 />
 
 ### Callback Mode
 
-Generates a method that takes a callback and returns a cancellable handle. Use this for simple event handlers where you don't need async iteration, or when integrating with callback-based APIs.
+Generates a method that takes a callback and returns a cancellable handle.
 
 <CodeComparison
-  title="Callback stream"
+  title=""
   rust={`#[ffi_stream(item = Reading, mode = "callback")]
 pub fn readings(&self) -> Arc<EventSubscription<Reading>> {
     Arc::clone(&self.subscription)
 }`}
-  swift={`// Generated
-public func readings(
+  swift={`public func readings(
     callback: @escaping (Reading) -> Void
-) -> SensorReadingsCancellable
+) -> StreamSubscription<Reading>
 
-// Usage
-let handle = sensor.readings { reading in
+let sub = sensor.readings { reading in
     print("Value: \\(reading.value)")
 }
-// Later...
-handle.cancel()`}
-  kotlin={`// Generated
-fun readings(
+// later
+sub.cancel()`}
+  kotlin={`fun readings(
     callback: (Reading) -> Unit
-): SensorReadingsCancellable
+): StreamSubscription<Reading>
 
-// Usage
-val handle = sensor.readings { reading ->
+val sub = sensor.readings { reading ->
     println("Value: \${reading.value}")
 }
-// Later...
-handle.cancel()`}
+// later
+sub.cancel()`}
+  java={`public StreamSubscription<Reading> readings(
+    java.util.function.Consumer<Reading> callback)
+
+StreamSubscription<Reading> sub =
+    sensor.readings(reading ->
+        System.out.println(reading.value()));
+// later
+sub.close();`}
 />
 
 ### Batch Mode
 
-Generates a subscription object that lets consumers pull batches of events on their own schedule. Use this for high-frequency data where you want control over when and how many events to process, or when you need to process events on a specific thread.
+Generates a subscription object that lets consumers pull batches of events on their own schedule.
 
 <CodeComparison
-  title="Batch stream"
+  title=""
   rust={`#[ffi_stream(item = Reading, mode = "batch")]
 pub fn readings(&self) -> Arc<EventSubscription<Reading>> {
     Arc::clone(&self.subscription)
 }`}
-  swift={`// Generated
-public func readings() -> SensorReadingsSubscription
+  swift={`public func readings()
+    -> StreamSubscription<Reading>
 
-// Usage
 let sub = sensor.readings()
-while let batch = sub.popBatch(maxCount: 100) {
-    for reading in batch {
-        process(reading)
-    }
+let batch = sub.popBatch(maxCount: 100)
+for reading in batch {
+    process(reading)
 }`}
-  kotlin={`// Generated
-fun readings(): SensorReadingsSubscription
+  kotlin={`fun readings(): StreamSubscription<Reading>
 
-// Usage
 val sub = sensor.readings()
-while (true) {
-    val batch = sub.popBatch(maxCount = 100)
-    batch.forEach { reading -> process(reading) }
-}`}
+val batch = sub.popBatch(maxCount = 100)
+batch.forEach { reading -> process(reading) }`}
+  java={`public StreamSubscription<Reading> readings()
+
+StreamSubscription<Reading> sub =
+    sensor.readings();
+java.util.List<Reading> batch =
+    sub.popBatch(100);
+for (Reading reading : batch) {
+    process(reading);
+}
+sub.close();`}
 />
 
 ## Creating Streams
@@ -124,10 +136,10 @@ Streams are created using `EventSubscription` or `StreamProducer`. The choice de
 
 ### EventSubscription
 
-Use `EventSubscription` when each call to the stream method should create an independent subscription. Each subscriber gets its own buffer and receives all events pushed after subscribing.
+`EventSubscription` creates an independent subscription per call. Each subscriber gets its own buffer and receives all events pushed after subscribing.
 
 <CodeComparison
-  title="EventSubscription"
+  title=""
   rust={`use boltffi::EventSubscription;
 use std::sync::Arc;
 
@@ -139,12 +151,16 @@ pub struct Sensor {
 impl Sensor {
     pub fn new() -> Self {
         Sensor {
-            subscription: Arc::new(EventSubscription::new(256)),
+            subscription: Arc::new(
+                EventSubscription::new(256)
+            ),
         }
     }
     
     #[ffi_stream(item = Reading)]
-    pub fn readings(&self) -> Arc<EventSubscription<Reading>> {
+    pub fn readings(&self)
+        -> Arc<EventSubscription<Reading>>
+    {
         Arc::clone(&self.subscription)
     }
     
@@ -155,35 +171,45 @@ impl Sensor {
         });
     }
 }`}
-  swift={`// Generated
-public class Sensor {
+  swift={`public class Sensor {
     public init()
     public func readings() -> AsyncStream<Reading>
 }
 
-// Usage
 let sensor = Sensor()
 for await reading in sensor.readings() {
     print(reading.value)
 }`}
-  kotlin={`// Generated
-class Sensor {
+  kotlin={`class Sensor {
     fun readings(): Flow<Reading>
 }
 
-// Usage
 val sensor = Sensor()
 sensor.readings().collect { reading ->
     println(reading.value)
 }`}
+  java={`public final class Sensor
+    implements AutoCloseable {
+    public Sensor()
+    public StreamSubscription<Reading> readings(
+        java.util.function.Consumer<Reading> cb)
+}
+
+Sensor sensor = new Sensor();
+StreamSubscription<Reading> sub =
+    sensor.readings(reading ->
+        System.out.println(reading.value()));
+// later
+sub.close();
+sensor.close();`}
 />
 
 ### StreamProducer
 
-Use `StreamProducer` when you need to broadcast events to multiple subscribers. Each subscriber gets its own buffer, and pushing an event delivers it to all active subscribers.
+`StreamProducer` broadcasts events to multiple subscribers. Each subscriber gets its own buffer, and pushing an event delivers it to all active subscribers.
 
 <CodeComparison
-  title="StreamProducer for multiple subscribers"
+  title=""
   rust={`use boltffi::StreamProducer;
 
 pub struct EventBus {
@@ -199,7 +225,9 @@ impl EventBus {
     }
     
     #[ffi_stream(item = Event)]
-    pub fn events(&self) -> Arc<EventSubscription<Event>> {
+    pub fn events(&self)
+        -> Arc<EventSubscription<Event>>
+    {
         self.producer.subscribe()
     }
     
@@ -209,7 +237,6 @@ impl EventBus {
 }`}
   swift={`let bus = EventBus()
 
-// Multiple subscribers
 Task {
     for await event in bus.events() {
         print("Sub 1: \\(event)")
@@ -223,7 +250,6 @@ Task {
 }`}
   kotlin={`val bus = EventBus()
 
-// Multiple subscribers
 scope.launch {
     bus.events().collect { event ->
         println("Sub 1: $event")
@@ -235,6 +261,20 @@ scope.launch {
         println("Sub 2: $event")
     }
 }`}
+  java={`EventBus bus = new EventBus();
+
+StreamSubscription<Event> sub1 =
+    bus.events(event ->
+        System.out.println("Sub 1: " + event));
+
+StreamSubscription<Event> sub2 =
+    bus.events(event ->
+        System.out.println("Sub 2: " + event));
+
+// later
+sub1.close();
+sub2.close();
+bus.close();`}
 />
 
 ## Buffer Capacity
@@ -252,7 +292,7 @@ EventSubscription::new(4096)
 StreamProducer::new(4096)
 ```
 
-When the buffer is full, new events are dropped. The producer continues without blocking. If your consumer can't keep up, either increase the buffer size or ensure the consumer processes events faster.
+When the buffer is full, new events are dropped. The producer continues without blocking.
 
 ## Stopping Streams
 
@@ -275,38 +315,49 @@ impl Sensor {
 In async mode, cancelling the task or breaking out of the loop cancels the subscription. In callback mode, call `cancel()` on the returned handle.
 
 <CodeComparison
-  title="Consumer cancellation"
+  title=""
   rust={``}
   swift={`// Async mode - cancel the task
 let task = Task {
     for await reading in sensor.readings() {
         if reading.value > threshold {
-            break // cancels subscription
+            break
         }
     }
 }
 task.cancel()
 
-// Callback mode - cancel the handle
-let handle = sensor.readings { reading in
+// Callback mode
+let sub = sensor.readings { reading in
     process(reading)
 }
-handle.cancel()`}
+sub.cancel()`}
   kotlin={`// Async mode - cancel the job
 val job = scope.launch {
     sensor.readings().collect { reading ->
         if (reading.value > threshold) {
-            cancel() // cancels subscription
+            cancel()
         }
     }
 }
 job.cancel()
 
-// Callback mode - cancel the handle
-val handle = sensor.readings { reading ->
+// Callback mode
+val sub = sensor.readings { reading ->
     process(reading)
 }
-handle.cancel()`}
+sub.cancel()`}
+  java={`// Async/callback mode
+StreamSubscription<Reading> sub =
+    sensor.readings(reading ->
+        process(reading));
+sub.close();
+
+// Batch mode
+StreamSubscription<Reading> sub =
+    sensor.readings();
+sub.popBatch(100);
+sub.close();`}
 />
 
 ## How It Works
