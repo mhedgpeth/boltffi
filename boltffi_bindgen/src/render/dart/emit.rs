@@ -2,12 +2,11 @@ use askama::Template as _;
 
 use crate::{
     ir::{
-        AbiContract, BuiltinId, EnumLayout, FfiContract, PrimitiveType, ReadOp, ReadSeq, ReturnDef,
-        TypeExpr, ValueExpr, VecLayout, WriteOp, WriteSeq,
+        BuiltinId, EnumLayout, PrimitiveType, ReadOp, ReadSeq, ReturnDef, TypeExpr, ValueExpr,
+        VecLayout, WriteOp, WriteSeq,
     },
     render::dart::{
-        NamingConvention,
-        lower::DartLowerer,
+        DartLibrary, NamingConvention,
         templates::{NativeFunctionsTemplate, NativeRecordTemplate, PreludeTemplate},
     },
 };
@@ -15,11 +14,7 @@ use crate::{
 pub struct DartEmitter {}
 
 impl DartEmitter {
-    pub fn emit(ffi: &FfiContract, abi: &AbiContract, package_name: &str) -> String {
-        let lowerer = DartLowerer::new(ffi, abi, package_name);
-
-        let library = lowerer.library();
-
+    pub fn emit(library: &DartLibrary) -> String {
         let mut output = String::new();
 
         output.push_str(PreludeTemplate {}.render().unwrap().as_str());

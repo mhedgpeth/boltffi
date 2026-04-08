@@ -210,9 +210,12 @@ impl<'a> DartLowerer<'a> {
 mod test {
     use boltffi_ffi_rules::callable::ExecutionKind;
 
-    use crate::ir::{
-        self, CallbackId, CallbackKind, CallbackTraitDef, FunctionDef, PackageInfo, ParamDef,
-        ParamName, ParamPassing, PrimitiveType, ReturnDef, TypeExpr,
+    use crate::{
+        ir::{
+            self, CallbackId, CallbackKind, CallbackTraitDef, FunctionDef, PackageInfo, ParamDef,
+            ParamName, ParamPassing, PrimitiveType, ReturnDef, TypeExpr,
+        },
+        render::dart::DartEmitter,
     };
 
     use super::*;
@@ -355,5 +358,72 @@ mod test {
                 .contains("$$ffi.Pointer<$$ffi.NativeFunction<")
         );
         assert!(!library.native.functions[0].is_leaf);
+    }
+
+    #[test]
+    pub fn blittable_record_produces_dart_ffi_struct() {
+        let mut ffi = empty_contract();
+        ffi.catalog.insert_record(RecordDef {
+            id: RecordId::new("Point"),
+            is_repr_c: true,
+            is_error: false,
+            fields: vec![
+                FieldDef {
+                    name: FieldName::new("x"),
+                    type_expr: TypeExpr::Primitive(PrimitiveType::F64),
+                    doc: None,
+                    default: None,
+                },
+                FieldDef {
+                    name: FieldName::new("y"),
+                    type_expr: TypeExpr::Primitive(PrimitiveType::F64),
+                    doc: None,
+                    default: None,
+                },
+            ],
+            constructors: vec![],
+            methods: vec![],
+            doc: None,
+            deprecated: None,
+        });
+
+        let library = lower(&ffi);
+
+        let output = DartEmitter::emit(&library);
+
+        assert!(library.records[0].blittable_layout.is_some());
+        assert!(output.contains("final class ___Point extends $$ffi.Struct"));
+    }
+
+    #[test]
+    pub fn non_blittable_record_does_not_produce_dart_ffi_struct() {
+        let mut ffi = empty_contract();
+        ffi.catalog.insert_record(RecordDef {
+            id: RecordId::new("Person"),
+            is_repr_c: true,
+            is_error: false,
+            fields: vec![
+                FieldDef {
+                    name: FieldName::new("age"),
+                    type_expr: TypeExpr::Primitive(PrimitiveType::U64),
+                    doc: None,
+                    default: None,
+                },
+                FieldDef {
+                    name: FieldName::new("name"),
+                    type_expr: TypeExpr::String,
+                    doc: None,
+                    default: None,
+                },
+            ],
+            constructors: vec![],
+            methods: vec![],
+            doc: None,
+            deprecated: None,
+        });
+
+        let library = lower(&ffi);
+
+        assert!(library.records[0].blittable_layout.is_none());
     }
 }

@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 use std::path::{Component, Path};
 
-use boltffi_bindgen::render::dart::DartEmitter;
+use boltffi_bindgen::render::dart::{DartEmitter, DartLowerer};
 use boltffi_bindgen::render::typescript::{
     TypeScriptEmitter, TypeScriptLowerError, TypeScriptLowerer,
 };
@@ -583,7 +583,9 @@ fn generate_dart(config: &Config, output: Option<PathBuf>) -> Result<()> {
     let ffi = ir::build_contract(&mut module);
     let abi = ir::Lowerer::new(&ffi).to_abi_contract();
 
-    let output = DartEmitter::emit(&ffi, &abi, &config.package.name);
+    let lowerer = DartLowerer::new(&ffi, &abi, &config.package.name);
+    let library = lowerer.library();
+    let output = DartEmitter::emit(&library);
 
     let output_path = output_dir.join(format!("{}.dart", config.package.name));
 
