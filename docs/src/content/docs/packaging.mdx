@@ -216,7 +216,9 @@ include_macos = true
 macos_architectures = ["arm64"]
 ```
 
-`boltffi pack apple --no-build` validates exactly those configured slices. Stale artifacts for old simulator or macOS architectures are ignored.
+`boltffi pack apple --no-build` validates exactly those configured slices. Stale artifacts for old
+simulator or macOS architectures are ignored. Any Apple architecture list can be set to `[]` to
+exclude that slice family, as long as at least one Apple slice remains enabled overall.
 
 ### SwiftPM Layouts
 

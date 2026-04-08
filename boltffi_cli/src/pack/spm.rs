@@ -76,8 +76,7 @@ import PackageDescription
 let package = Package(
     name: "{package_name}",
     platforms: [
-        .iOS(.{ios_version}),
-{macos_platform}
+{platforms}
     ],
     products: [
         .library(
@@ -95,8 +94,7 @@ let package = Package(
 "#,
                 tools_version = tools_version,
                 package_name = package_name,
-                ios_version = self.ios_version_for_spm(),
-                macos_platform = self.macos_platforms_fragment(),
+                platforms = self.platforms_fragment(),
                 binary_target_name = binary_target_name,
                 xcframework_path = xcframework_path,
             );
@@ -109,8 +107,7 @@ import PackageDescription
 let package = Package(
     name: "{package_name}",
     platforms: [
-        .iOS(.{ios_version}),
-{macos_platform}
+{platforms}
     ],
     products: [
         .library(
@@ -134,8 +131,7 @@ let package = Package(
             tools_version = tools_version,
             package_name = package_name,
             module_name = module_name,
-            ios_version = self.ios_version_for_spm(),
-            macos_platform = self.macos_platforms_fragment(),
+            platforms = self.platforms_fragment(),
             binary_target_name = binary_target_name,
             xcframework_path = xcframework_path,
             wrapper_sources = wrapper_sources,
@@ -179,8 +175,7 @@ let releaseChecksum = "{checksum}"
 let package = Package(
     name: "{package_name}",
     platforms: [
-        .iOS(.{ios_version}),
-{macos_platform}
+{platforms}
     ],
     products: [
         .library(
@@ -201,8 +196,7 @@ let package = Package(
                 version = version,
                 checksum = checksum,
                 package_name = package_name,
-                ios_version = self.ios_version_for_spm(),
-                macos_platform = self.macos_platforms_fragment(),
+                platforms = self.platforms_fragment(),
                 binary_target_name = binary_target_name,
                 repo_url = repo_url,
                 xcframework_name = self.xcframework_name,
@@ -219,8 +213,7 @@ let releaseChecksum = "{checksum}"
 let package = Package(
     name: "{package_name}",
     platforms: [
-        .iOS(.{ios_version}),
-{macos_platform}
+{platforms}
     ],
     products: [
         .library(
@@ -247,11 +240,10 @@ let package = Package(
             checksum = checksum,
             package_name = package_name,
             module_name = module_name,
-            ios_version = self.ios_version_for_spm(),
+            platforms = self.platforms_fragment(),
             repo_url = repo_url,
             xcframework_name = self.xcframework_name,
             binary_target_name = binary_target_name,
-            macos_platform = self.macos_platforms_fragment(),
             wrapper_sources = wrapper_sources,
         ))
     }
@@ -266,12 +258,27 @@ let package = Package(
             .unwrap_or_else(|| "v16".to_string())
     }
 
-    fn macos_platforms_fragment(&self) -> String {
-        if self.config.apple_include_macos() {
-            "        .macOS(.v13)\n".to_string()
-        } else {
-            Default::default()
+    fn platforms_fragment(&self) -> String {
+        let mut platforms = Vec::new();
+
+        if self.supports_ios_platform() {
+            platforms.push(format!("        .iOS(.{})", self.ios_version_for_spm()));
         }
+
+        if self.supports_macos_platform() {
+            platforms.push("        .macOS(.v13)".to_string());
+        }
+
+        platforms.join(",\n")
+    }
+
+    fn supports_ios_platform(&self) -> bool {
+        !self.config.apple_ios_targets().is_empty()
+            || !self.config.apple_simulator_targets().is_empty()
+    }
+
+    fn supports_macos_platform(&self) -> bool {
+        self.config.apple_include_macos() && !self.config.apple_macos_targets().is_empty()
     }
 
     fn wrapper_sources_path(&self, layout: SpmLayout) -> String {
@@ -325,4 +332,77 @@ fn relative_path(from_dir: &std::path::Path, to_path: &std::path::Path) -> PathB
     let suffix = to_components.iter().skip(common_len).copied();
 
     parent_prefix.chain(suffix).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parse_config(input: &str) -> Config {
+        let parsed: Config = toml::from_str(input).expect("toml parse failed");
+        parsed.validate().expect("config validation failed");
+        parsed
+    }
+
+    #[test]
+    fn spm_omits_macos_platform_when_enabled_without_macos_slices() {
+        let config = parse_config(
+            r#"
+[package]
+name = "mylib"
+
+[targets.apple]
+include_macos = true
+macos_architectures = []
+"#,
+        );
+
+        let package =
+            SpmPackageGenerator::new_local(&config, SpmLayout::FfiOnly).generate_local_package();
+
+        assert!(package.contains(".iOS(.v16)"));
+        assert!(!package.contains(".macOS(.v13)"));
+    }
+
+    #[test]
+    fn spm_omits_ios_platform_for_macos_only_packaging() {
+        let config = parse_config(
+            r#"
+[package]
+name = "mylib"
+
+[targets.apple]
+include_macos = true
+ios_architectures = []
+simulator_architectures = []
+macos_architectures = ["arm64"]
+"#,
+        );
+
+        let package =
+            SpmPackageGenerator::new_local(&config, SpmLayout::FfiOnly).generate_local_package();
+
+        assert!(!package.contains(".iOS(.v16)"));
+        assert!(package.contains(".macOS(.v13)"));
+    }
+
+    #[test]
+    fn spm_keeps_ios_platform_for_simulator_only_packaging() {
+        let config = parse_config(
+            r#"
+[package]
+name = "mylib"
+
+[targets.apple]
+ios_architectures = []
+simulator_architectures = ["arm64"]
+"#,
+        );
+
+        let package =
+            SpmPackageGenerator::new_local(&config, SpmLayout::FfiOnly).generate_local_package();
+
+        assert!(package.contains(".iOS(.v16)"));
+        assert!(!package.contains(".macOS(.v13)"));
+    }
 }

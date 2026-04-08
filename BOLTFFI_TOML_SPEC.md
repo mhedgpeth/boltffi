@@ -71,10 +71,13 @@ All platform-specific configuration lives under `[targets.*]`. Each target can b
   - Default: `false`
 - `ios_architectures` (`["arm64"]`, optional): iOS device slices to build/package.
   - Default: `["arm64"]`
+  - Set to `[]` to exclude device slices, as long as at least one Apple slice remains enabled overall
 - `simulator_architectures` (`["arm64", "x86_64"]`, optional): iOS Simulator slices to build/package.
   - Default: `["arm64", "x86_64"]`
+  - Set to `[]` to exclude simulator slices, as long as at least one Apple slice remains enabled overall
 - `macos_architectures` (`["arm64", "x86_64"]`, optional): macOS slices to build/package when `include_macos = true`.
   - Default: `["arm64", "x86_64"]`
+  - Set to `[]` to exclude macOS slices, as long as at least one Apple slice remains enabled overall
   - Ignored unless `include_macos = true`
 
 ### `[targets.apple.swift]` (optional)

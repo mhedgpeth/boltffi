@@ -98,7 +98,10 @@ include_macos = true
 macos_architectures = ["arm64"]
 ```
 
-`macos_architectures` only applies when `include_macos = true`. When omitted, BoltFFI keeps the current defaults.
+Each Apple architecture list can be set to `[]` to exclude that slice family. `macos_architectures`
+only applies when `include_macos = true`. When a list is omitted, BoltFFI keeps the current
+defaults. BoltFFI still requires at least one Apple slice across device, simulator, or enabled
+macOS targets.
 
 ### Swift Module Name
 

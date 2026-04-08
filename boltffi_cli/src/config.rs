@@ -632,22 +632,28 @@ impl Config {
         }
 
         if self.is_apple_enabled() {
-            validate_non_empty_unique(
+            validate_unique(
                 self.targets.apple.ios_architectures.as_deref(),
                 "targets.apple.ios_architectures",
                 AppleIosArchitecture::canonical_name,
             )?;
-            validate_non_empty_unique(
+            validate_unique(
                 self.targets.apple.simulator_architectures.as_deref(),
                 "targets.apple.simulator_architectures",
                 AppleArchitecture::canonical_name,
             )?;
             if self.apple_include_macos() {
-                validate_non_empty_unique(
+                validate_unique(
                     self.targets.apple.macos_architectures.as_deref(),
                     "targets.apple.macos_architectures",
                     AppleArchitecture::canonical_name,
                 )?;
+            }
+
+            if self.apple_targets().is_empty() {
+                return Err(ConfigError::Validation(
+                    "Apple packaging requires at least one configured slice across targets.apple.ios_architectures, targets.apple.simulator_architectures, or enabled macOS architectures".to_string(),
+                ));
             }
         }
 
@@ -1236,7 +1242,7 @@ fn normalize_module_name(input: &str) -> String {
     }
 }
 
-fn validate_non_empty_unique<T, F>(
+fn validate_unique<T, F>(
     values: Option<&[T]>,
     field_name: &str,
     canonical_name: F,
@@ -1248,12 +1254,6 @@ where
     let Some(values) = values else {
         return Ok(());
     };
-
-    if values.is_empty() {
-        return Err(ConfigError::Validation(format!(
-            "{field_name} must be non-empty when provided"
-        )));
-    }
 
     let mut seen = HashSet::new();
     for value in values {
@@ -1481,8 +1481,8 @@ macos_architectures = []
     }
 
     #[test]
-    fn rejects_empty_apple_ios_architectures() {
-        let parsed: Config = toml::from_str(
+    fn allows_empty_apple_ios_architectures_when_other_apple_slices_remain() {
+        let config = parse_config(
             r#"
 [package]
 name = "mylib"
@@ -1490,13 +1490,38 @@ name = "mylib"
 [targets.apple]
 ios_architectures = []
 "#,
+        );
+
+        assert!(config.apple_ios_architectures().is_empty());
+        assert_eq!(
+            config
+                .apple_targets()
+                .iter()
+                .map(|target| target.triple())
+                .collect::<Vec<_>>(),
+            vec!["aarch64-apple-ios-sim", "x86_64-apple-ios"]
+        );
+    }
+
+    #[test]
+    fn rejects_empty_apple_target_matrix() {
+        let parsed: Config = toml::from_str(
+            r#"
+[package]
+name = "mylib"
+
+[targets.apple]
+ios_architectures = []
+simulator_architectures = []
+"#,
         )
         .expect("toml parse failed");
 
         assert!(matches!(
             parsed.validate(),
             Err(ConfigError::Validation(message))
-                if message == "targets.apple.ios_architectures must be non-empty when provided"
+                if message
+                    == "Apple packaging requires at least one configured slice across targets.apple.ios_architectures, targets.apple.simulator_architectures, or enabled macOS architectures"
         ));
     }
 
@@ -1898,6 +1923,42 @@ architectures = ["arm64"]
                 .map(|architecture| architecture.canonical_name())
                 .collect::<Vec<_>>(),
             vec!["arm64"]
+        );
+    }
+
+    #[test]
+    fn overlay_can_clear_ios_architectures_for_simulator_only_apple_packaging() {
+        let config = parse_config_with_overlay(
+            r#"
+[package]
+name = "mylib"
+
+[targets.apple]
+ios_architectures = ["arm64"]
+simulator_architectures = ["arm64", "x86_64"]
+"#,
+            r#"
+[targets.apple]
+ios_architectures = []
+"#,
+        );
+
+        assert!(config.apple_ios_architectures().is_empty());
+        assert_eq!(
+            config
+                .apple_simulator_architectures()
+                .iter()
+                .map(|architecture| architecture.canonical_name())
+                .collect::<Vec<_>>(),
+            vec!["arm64", "x86_64"]
+        );
+        assert_eq!(
+            config
+                .apple_targets()
+                .iter()
+                .map(|target| target.triple())
+                .collect::<Vec<_>>(),
+            vec!["aarch64-apple-ios-sim", "x86_64-apple-ios"]
         );
     }
 

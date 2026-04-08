@@ -90,6 +90,10 @@ include_macos = true
 macos_architectures = ["arm64"]
 ```
 
+Any Apple architecture list can be set to `[]` to exclude that slice family. For example, set
+`ios_architectures = []` when you want simulator-only Apple packaging from a config overlay. BoltFFI
+still requires at least one Apple slice overall.
+
 When `architectures` is omitted, BoltFFI keeps the existing default Android matrix:
 `arm64`, `armv7`, `x86_64`, and `x86`. `boltffi pack android --no-build` now validates that each
 configured ABI already has a built Rust static library and ignores stale artifacts for
