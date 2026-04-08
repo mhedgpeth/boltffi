@@ -14,7 +14,7 @@ use crate::commands::generate::{
     run_generate_with_output,
 };
 use crate::config::{
-    Config, Experimental, SpmDistribution, SpmLayout, Target, WasmNpmTarget, WasmOptimizeLevel,
+    Config, SpmDistribution, SpmLayout, Target, WasmNpmTarget, WasmOptimizeLevel,
     WasmOptimizeOnMissing, WasmProfile,
 };
 use crate::desktop::DesktopToolchain;
@@ -79,6 +79,7 @@ struct JvmBuildArtifacts {
 }
 
 struct JniLinkerArgs<'a> {
+    host_target: JavaHostTarget,
     output_lib: &'a Path,
     jni_glue: &'a Path,
     link_input: &'a Path,
@@ -626,7 +627,6 @@ fn pack_java_with_prepared(
 
     reporter.section("☕", "Packing Java");
 
-    ensure_java_pack_experimental_supported(config, options.experimental)?;
     ensure_java_no_build_supported(config, options.no_build, options.experimental, "pack java")?;
 
     let PreparedJavaPackaging {
@@ -677,6 +677,7 @@ fn pack_java_with_prepared(
             config,
             packaging_target,
             &build_artifacts,
+            &step,
         )?);
         step.finish_success();
     }
@@ -741,27 +742,6 @@ fn ensure_java_no_build_supported(
     }
 
     Ok(())
-}
-
-fn ensure_java_pack_experimental_supported(config: &Config, experimental: bool) -> Result<()> {
-    if !Experimental::is_target_experimental(Target::Java) {
-        return Ok(());
-    }
-
-    if experimental
-        || config
-            .experimental
-            .iter()
-            .any(|entry| entry == Target::Java.name())
-    {
-        return Ok(());
-    }
-
-    Err(CliError::CommandFailed {
-        command: "java is experimental, use --experimental flag or add \"java\" to [experimental]"
-            .to_string(),
-        status: None,
-    })
 }
 
 fn ensure_java_pack_cargo_args_supported(cargo_args: &[String]) -> Result<()> {
@@ -840,6 +820,7 @@ fn compile_jni_library(
     config: &Config,
     packaging_target: &JvmPackagingTarget,
     build_artifacts: &JvmBuildArtifacts,
+    step: &Step,
 ) -> Result<JvmPackagedNativeOutput> {
     let cargo_context = &packaging_target.cargo_context;
     let host_target = cargo_context.host_target;
@@ -888,6 +869,7 @@ fn compile_jni_library(
     let mut cmd = packaging_target.toolchain.linker_command();
     let jni_linker_args = if packaging_target.toolchain.uses_msvc_compiler() {
         clang_cl_jni_linker_args(&JniLinkerArgs {
+            host_target,
             output_lib: &output_lib,
             jni_glue: &jni_glue,
             link_input: link_input.path(),
@@ -900,6 +882,7 @@ fn compile_jni_library(
         })?
     } else {
         clang_style_jni_linker_args(&JniLinkerArgs {
+            host_target,
             output_lib: &output_lib,
             jni_glue: &jni_glue,
             link_input: link_input.path(),
@@ -912,6 +895,25 @@ fn compile_jni_library(
         })
     };
     cmd.args(jni_linker_args);
+
+    if step.is_verbose() {
+        print_verbose_detail(&format!(
+            "JNI rustflag linker args: {:?}",
+            packaging_target.toolchain.jni_rustflag_linker_args()
+        ));
+        print_verbose_detail(&format!(
+            "JNI native link search paths: {:?}",
+            &build_artifacts.native_link_search_paths
+        ));
+        print_verbose_detail(&format!(
+            "JNI native static libs: {:?}",
+            &build_artifacts.native_static_libraries
+        ));
+        print_verbose_detail(&format!(
+            "JNI linker command: {}",
+            format_command_for_log(&cmd)
+        ));
+    }
 
     let status = cmd.status().map_err(|e| CliError::CommandFailed {
         command: format!("desktop linker: {}", e),
@@ -1237,7 +1239,8 @@ fn bundled_jvm_shared_library_path(
 }
 
 fn parse_native_static_libraries(line: &str) -> Option<Vec<String>> {
-    let (_, flags) = line.split_once("native-static-libs:")?;
+    let sanitized = strip_ansi_escape_codes(line);
+    let (_, flags) = sanitized.split_once("native-static-libs:")?;
     let parsed: Vec<String> = flags
         .split_whitespace()
         .map(str::to_string)
@@ -1245,6 +1248,41 @@ fn parse_native_static_libraries(line: &str) -> Option<Vec<String>> {
         .collect();
 
     (!parsed.is_empty()).then_some(parsed)
+}
+
+fn strip_ansi_escape_codes(input: &str) -> String {
+    let bytes = input.as_bytes();
+    let mut output = String::with_capacity(input.len());
+    let mut index = 0;
+
+    while index < bytes.len() {
+        if bytes[index] == 0x1b {
+            index += 1;
+
+            if index >= bytes.len() {
+                break;
+            }
+
+            if bytes[index] == b'[' {
+                index += 1;
+                while index < bytes.len() {
+                    let byte = bytes[index];
+                    index += 1;
+                    if (0x40..=0x7e).contains(&byte) {
+                        break;
+                    }
+                }
+                continue;
+            }
+
+            continue;
+        }
+
+        output.push(bytes[index] as char);
+        index += 1;
+    }
+
+    output
 }
 
 fn resolve_jni_include_directories(
@@ -1588,6 +1626,40 @@ fn link_search_path_flags(link_search_paths: &[String]) -> Vec<String> {
     flags
 }
 
+fn clang_native_static_library_flags(
+    host_target: JavaHostTarget,
+    native_static_libraries: &[String],
+) -> Vec<String> {
+    let strip_implicit_darwin_libs = matches!(
+        host_target,
+        JavaHostTarget::DarwinArm64 | JavaHostTarget::DarwinX86_64
+    );
+    let mut flags = Vec::new();
+    let mut index = 0;
+
+    while index < native_static_libraries.len() {
+        let flag = &native_static_libraries[index];
+
+        if strip_implicit_darwin_libs && flag == "-l" {
+            if let Some(value) = native_static_libraries.get(index + 1)
+                && matches!(value.as_str(), "c" | "m" | "System")
+            {
+                index += 2;
+                continue;
+            }
+        } else if strip_implicit_darwin_libs && matches!(flag.as_str(), "-lc" | "-lm" | "-lSystem")
+        {
+            index += 1;
+            continue;
+        }
+
+        flags.push(flag.clone());
+        index += 1;
+    }
+
+    flags
+}
+
 fn clang_style_jni_linker_args(args_in: &JniLinkerArgs<'_>) -> Vec<String> {
     let mut args = vec![
         "-shared".to_string(),
@@ -1602,7 +1674,10 @@ fn clang_style_jni_linker_args(args_in: &JniLinkerArgs<'_>) -> Vec<String> {
     ];
     args.extend(args_in.rustflag_linker_args.iter().cloned());
     args.extend(link_search_path_flags(args_in.native_link_search_paths));
-    args.extend(args_in.native_static_libraries.iter().cloned());
+    args.extend(clang_native_static_library_flags(
+        args_in.host_target,
+        args_in.native_static_libraries,
+    ));
     if let Some(rpath_flag) = args_in.rpath_flag {
         args.push(rpath_flag.to_string());
     }
@@ -2182,6 +2257,34 @@ fn print_cargo_line(line: &str) {
     } else {
         println!("      {}", style(trimmed).dim());
     }
+}
+
+fn print_verbose_detail(line: &str) {
+    use console::style;
+    println!("      {}", style(line).dim());
+}
+
+fn format_command_for_log(command: &Command) -> String {
+    std::iter::once(command.get_program())
+        .chain(command.get_args())
+        .map(|value| shell_escape_for_log(&value.to_string_lossy()))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn shell_escape_for_log(value: &str) -> String {
+    if value.is_empty() {
+        return "''".to_string();
+    }
+
+    if value
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '/' | '.' | '_' | '-' | ':' | '='))
+    {
+        return value.to_string();
+    }
+
+    format!("'{}'", value.replace('\'', "'\"'\"'"))
 }
 
 fn build_android_targets(
@@ -2867,15 +2970,16 @@ mod tests {
         CargoMetadata, CargoMetadataPackage, CargoMetadataPackageTarget, JniIncludeDirectories,
         JniLinkerArgs, JvmCargoContext, JvmCrateOutputs, JvmPackagedNativeOutput,
         JvmPackagingTarget, bundled_jvm_shared_library_path, cargo_metadata_args,
-        clang_cl_jni_linker_args, current_cargo_package_selector, current_cargo_target_selector,
+        clang_cl_jni_linker_args, clang_native_static_library_flags, clang_style_jni_linker_args,
+        current_cargo_package_selector, current_cargo_target_selector,
         current_manifest_path_with_args, effective_cargo_package_selector,
         ensure_java_no_build_supported, ensure_java_pack_cargo_args_supported,
-        ensure_java_pack_experimental_supported, existing_jvm_shared_library_path,
-        extract_library_filenames, extract_link_search_paths, extract_native_static_libraries,
-        find_cargo_metadata_package, link_search_path_flags, missing_built_libraries,
-        msvc_link_search_path_flags, msvc_native_static_library_flags, msvc_rustflag_linker_args,
-        parse_cargo_target_directory, parse_jvm_crate_outputs, parse_native_static_libraries,
-        remove_file_if_exists, remove_stale_flat_jvm_outputs_if_current_host_unrequested,
+        existing_jvm_shared_library_path, extract_library_filenames, extract_link_search_paths,
+        extract_native_static_libraries, find_cargo_metadata_package, link_search_path_flags,
+        missing_built_libraries, msvc_link_search_path_flags, msvc_native_static_library_flags,
+        msvc_rustflag_linker_args, parse_cargo_target_directory, parse_jvm_crate_outputs,
+        parse_native_static_libraries, remove_file_if_exists,
+        remove_stale_flat_jvm_outputs_if_current_host_unrequested,
         remove_stale_requested_jvm_shared_library_copies_after_success,
         remove_stale_structured_jvm_outputs, resolve_jni_include_directories_with_overrides,
         resolve_jvm_native_link_input, select_windows_static_library_filename,
@@ -2934,6 +3038,15 @@ mod tests {
         .expect("expected static library flags");
 
         assert_eq!(parsed, vec!["-framework", "Security", "-lresolv", "-lc++"]);
+    }
+
+    #[test]
+    fn parses_native_static_library_flags_from_ansi_colored_cargo_output() {
+        let parsed =
+            parse_native_static_libraries("note: native-static-libs: -lSystem -lc -lm\u{1b}[0m")
+                .expect("expected static library flags");
+
+        assert_eq!(parsed, vec!["-lSystem", "-lc", "-lm"]);
     }
 
     #[test]
@@ -3046,6 +3159,52 @@ mod tests {
     }
 
     #[test]
+    fn strips_implicit_darwin_system_libraries_from_clang_flags() {
+        let flags = clang_native_static_library_flags(
+            JavaHostTarget::DarwinArm64,
+            &[
+                "-framework".to_string(),
+                "Security".to_string(),
+                "-lc".to_string(),
+                "-l".to_string(),
+                "m".to_string(),
+                "-lSystem".to_string(),
+                "-liconv".to_string(),
+            ],
+        );
+
+        assert_eq!(
+            flags,
+            vec![
+                "-framework".to_string(),
+                "Security".to_string(),
+                "-liconv".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn preserves_linux_system_libraries_in_clang_flags() {
+        let flags = clang_native_static_library_flags(
+            JavaHostTarget::LinuxX86_64,
+            &[
+                "-ldl".to_string(),
+                "-lpthread".to_string(),
+                "-lm".to_string(),
+            ],
+        );
+
+        assert_eq!(
+            flags,
+            vec![
+                "-ldl".to_string(),
+                "-lpthread".to_string(),
+                "-lm".to_string(),
+            ]
+        );
+    }
+
+    #[test]
     fn converts_msvc_rustflag_linker_args() {
         let flags = msvc_rustflag_linker_args(&[
             "-L/tmp/native".to_string(),
@@ -3086,6 +3245,7 @@ mod tests {
         };
 
         let args = clang_cl_jni_linker_args(&JniLinkerArgs {
+            host_target: JavaHostTarget::WindowsX86_64,
             output_lib: Path::new("/tmp/out/demo_jni.dll"),
             jni_glue: Path::new("/tmp/jni/jni_glue.c"),
             link_input: Path::new("/tmp/target/demo.lib"),
@@ -3119,9 +3279,56 @@ mod tests {
     }
 
     #[test]
+    fn strips_implicit_darwin_system_libraries_from_clang_jni_args() {
+        let include_directories = JniIncludeDirectories {
+            shared: PathBuf::from("/tmp/jdk/include"),
+            platform: PathBuf::from("/tmp/jdk/include/darwin"),
+        };
+
+        let args = clang_style_jni_linker_args(&JniLinkerArgs {
+            host_target: JavaHostTarget::DarwinArm64,
+            output_lib: Path::new("/tmp/out/libdemo_jni.dylib"),
+            jni_glue: Path::new("/tmp/jni/jni_glue.c"),
+            link_input: Path::new("/tmp/target/libdemo.a"),
+            jni_dir: Path::new("/tmp/jni"),
+            jni_include_directories: &include_directories,
+            rustflag_linker_args: &[],
+            native_link_search_paths: &[],
+            native_static_libraries: &[
+                "-framework".to_string(),
+                "Security".to_string(),
+                "-lc".to_string(),
+                "-lm".to_string(),
+                "-lSystem".to_string(),
+                "-liconv".to_string(),
+            ],
+            rpath_flag: Some("-Wl,-rpath,@loader_path"),
+        });
+
+        assert_eq!(
+            args,
+            vec![
+                "-shared".to_string(),
+                "-fPIC".to_string(),
+                "-o".to_string(),
+                "/tmp/out/libdemo_jni.dylib".to_string(),
+                "/tmp/jni/jni_glue.c".to_string(),
+                "/tmp/target/libdemo.a".to_string(),
+                "-I/tmp/jni".to_string(),
+                "-I/tmp/jdk/include".to_string(),
+                "-I/tmp/jdk/include/darwin".to_string(),
+                "-framework".to_string(),
+                "Security".to_string(),
+                "-liconv".to_string(),
+                "-Wl,-rpath,@loader_path".to_string(),
+            ]
+        );
+    }
+
+    #[test]
     fn rejects_pack_all_no_build_when_java_is_enabled() {
         let config = Config {
-            experimental: vec!["java".to_string()],
+            experimental: Vec::new(),
             cargo: CargoConfig::default(),
             package: PackageConfig {
                 name: "workspace-member".to_string(),
@@ -3720,7 +3927,7 @@ mod tests {
     }
 
     #[test]
-    fn rejects_pack_java_without_experimental_gate() {
+    fn pack_java_no_longer_requires_experimental_gate() {
         let config = Config {
             experimental: Vec::new(),
             cargo: CargoConfig::default(),
@@ -3744,14 +3951,8 @@ mod tests {
             },
         };
 
-        let error = ensure_java_pack_experimental_supported(&config, false)
-            .expect_err("expected experimental gate rejection");
-
-        assert!(matches!(
-            error,
-            CliError::CommandFailed { command, status: None }
-                if command.contains("java is experimental")
-        ));
+        ensure_java_no_build_supported(&config, false, false, "pack java")
+            .expect("expected pack java to proceed without experimental gate");
     }
 
     #[test]

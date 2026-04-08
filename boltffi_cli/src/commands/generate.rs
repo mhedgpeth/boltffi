@@ -60,10 +60,7 @@ pub fn run_generate_with_output(config: &Config, options: GenerateOptions) -> Re
     match options.target {
         GenerateTarget::Swift => generate_swift(config, options.output),
         GenerateTarget::Kotlin => generate_kotlin(config, options.output),
-        GenerateTarget::Java => {
-            require_experimental_target(config, Target::Java, options.experimental)?;
-            generate_java(config, options.output)
-        }
+        GenerateTarget::Java => generate_java(config, options.output),
         GenerateTarget::Header => generate_header(config, options.output),
         GenerateTarget::Typescript => generate_typescript(config, options.output),
         GenerateTarget::Dart => {
@@ -97,11 +94,10 @@ pub fn run_generate_with_output(config: &Config, options: GenerateOptions) -> Re
 pub fn run_generate_java_with_output_from_source_dir(
     config: &Config,
     output: Option<PathBuf>,
-    experimental: bool,
+    _experimental: bool,
     source_directory: &Path,
     crate_name: &str,
 ) -> Result<()> {
-    require_experimental_target(config, Target::Java, experimental)?;
     generate_java_from_source_directory(config, output, source_directory, crate_name)
 }
 

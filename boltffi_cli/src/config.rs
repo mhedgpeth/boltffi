@@ -38,7 +38,6 @@ pub enum Experimental {
 
 impl Experimental {
     pub const ALL: &'static [Experimental] = &[
-        Experimental::WholeTarget(Target::Java),
         Experimental::Feature {
             target: Target::TypeScript,
             name: "async_streams",

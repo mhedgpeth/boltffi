@@ -974,8 +974,6 @@ triple = "wasm32-wasip1"
     fn release_all_includes_java_packaging_without_no_build() {
         let config = parse_config(
             r#"
-experimental = ["java"]
-
 [package]
 name = "mylib"
 
@@ -1022,8 +1020,6 @@ enabled = true
     fn release_platform_filter_does_not_add_java_for_non_all_platforms() {
         let config = parse_config(
             r#"
-experimental = ["java"]
-
 [package]
 name = "mylib"
 
@@ -1045,7 +1041,7 @@ enabled = true
     }
 
     #[test]
-    fn release_all_skips_java_when_experimental_gate_is_not_enabled() {
+    fn release_all_includes_java_when_enabled() {
         let config = parse_config(
             r#"
 [package]
@@ -1059,11 +1055,11 @@ enabled = true
         let commands = release_pack_commands(&config, Some(BuildPlatformArg::All), &[]);
 
         assert!(
-            !commands
+            commands
                 .iter()
                 .any(|command| matches!(command, PackCommand::Java(_)))
         );
-        assert!(!release_requires_java_environment_validation(
+        assert!(release_requires_java_environment_validation(
             &config,
             Some(BuildPlatformArg::All)
         ));
@@ -1073,8 +1069,6 @@ enabled = true
     fn release_all_requires_java_environment_validation_when_enabled() {
         let config = parse_config(
             r#"
-experimental = ["java"]
-
 [package]
 name = "mylib"
 
@@ -1094,8 +1088,6 @@ enabled = true
     fn release_platform_filter_skips_java_environment_validation_for_non_all_platforms() {
         let config = parse_config(
             r#"
-experimental = ["java"]
-
 [package]
 name = "mylib"
 
