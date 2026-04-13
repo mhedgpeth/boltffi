@@ -3,7 +3,7 @@ use crate::build::{
     resolve_build_profile,
 };
 use crate::config::Config;
-use crate::error::{CliError, Result};
+use crate::error::{PackError, Result};
 
 pub enum BuildPlatform {
     Apple,
@@ -92,9 +92,10 @@ pub fn run_build(config: &Config, options: BuildCommandOptions) -> Result<Vec<Bu
     if all_successful(&results) {
         Ok(results)
     } else {
-        Err(CliError::BuildFailed {
+        Err(PackError::BuildFailed {
             targets: failed_targets(&results),
-        })
+        }
+        .into())
     }
 }
 
