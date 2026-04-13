@@ -1,13 +1,12 @@
-mod android;
 mod build;
 mod check;
 mod commands;
 mod config;
-mod desktop;
 mod error;
 mod pack;
 mod reporter;
 mod target;
+mod toolchain;
 
 use clap::{Parser, Subcommand};
 use std::{fmt, path::PathBuf};

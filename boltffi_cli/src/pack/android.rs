@@ -1,10 +1,10 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use crate::android::AndroidToolchain;
 use crate::config::Config;
 use crate::error::{CliError, Result};
 use crate::target::{BuiltLibrary, Platform, RustTarget};
+use crate::toolchain::AndroidToolchain;
 
 pub struct AndroidPackager<'a> {
     config: &'a Config,

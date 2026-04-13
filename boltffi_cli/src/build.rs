@@ -3,10 +3,10 @@ use std::process::{Command, Stdio};
 use std::sync::mpsc;
 use std::thread;
 
-use crate::android::AndroidToolchain;
 use crate::config::Config;
 use crate::error::{CliError, Result};
 use crate::target::{Platform, RustTarget};
+use crate::toolchain::AndroidToolchain;
 
 pub type OutputCallback = Box<dyn Fn(&str) + Send>;
 

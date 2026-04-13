@@ -66,7 +66,7 @@ impl CargoTargetCfg {
 }
 
 #[derive(Debug, Clone)]
-pub struct DesktopToolchain {
+pub struct NativeHostToolchain {
     rust_target_triple: String,
     cargo_linker_env: Option<(String, String)>,
     jni_compiler_program: PathBuf,
@@ -74,7 +74,7 @@ pub struct DesktopToolchain {
     jni_rustflag_linker_args: Vec<String>,
 }
 
-impl DesktopToolchain {
+impl NativeHostToolchain {
     pub fn discover(
         toolchain_selector: Option<&str>,
         cargo_args: &[String],
@@ -1731,7 +1731,7 @@ fn trim_wrapping_quotes(value: &str) -> &str {
 #[cfg(test)]
 mod tests {
     use super::{
-        CargoTargetCfg, ConfiguredValue, DesktopToolchain, cargo_cfg_expression_matches,
+        CargoTargetCfg, ConfiguredValue, NativeHostToolchain, cargo_cfg_expression_matches,
         cargo_config_base_dir, cargo_config_file_candidates_with_inputs,
         cargo_config_file_linker_values_with_candidates, cargo_config_search_roots,
         cargo_configured_build_target, cargo_inline_configured_linker_values, cargo_linker_env_key,
@@ -2934,7 +2934,7 @@ unix
         assert_eq!(linker_program, compiler_path.clone());
         assert!(linker_args.is_empty());
 
-        let toolchain = DesktopToolchain {
+        let toolchain = NativeHostToolchain {
             rust_target_triple: "x86_64-pc-windows-msvc".to_string(),
             cargo_linker_env: None,
             jni_compiler_program: compiler_path,
