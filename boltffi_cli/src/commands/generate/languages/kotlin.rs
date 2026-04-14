@@ -31,7 +31,7 @@ impl KotlinGenerator {
             library_name: request
                 .config()
                 .android_kotlin_library_name()
-                .map(str::to_string),
+                .map(boltffi_bindgen::library_name),
             desktop_loader: true,
         }
     }

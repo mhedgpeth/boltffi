@@ -138,7 +138,9 @@ impl LanguageGenerator for JavaGenerator {
             package_name.clone(),
             module_name.clone(),
             JavaOptions {
-                library_name: Some(request.source_crate().crate_name().to_string()),
+                library_name: Some(boltffi_bindgen::library_name(
+                    request.source_crate().crate_name(),
+                )),
                 min_java_version: JavaVersion(request.config().java_min_version().unwrap_or(8)),
                 desktop_loader: matches!(generation_mode, JavaGenerationMode::Jvm),
             },
